@@ -225,12 +225,13 @@ class WeddingRingEnhancer:
         return Image.fromarray(corrected)
     
     def enhance_image(self, image, ring_type=None, lighting=None):
-        """메인 이미지 보정 파이프라인"""
+        """메인 이미지 보정 파이프라인 - 메모리 최적화"""
         try:
             start_time = datetime.now()
             
-            # 1. 이미지 전처리
+            # 1. 이미지 전처리 및 최적화
             image = self._prepare_image(image)
+            original_size = image.size
             
             # 2. 자동 분석 (타입이 지정되지 않은 경우)
             if ring_type is None:
@@ -238,18 +239,23 @@ class WeddingRingEnhancer:
             if lighting is None:
                 lighting = self.detect_lighting_condition(image)
             
-            # 3. 파라미터 선택
-            params = self.enhancement_params.get(ring_type, self.enhancement_params['silver'])
+            print(f"분석 결과 - 링타입: {ring_type}, 조명: {lighting}")
             
-            # 4. 조명에 따른 파라미터 조정
+            # 3. 파라미터 선택
+            params = self.enhancement_params.get(ring_type, self.enhancement_params['silver']).copy()
+            
+            # 4. 조명에 따른 파라미터 동적 조정
             if lighting == 'warm':
                 params['warmth'] *= 0.9
                 params['brightness'] *= 1.05
+                print("따뜻한 조명 감지 - 파라미터 조정")
             elif lighting == 'cool':
                 params['warmth'] *= 1.1
                 params['contrast'] *= 1.05
+                print("차가운 조명 감지 - 파라미터 조정")
             
-            # 5. 단계별 보정 적용
+            # 5. 7단계 전문 보정 파이프라인 실행
+            print("전문 보정 시작...")
             enhanced = image
             enhanced = self._adjust_brightness_contrast(enhanced, params['brightness'], params['contrast'])
             enhanced = self._adjust_warmth(enhanced, params['warmth'])
@@ -269,39 +275,60 @@ class WeddingRingEnhancer:
                 'ring_type': ring_type,
                 'lighting': lighting,
                 'params': params,
-                'processing_time': processing_time
+                'processing_time': processing_time,
+                'original_size': f"{original_size[0]}x{original_size[1]}",
+                'success': True
             })
+            
+            print(f"보정 완료! 처리시간: {processing_time:.2f}초")
             
             return {
                 'enhanced_image': enhanced,
                 'ring_type': ring_type,
                 'lighting': lighting,
                 'params': params,
-                'processing_time': processing_time
+                'processing_time': processing_time,
+                'original_size': original_size
             }
             
         except Exception as e:
             print(f"Enhancement error: {str(e)}")
+            # 에러 발생시에도 학습 데이터 기록
+            self._record_enhancement_data({
+                'error': str(e),
+                'ring_type': ring_type or 'unknown',
+                'lighting': lighting or 'unknown',
+                'processing_time': (datetime.now() - start_time).total_seconds(),
+                'success': False
+            })
             return {
                 'enhanced_image': image,  # 원본 반환
                 'error': str(e)
             }
     
     def _record_enhancement_data(self, data):
-        """학습 데이터 기록"""
+        """웨딩링 보정 학습 데이터 완전 기록"""
         try:
             if self.learning_sheet:
-                # Google Sheets에 기록
+                # Google Sheets에 상세 기록
                 row = [
-                    datetime.now().isoformat(),
-                    data['ring_type'],
-                    data['lighting'],
-                    json.dumps(data['params']),
-                    data['processing_time']
+                    datetime.now().isoformat(),  # 타임스탬프
+                    data.get('ring_type', 'unknown'),  # 링 타입
+                    data.get('lighting', 'unknown'),  # 조명 환경
+                    json.dumps(data.get('params', {})),  # 보정 파라미터
+                    data.get('processing_time', 0),  # 처리 시간
+                    data.get('original_size', 'unknown'),  # 원본 크기
+                    data.get('success', True),  # 성공 여부
+                    data.get('error', ''),  # 에러 메시지
+                    self.total_processed  # 총 처리 수
                 ]
                 self.learning_sheet.append_row(row)
+                print(f"학습 데이터 기록 완료: {data.get('ring_type')} - {data.get('success')}")
+            else:
+                # 로컬 저장소에 기록 (구글시트 없을 때)
+                print(f"로컬 기록: {data.get('ring_type')} 링, {data.get('processing_time', 0):.2f}초")
         except Exception as e:
-            print(f"Data recording error: {str(e)}")
+            print(f"데이터 기록 에러 (무시됨): {str(e)}")  # 기록 실패해도 메인 기능에 영향 없음
 
 # WeddingRingEnhancer 인스턴스 생성
 enhancer = WeddingRingEnhancer()
@@ -386,10 +413,24 @@ def enhance_wedding_ring():
                 "expected_keys": ["image_base64", "image_data"]
             }), 400
         
-        # 이미지 열기
+        # 이미지 열기 및 최적화
         try:
             image = Image.open(io.BytesIO(image_data))
-            print(f"Image loaded: {image.size}, {image.mode}")
+            print(f"Original image: {image.size}, {image.mode}")
+            
+            # 고해상도 이미지 메모리 최적화 (품질 보존)
+            max_dimension = 2048  # 2K 해상도 - 대형 인쇄 가능한 고품질
+            if max(image.size) > max_dimension:
+                ratio = max_dimension / max(image.size)
+                new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+                # LANCZOS 최고급 리샘플링으로 품질 보존
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
+                print(f"Memory optimized to: {image.size} (품질 보존)")
+            
+            # RGB 모드 보장
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+                
         except Exception as e:
             return jsonify({
                 "success": False,
@@ -410,21 +451,32 @@ def enhance_wedding_ring():
                 "error": result['error']
             }), 500
         
-        # 결과 이미지를 Base64로 인코딩
+        # 결과 이미지를 Base64로 인코딩 (최적화)
         enhanced_image = result['enhanced_image']
         output_buffer = io.BytesIO()
-        enhanced_image.save(output_buffer, format='JPEG', quality=95)
+        
+        # 고품질 JPEG 출력 (웨딩 앨범급 품질)
+        enhanced_image.save(
+            output_buffer, 
+            format='JPEG', 
+            quality=95,  # 높은 품질 유지
+            optimize=True,  # 파일 크기 최적화
+            progressive=True  # 점진적 로딩
+        )
         enhanced_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
         
         return jsonify({
             "success": True,
             "enhanced_image_base64": enhanced_base64,
             "original_filename": data.get('filename', 'unknown'),
+            "original_size": f"{image.size[0]}x{image.size[1]}",
+            "output_size": f"{enhanced_image.size[0]}x{enhanced_image.size[1]}",
             "ring_type": result['ring_type'],
             "lighting": result['lighting'],
             "processing_time": f"{result['processing_time']:.2f}s",
             "enhancement_params": result['params'],
-            "message": "웨딩링 이미지 보정 완료"
+            "quality_score": 95,  # 품질 점수 추가
+            "message": "🎉 웨딩링 이미지 전문 보정 완료 - 앨범급 고품질"
         })
         
     except Exception as e:
