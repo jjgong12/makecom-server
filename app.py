@@ -16,9 +16,109 @@ def health_check():
         "message": "Make.com 워크플로우 서버가 정상 작동 중입니다"
     })
 
+@app.route('/detect_black_marking', methods=['POST'])
+def detect_black_marking():
+    """검은색 마킹 감지 및 ROI 좌표 반환"""
+    try:
+        print("=== detect_black_marking 시작 ===")
+        
+        # JSON 데이터 받기
+        data = request.get_json()
+        if not data or 'image_base64' not in data:
+            return jsonify({"error": "image_base64 필드가 필요합니다"}), 400
+        
+        # Base64 이미지 디코딩
+        image_base64 = data['image_base64']
+        print(f"Base64 데이터 길이: {len(image_base64)}")
+        
+        try:
+            image_data = base64.b64decode(image_base64)
+            image_array = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                return jsonify({"error": "이미지 디코딩 실패"}), 400
+                
+        except Exception as decode_error:
+            return jsonify({"error": "Base64 디코딩 실패", "details": str(decode_error)}), 400
+        
+        print(f"이미지 크기: {image.shape}")
+        
+        # 그레이스케일로 변환 (검은색 감지에 효과적)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # 검은색 범위 정의 (0-40 정도의 매우 어두운 픽셀)
+        _, black_mask = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)
+        
+        # 노이즈 제거 및 연결
+        kernel = np.ones((7,7), np.uint8)
+        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel)
+        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
+        
+        # 윤곽선 찾기
+        contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # ROI 좌표 계산 - 가장 큰 사각형 영역만 선택
+        roi_list = []
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        
+        if contours:
+            # 가장 큰 윤곽선 찾기
+            largest_contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            
+            if area > 1000:  # 최소 면적 체크
+                x, y, w, h = cv2.boundingRect(largest_contour)
+                
+                # 여유 공간 추가 (검은색 테두리 안쪽 영역)
+                padding = 20
+                x += padding
+                y += padding
+                w -= padding * 2
+                h -= padding * 2
+                
+                # 경계 체크
+                x = max(0, x)
+                y = max(0, y)
+                w = min(w, image.shape[1] - x)
+                h = min(h, image.shape[0] - y)
+                
+                roi_list.append({
+                    "x": int(x),
+                    "y": int(y), 
+                    "width": int(w),
+                    "height": int(h),
+                    "area": int(area)
+                })
+                
+                # 마스크에 영역 추가 (inpainting용)
+                cv2.fillPoly(mask, [largest_contour], 255)
+        
+        print(f"감지된 검은색 영역 수: {len(roi_list)}")
+        if roi_list:
+            print(f"링 영역: {roi_list[0]}")
+        
+        # 마스크를 Base64로 인코딩
+        _, buffer = cv2.imencode('.png', mask)
+        mask_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "roi_coordinates": roi_list,
+            "mask_base64": mask_base64,
+            "total_markings": len(roi_list),
+            "detection_type": "black_color"
+        })
+        
+    except Exception as e:
+        print(f"detect_black_marking 에러: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "서버 에러", "details": str(e)}), 500
+
 @app.route('/detect_red_marking', methods=['POST'])
 def detect_red_marking():
-    """빨간색 마킹 감지 및 ROI 좌표 반환"""
+    """빨간색 마킹 감지 및 ROI 좌표 반환 (기존 버전)"""
     try:
         print("=== detect_red_marking 시작 ===")
         
@@ -120,86 +220,6 @@ def detect_red_marking():
         
     except Exception as e:
         print(f"detect_red_marking 에러: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": "서버 에러", "details": str(e)}), 500
-
-@app.route('/detect_black_marking', methods=['POST'])
-def detect_black_marking():
-    """검은색 마킹 감지 및 ROI 좌표 반환 (기존 버전)"""
-    try:
-        print("=== detect_black_marking 시작 ===")
-        
-        # JSON 데이터 받기
-        data = request.get_json()
-        if not data or 'image_base64' not in data:
-            return jsonify({"error": "image_base64 필드가 필요합니다"}), 400
-        
-        # Base64 이미지 디코딩
-        image_base64 = data['image_base64']
-        print(f"Base64 데이터 길이: {len(image_base64)}")
-        
-        try:
-            image_data = base64.b64decode(image_base64)
-            image_array = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                return jsonify({"error": "이미지 디코딩 실패"}), 400
-                
-        except Exception as decode_error:
-            return jsonify({"error": "Base64 디코딩 실패", "details": str(decode_error)}), 400
-        
-        print(f"이미지 크기: {image.shape}")
-        
-        # 검은색 영역 감지
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # 검은색 임계값 (0-30 정도의 매우 어두운 픽셀)
-        _, binary = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY_INV)
-        
-        # 노이즈 제거
-        kernel = np.ones((3,3), np.uint8)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-        
-        # 윤곽선 찾기
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # ROI 좌표 계산
-        roi_list = []
-        mask = np.zeros(image.shape[:2], dtype=np.uint8)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            # 최소 면적 필터 (너무 작은 노이즈 제거)
-            if area > 100:
-                x, y, w, h = cv2.boundingRect(contour)
-                roi_list.append({
-                    "x": int(x),
-                    "y": int(y), 
-                    "width": int(w),
-                    "height": int(h)
-                })
-                
-                # 마스크에 검은색 영역 추가
-                cv2.fillPoly(mask, [contour], 255)
-        
-        print(f"감지된 검은색 영역 수: {len(roi_list)}")
-        
-        # 마스크를 Base64로 인코딩
-        _, buffer = cv2.imencode('.png', mask)
-        mask_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        return jsonify({
-            "success": True,
-            "roi_coordinates": roi_list,
-            "mask_base64": mask_base64,
-            "total_markings": len(roi_list)
-        })
-        
-    except Exception as e:
-        print(f"detect_black_marking 에러: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": "서버 에러", "details": str(e)}), 500
