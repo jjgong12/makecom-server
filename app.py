@@ -489,7 +489,68 @@ def enhance_wedding_ring():
             "message": "서버 내부 오류"
         }), 500
 
-@app.route('/analyze_b001_style', methods=['POST'])
+@app.route('/enhance_wedding_ring_binary', methods=['POST'])
+def enhance_wedding_ring_binary():
+    """웨딩링 보정 - 바이너리 직접 반환 (Google Drive 업로드용)"""
+    try:
+        # 기존 enhance_wedding_ring과 동일한 처리
+        data = request.get_json(force=True)
+        if not data:
+            return "No JSON data received", 400
+        
+        # 이미지 데이터 처리 (동일)
+        if 'image_base64' in data:
+            base64_string = data['image_base64']
+            if ',' in base64_string:
+                base64_string = base64_string.split(',')[1]
+            image_data = base64.b64decode(base64_string)
+        else:
+            return "No image data found", 400
+        
+        # 이미지 처리 (동일)
+        image = Image.open(io.BytesIO(image_data))
+        print(f"Binary endpoint - Original: {image.size}")
+        
+        # 메모리 최적화
+        max_dimension = 2048
+        if max(image.size) > max_dimension:
+            ratio = max_dimension / max(image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+        
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # 웨딩링 보정 수행
+        result = enhancer.enhance_image(image=image)
+        
+        if 'error' in result:
+            return f"Enhancement failed: {result['error']}", 500
+        
+        # 바이너리 직접 반환
+        enhanced_image = result['enhanced_image']
+        output_buffer = io.BytesIO()
+        enhanced_image.save(
+            output_buffer, 
+            format='JPEG', 
+            quality=95,
+            optimize=True,
+            progressive=True
+        )
+        
+        # 바이너리 데이터 직접 반환
+        output_buffer.seek(0)
+        return output_buffer.getvalue(), 200, {
+            'Content-Type': 'image/jpeg',
+            'Content-Disposition': f'attachment; filename="enhanced_{data.get("filename", "image.jpg")}"',
+            'X-Ring-Type': result['ring_type'],
+            'X-Lighting': result['lighting'],
+            'X-Processing-Time': f"{result['processing_time']:.2f}s"
+        }
+        
+    except Exception as e:
+        print(f"Binary endpoint error: {str(e)}")
+        return f"Server error: {str(e)}", 500
 def analyze_b001_style():
     """B_001 스타일 분석 (선택적 기능)"""
     try:
