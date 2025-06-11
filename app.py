@@ -66,7 +66,18 @@ def generate_thumbnails():
     try:
         print("=== generate_thumbnails 시작 ===")
         
-        data = request.get_json()
+        # JSON 파싱 강화
+        try:
+            data = request.get_json(force=True)
+        except:
+            # JSON 파싱 실패시 raw 데이터로 처리
+            raw_data = request.get_data(as_text=True)
+            print(f"Raw 데이터 길이: {len(raw_data)}")
+            print(f"Raw 데이터 시작: {raw_data[:200]}")
+            
+            import json
+            data = json.loads(raw_data)
+        
         print(f"받은 데이터 키: {list(data.keys())}")
         
         enhanced_image = data.get('enhanced_image', '')
