@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import base64
 import io
 import cv2
@@ -33,6 +33,17 @@ def image_to_base64(image):
         return base64_string
     except Exception as e:
         print(f"Image to Base64 변환 오류: {e}")
+        return None
+
+def image_to_binary(image):
+    """PIL Image를 바이너리 BytesIO로 변환"""
+    try:
+        buffer = io.BytesIO()
+        image.save(buffer, format='JPEG', quality=95)
+        buffer.seek(0)
+        return buffer
+    except Exception as e:
+        print(f"Image to Binary 변환 오류: {e}")
         return None
 
 def detect_black_marking_in_image(image):
@@ -167,7 +178,7 @@ def detect_black_marking():
 
 @app.route('/generate_thumbnails', methods=['POST'])
 def generate_thumbnails():
-    """썸네일 생성 API (정확한 크롭)"""
+    """썸네일 생성 API (정확한 크롭) - Base64 반환"""
     try:
         # JSON 데이터 받기
         data = request.get_json()
@@ -227,6 +238,64 @@ def generate_thumbnails():
             'error': f'서버 오류: {str(e)}'
         }), 500
 
+# 🔥 새로 추가: 바이너리 파일 직접 반환 엔드포인트
+@app.route('/generate_thumbnail_binary', methods=['POST'])
+def generate_thumbnail_binary():
+    """썸네일 생성 API (정확한 크롭) - 바이너리 파일 직접 반환"""
+    try:
+        # JSON 데이터 받기
+        data = request.get_json()
+        
+        required_fields = ['enhanced_image', 'roi_coords']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'success': False,
+                    'error': f'{field} 필드가 필요합니다'
+                }), 400
+        
+        # Base64 이미지 디코딩
+        image = base64_to_image(data['enhanced_image'])
+        if image is None:
+            return jsonify({
+                'success': False,
+                'error': '이미지 디코딩에 실패했습니다'
+            }), 400
+        
+        # ROI 좌표 파싱
+        roi_coords = data['roi_coords']
+        size = data.get('size', '1000x1300')  # 기본 크기
+        
+        # 🔥 썸네일 생성
+        thumbnail = generate_thumbnail(image, roi_coords, size)
+        if thumbnail is None:
+            return jsonify({
+                'success': False,
+                'error': '썸네일 생성에 실패했습니다'
+            }), 500
+        
+        # 🔥 바이너리 데이터로 변환
+        image_buffer = image_to_binary(thumbnail)
+        if image_buffer is None:
+            return jsonify({
+                'success': False,
+                'error': '이미지 바이너리 변환에 실패했습니다'
+            }), 500
+        
+        # 🔥 바이너리 파일 직접 반환
+        return send_file(
+            image_buffer,
+            mimetype='image/jpeg',
+            as_attachment=False,
+            download_name=f'thumbnail_{size}.jpg'
+        )
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'서버 오류: {str(e)}'
+        }), 500
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """서버 상태 확인"""
@@ -240,10 +309,11 @@ def home():
     """홈페이지"""
     return jsonify({
         'service': 'Make.com 워크플로우 API 서버',
-        'version': '1.0.0',
+        'version': '2.0.0',
         'endpoints': {
             '/detect_black_marking': 'POST - 검은색 마킹 탐지 (마스크 포함)',
-            '/generate_thumbnails': 'POST - 썸네일 생성 (정확한 크롭)',
+            '/generate_thumbnails': 'POST - 썸네일 생성 (Base64 반환)',
+            '/generate_thumbnail_binary': 'POST - 썸네일 생성 (바이너리 파일 반환)',
             '/health': 'GET - 서버 상태 확인'
         }
     })
@@ -252,7 +322,8 @@ if __name__ == '__main__':
     print("🚀 Make.com 워크플로우 API 서버 시작!")
     print("📍 엔드포인트:")
     print("   POST /detect_black_marking - 검은색 마킹 탐지 (마스크 포함)")
-    print("   POST /generate_thumbnails - 썸네일 생성 (정확한 크롭)")
+    print("   POST /generate_thumbnails - 썸네일 생성 (Base64 반환)")
+    print("   POST /generate_thumbnail_binary - 썸네일 생성 (바이너리 파일 반환)")
     print("   GET  /health - 서버 상태 확인")
     print("   GET  / - 서비스 정보")
     
