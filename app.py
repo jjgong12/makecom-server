@@ -1,235 +1,308 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 import cv2
 import numpy as np
 import base64
-from PIL import Image
-import io
-import traceback
+import json
+import os
 
 app = Flask(__name__)
 
 @app.route('/health', methods=['GET'])
-def health():
-    return jsonify({"status": "healthy", "message": "Make.com 워크플로우 서버가 정상 작동 중입니다"})
+def health_check():
+    """서버 상태 확인"""
+    return jsonify({
+        "status": "healthy",
+        "message": "Make.com 워크플로우 서버가 정상 작동 중입니다"
+    })
 
 @app.route('/detect_black_marking', methods=['POST'])
 def detect_black_marking():
+    """검은색 마킹 감지 및 ROI 좌표 반환"""
     try:
-        data = request.get_json()
-        image_base64 = data['image_base64']
+        print("=== detect_black_marking 시작 ===")
         
-        # Base64 디코딩
-        image_data = base64.b64decode(image_base64)
-        nparr = np.frombuffer(image_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        # JSON 데이터 받기
+        data = request.get_json()
+        if not data or 'image_base64' not in data:
+            return jsonify({"error": "image_base64 필드가 필요합니다"}), 400
+        
+        # Base64 이미지 디코딩
+        image_base64 = data['image_base64']
+        print(f"Base64 데이터 길이: {len(image_base64)}")
+        
+        try:
+            image_data = base64.b64decode(image_base64)
+            image_array = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                return jsonify({"error": "이미지 디코딩 실패"}), 400
+                
+        except Exception as decode_error:
+            return jsonify({"error": "Base64 디코딩 실패", "details": str(decode_error)}), 400
+        
+        print(f"이미지 크기: {image.shape}")
         
         # 검은색 영역 감지
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        _, binary = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+        
+        # 검은색 임계값 (0-30 정도의 매우 어두운 픽셀)
+        _, binary = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY_INV)
+        
+        # 노이즈 제거
+        kernel = np.ones((3,3), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        
+        # 윤곽선 찾기
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # 마스크 생성
-        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        # ROI 좌표 계산
         roi_list = []
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
         
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > 1000:  # 최소 크기 필터
+            # 최소 면적 필터 (너무 작은 노이즈 제거)
+            if area > 100:
                 x, y, w, h = cv2.boundingRect(contour)
                 roi_list.append({
-                    "x": int(x), 
+                    "x": int(x),
                     "y": int(y), 
-                    "width": int(w), 
-                    "height": int(h),
-                    "area": int(area)
+                    "width": int(w),
+                    "height": int(h)
                 })
+                
+                # 마스크에 검은색 영역 추가
                 cv2.fillPoly(mask, [contour], 255)
+        
+        print(f"감지된 검은색 영역 수: {len(roi_list)}")
         
         # 마스크를 Base64로 인코딩
         _, buffer = cv2.imencode('.png', mask)
         mask_base64 = base64.b64encode(buffer).decode('utf-8')
         
         return jsonify({
+            "success": True,
             "roi_coordinates": roi_list,
             "mask_base64": mask_base64,
-            "success": True,
             "total_markings": len(roi_list)
         })
         
     except Exception as e:
-        print(f"detect_black_marking 에러: {str(e)}")
-        print(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+        print(f"detect_black_marking 에러: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "서버 에러", "details": str(e)}), 500
 
 @app.route('/generate_thumbnails', methods=['POST'])
 def generate_thumbnails():
+    """ROI 기반 썸네일 생성"""
     try:
         print("=== generate_thumbnails 시작 ===")
         
-        # JSON 파싱 강화
+        # 강화된 JSON 파싱
+        raw_data = request.get_data(as_text=True)
+        print(f"Raw 데이터 길이: {len(raw_data)}")
+        print(f"Raw 데이터 시작: {raw_data[:100]}")
+        
+        # 여러 방법으로 JSON 파싱 시도
+        data = None
+        
+        # 방법 1: 기본 JSON 파싱
         try:
-            data = request.get_json(force=True)
-        except:
-            # JSON 파싱 실패시 raw 데이터로 처리
-            raw_data = request.get_data(as_text=True)
-            print(f"Raw 데이터 길이: {len(raw_data)}")
-            print(f"Raw 데이터 시작: {raw_data[:200]}")
-            
-            import json
             data = json.loads(raw_data)
+        except json.JSONDecodeError as e:
+            print(f"기본 JSON 파싱 실패: {e}")
+            
+            # 방법 2: 정규표현식으로 필드 추출
+            import re
+            try:
+                # enhanced_image 필드 추출
+                enhanced_image_match = re.search(r'"enhanced_image":\s*"([^"]+)"', raw_data)
+                roi_coords_match = re.search(r'"roi_coords":\s*(\{[^}]+\})', raw_data)
+                sizes_match = re.search(r'"sizes":\s*(\[[^\]]+\])', raw_data)
+                
+                if enhanced_image_match:
+                    data = {
+                        "enhanced_image": enhanced_image_match.group(1),
+                        "roi_coords": json.loads(roi_coords_match.group(1)) if roi_coords_match else {},
+                        "sizes": json.loads(sizes_match.group(1)) if sizes_match else ["1000x1300"]
+                    }
+                    print("정규표현식 파싱 성공!")
+                    
+            except Exception as regex_error:
+                print(f"정규표현식 파싱도 실패: {regex_error}")
+                return jsonify({"error": "JSON 파싱 불가능", "details": str(e)}), 400
         
-        print(f"받은 데이터 키: {list(data.keys())}")
+        if not data:
+            return jsonify({"error": "모든 JSON 파싱 방법 실패"}), 400
+            
+        print(f"파싱된 데이터 키들: {list(data.keys())}")
         
-        enhanced_image = data.get('enhanced_image', '')
+        # 필드 추출
+        enhanced_image_b64 = data.get('enhanced_image', '')
         roi_coords = data.get('roi_coords', {})
         sizes = data.get('sizes', ['1000x1300'])
         
-        print(f"enhanced_image 길이: {len(enhanced_image)}")
-        print(f"roi_coords 타입: {type(roi_coords)}, 값: {roi_coords}")
-        print(f"sizes: {sizes}")
-        
-        # ROI 좌표 처리 - 배열인지 객체인지 확인
-        if isinstance(roi_coords, list):
-            if len(roi_coords) > 0:
-                roi = roi_coords[0]
-            else:
-                return jsonify({"error": "ROI 좌표 배열이 비어있습니다"}), 400
-        else:
-            roi = roi_coords
-        
-        print(f"사용할 ROI: {roi}")
-        
-        # 필수 키 확인
-        required_keys = ['x', 'y', 'width', 'height']
-        for key in required_keys:
-            if key not in roi:
-                return jsonify({"error": f"ROI에 {key} 필드가 없습니다"}), 400
+        if not enhanced_image_b64:
+            return jsonify({"error": "enhanced_image 필드가 필요합니다"}), 400
         
         # Base64 디코딩
-        if not enhanced_image:
-            return jsonify({"error": "enhanced_image가 비어있습니다"}), 400
-            
         try:
-            image_data = base64.b64decode(enhanced_image)
-            nparr = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            image_data = base64.b64decode(enhanced_image_b64)
+            image_array = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                return jsonify({"error": "이미지 디코딩 실패"}), 400
+                
         except Exception as decode_error:
-            print(f"이미지 디코딩 에러: {decode_error}")
-            return jsonify({"error": f"이미지 디코딩 실패: {decode_error}"}), 400
-        
-        if image is None:
-            return jsonify({"error": "이미지 디코딩 결과가 None입니다"}), 400
+            return jsonify({"error": "Base64 디코딩 실패", "details": str(decode_error)}), 400
         
         print(f"원본 이미지 크기: {image.shape}")
         
-        # ROI 좌표로 크롭
-        x = int(roi['x'])
-        y = int(roi['y'])
-        w = int(roi['width'])
-        h = int(roi['height'])
-        
-        print(f"원래 ROI: x={x}, y={y}, w={w}, h={h}")
-        
-        # 경계 확인 및 조정
-        img_height, img_width = image.shape[:2]
-        x = max(0, min(x, img_width - 1))
-        y = max(0, min(y, img_height - 1))
-        w = max(1, min(w, img_width - x))
-        h = max(1, min(h, img_height - y))
-        
-        print(f"조정된 ROI: x={x}, y={y}, w={w}, h={h}")
-        print(f"이미지 크기: width={img_width}, height={img_height}")
-        
-        if w <= 0 or h <= 0:
-            return jsonify({"error": f"잘못된 ROI 크기: width={w}, height={h}"}), 400
-        
-        # 크롭 실행
-        try:
-            cropped = image[y:y+h, x:x+w]
-            print(f"크롭된 이미지 크기: {cropped.shape}")
-        except Exception as crop_error:
-            print(f"크롭 에러: {crop_error}")
-            return jsonify({"error": f"크롭 실패: {crop_error}"}), 400
+        # ROI 크롭
+        if roi_coords and all(k in roi_coords for k in ['x', 'y', 'width', 'height']):
+            x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['width'], roi_coords['height']
+            
+            # 이미지 경계 체크
+            img_h, img_w = image.shape[:2]
+            x = max(0, min(x, img_w - 1))
+            y = max(0, min(y, img_h - 1))
+            w = min(w, img_w - x)
+            h = min(h, img_h - y)
+            
+            print(f"크롭 좌표: x={x}, y={y}, w={w}, h={h}")
+            cropped_image = image[y:y+h, x:x+w]
+            print(f"크롭된 이미지 크기: {cropped_image.shape}")
+        else:
+            print("ROI 좌표 없음 - 전체 이미지 사용")
+            cropped_image = image
         
         # 썸네일 생성
         thumbnails = {}
         for size in sizes:
             try:
                 width, height = map(int, size.split('x'))
-                resized = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                resized = cv2.resize(cropped_image, (width, height), interpolation=cv2.INTER_LANCZOS4)
                 
-                _, buffer = cv2.imencode('.jpg', resized, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                thumbnail_base64 = base64.b64encode(buffer).decode('utf-8')
-                thumbnails[f'thumbnail_{size}'] = thumbnail_base64
+                # 품질 높은 JPEG 인코딩
+                encode_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+                _, buffer = cv2.imencode('.jpg', resized, encode_params)
                 
-                print(f"썸네일 {size} 생성 완료")
+                thumbnail_b64 = base64.b64encode(buffer).decode('utf-8')
+                thumbnails[f'thumbnail_{size}'] = thumbnail_b64
+                
             except Exception as thumb_error:
-                print(f"썸네일 {size} 생성 에러: {thumb_error}")
-                continue
+                print(f"썸네일 {size} 생성 실패: {thumb_error}")
         
-        print("=== generate_thumbnails 완료 ===")
-        
+        print("=== generate_thumbnails 성공 ===")
         return jsonify({
-            "thumbnails": thumbnails,
             "success": True,
-            "roi_used": roi,
-            "original_image_size": f"{img_width}x{img_height}",
-            "cropped_size": f"{w}x{h}"
+            "thumbnails": thumbnails,
+            "roi_used": roi_coords,
+            "original_size": f"{image.shape[1]}x{image.shape[0]}",
+            "cropped_size": f"{cropped_image.shape[1]}x{cropped_image.shape[0]}"
         })
         
     except Exception as e:
-        print(f"generate_thumbnails 전체 에러: {str(e)}")
-        print(traceback.format_exc())
-        return jsonify({"error": f"서버 에러: {str(e)}", "traceback": traceback.format_exc()}), 500
+        print(f"generate_thumbnails 전체 에러: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": "서버 에러", "details": str(e)}), 500
 
 @app.route('/generate_thumbnail_binary', methods=['POST'])
 def generate_thumbnail_binary():
+    """ROI 크롭 후 바이너리 파일 직접 반환"""
     try:
-        data = request.get_json()
-        enhanced_image = data['enhanced_image']
-        roi_coords = data['roi_coords']
-        size = data.get('size', '1000x1300')
+        print("=== generate_thumbnail_binary 시작 ===")
         
-        # ROI 좌표 처리
-        if isinstance(roi_coords, list):
-            roi = roi_coords[0] if len(roi_coords) > 0 else {}
-        else:
-            roi = roi_coords
+        # JSON 데이터 받기
+        data = request.get_json()
+        if not data:
+            print("JSON 데이터 없음")
+            return "JSON 데이터가 필요합니다", 400
+            
+        print(f"받은 데이터 키들: {list(data.keys())}")
+        
+        enhanced_image_b64 = data.get('enhanced_image', '')
+        roi_coords = data.get('roi_coords', {})
+        
+        if not enhanced_image_b64:
+            print("enhanced_image 필드 없음")
+            return "enhanced_image 필드가 필요합니다", 400
+        
+        print(f"Base64 데이터 길이: {len(enhanced_image_b64)}")
+        print(f"ROI 좌표: {roi_coords}")
         
         # Base64 디코딩
-        image_data = base64.b64decode(enhanced_image)
-        nparr = np.frombuffer(image_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        try:
+            image_data = base64.b64decode(enhanced_image_b64)
+            image_array = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                print("이미지 디코딩 실패")
+                return "이미지 디코딩 실패", 400
+                
+            print(f"원본 이미지 크기: {image.shape}")
+            
+        except Exception as decode_error:
+            print(f"Base64 디코딩 에러: {decode_error}")
+            return f"Base64 디코딩 실패: {str(decode_error)}", 400
         
-        if image is None:
-            return jsonify({"error": "이미지 디코딩 실패"}), 500
+        # ROI 크롭
+        if roi_coords and all(k in roi_coords for k in ['x', 'y', 'width', 'height']):
+            x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['width'], roi_coords['height']
+            
+            # 경계 체크
+            img_h, img_w = image.shape[:2]
+            x = max(0, min(x, img_w - 1))
+            y = max(0, min(y, img_h - 1))
+            w = min(w, img_w - x)
+            h = min(h, img_h - y)
+            
+            print(f"크롭 좌표: x={x}, y={y}, w={w}, h={h}")
+            cropped_image = image[y:y+h, x:x+w]
+            print(f"크롭된 이미지 크기: {cropped_image.shape}")
+        else:
+            print("ROI 좌표 없음 - 전체 이미지 사용")
+            cropped_image = image
         
-        # ROI 좌표로 크롭
-        x, y, w, h = int(roi['x']), int(roi['y']), int(roi['width']), int(roi['height'])
+        # 1000x1300으로 리사이즈
+        resized = cv2.resize(cropped_image, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
+        print(f"리사이즈된 이미지 크기: {resized.shape}")
         
-        # 경계 확인
-        x = max(0, x)
-        y = max(0, y)
-        w = min(w, image.shape[1] - x)
-        h = min(h, image.shape[0] - y)
+        # 고품질 JPEG로 인코딩
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+        success, buffer = cv2.imencode('.jpg', resized, encode_params)
         
-        cropped = image[y:y+h, x:x+w]
+        if not success:
+            print("JPEG 인코딩 실패")
+            return "JPEG 인코딩 실패", 500
         
-        # 리사이즈
-        width, height = map(int, size.split('x'))
-        resized = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        print(f"인코딩된 이미지 크기: {len(buffer)} bytes")
         
-        # 바이너리 반환
-        _, buffer = cv2.imencode('.jpg', resized, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        
-        return send_file(
-            io.BytesIO(buffer.tobytes()),
+        # 바이너리 직접 반환
+        response = app.response_class(
+            buffer.tobytes(),
             mimetype='image/jpeg',
-            as_attachment=False
+            headers={
+                'Content-Disposition': 'attachment; filename=thumbnail.jpg',
+                'Content-Length': str(len(buffer))
+            }
         )
         
+        print("=== generate_thumbnail_binary 성공 ===")
+        return response
+        
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"generate_thumbnail_binary 전체 에러: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"서버 에러: {str(e)}", 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=True)
