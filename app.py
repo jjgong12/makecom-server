@@ -3,461 +3,572 @@ import cv2
 import numpy as np
 import base64
 import json
-import os
-import re
+from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
+import io
+from PIL import Image
+import logging
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+class WeddingRingEnhancer:
+    """Claude 분석 기반 웨딩링 보정 엔진"""
+    
+    def __init__(self):
+        # 기본 파라미터 (Claude 분석 후 업데이트 예정)
+        self.default_params = {
+            'brightness': 1.2,
+            'contrast': 1.1,
+            'warmth': 1.05,
+            'saturation': 1.0,
+            'sharpness': 1.3,
+            'clarity': 1.1,
+            'gamma': 1.1
+        }
+        
+        # 링 타입별 특화 파라미터
+        self.ring_specific_params = {
+            'gold': {
+                'warmth': 1.15,
+                'brightness': 1.2,
+                'saturation': 1.1
+            },
+            'silver': {
+                'warmth': 0.95,
+                'brightness': 1.25,
+                'clarity': 1.2
+            },
+            'rose_gold': {
+                'warmth': 1.1,
+                'brightness': 1.15,
+                'saturation': 1.05
+            },
+            'platinum': {
+                'warmth': 1.0,
+                'brightness': 1.2,
+                'clarity': 1.25
+            }
+        }
+        
+        # 학습 데이터 저장
+        self.learning_data = []
+    
+    def detect_ring_type(self, image):
+        """링 타입 자동 감지"""
+        try:
+            # HSV 색상 공간으로 변환
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            
+            # 색상 히스토그램 분석
+            hist_h = cv2.calcHist([hsv], [0], None, [180], [0, 180])
+            hist_s = cv2.calcHist([hsv], [1], None, [256], [0, 256])
+            
+            # 채도 평균
+            avg_saturation = np.mean(hsv[:,:,1])
+            
+            # 주요 색상 범위 분석
+            yellow_range = np.sum(hist_h[15:35])  # 노란색 계열
+            red_range = np.sum(hist_h[0:15])      # 빨간색 계열
+            
+            # 분류 로직
+            if avg_saturation < 50:
+                return 'silver' if np.mean(hsv[:,:,2]) > 100 else 'platinum'
+            elif yellow_range > red_range:
+                return 'gold'
+            elif red_range > 0:
+                return 'rose_gold'
+            else:
+                return 'unknown'
+                
+        except Exception as e:
+            logger.error(f"Ring type detection failed: {e}")
+            return 'unknown'
+    
+    def detect_lighting_condition(self, image):
+        """조명 환경 감지"""
+        try:
+            # 색온도 추정
+            b, g, r = cv2.split(image)
+            
+            avg_r = np.mean(r)
+            avg_b = np.mean(b)
+            
+            # R/B 비율로 색온도 추정
+            if avg_r / avg_b > 1.2:
+                return 'warm'  # 따뜻한 조명 (텅스텐)
+            elif avg_r / avg_b < 0.8:
+                return 'cool'  # 차가운 조명 (형광등)
+            else:
+                return 'natural'  # 자연광
+                
+        except Exception as e:
+            logger.error(f"Lighting detection failed: {e}")
+            return 'unknown'
+    
+    def enhance(self, image, custom_params=None, ring_type=None):
+        """메인 보정 함수"""
+        try:
+            # 링 타입 자동 감지 (제공되지 않은 경우)
+            if ring_type is None:
+                ring_type = self.detect_ring_type(image)
+            
+            # 조명 환경 감지
+            lighting = self.detect_lighting_condition(image)
+            
+            # 파라미터 결정
+            if custom_params:
+                params = custom_params
+            else:
+                params = self.get_optimal_params(ring_type, lighting)
+            
+            # 단계별 보정 실행
+            enhanced = self._prepare_image(image)
+            enhanced = self._adjust_brightness_contrast(enhanced, params)
+            enhanced = self._adjust_warmth(enhanced, params)
+            enhanced = self._adjust_saturation(enhanced, params)
+            enhanced = self._enhance_sharpness(enhanced, params)
+            enhanced = self._enhance_clarity(enhanced, params)
+            enhanced = self._apply_gamma_correction(enhanced, params)
+            
+            return enhanced, params, ring_type, lighting
+            
+        except Exception as e:
+            logger.error(f"Enhancement failed: {e}")
+            return image, self.default_params, 'unknown', 'unknown'
+    
+    def get_optimal_params(self, ring_type, lighting):
+        """최적 파라미터 조합 계산"""
+        # 기본 파라미터에서 시작
+        params = self.default_params.copy()
+        
+        # 링 타입별 조정
+        if ring_type in self.ring_specific_params:
+            ring_params = self.ring_specific_params[ring_type]
+            for key, value in ring_params.items():
+                params[key] = value
+        
+        # 조명별 미세 조정
+        if lighting == 'warm':
+            params['warmth'] *= 0.9  # 따뜻한 조명에서는 warmth 줄이기
+        elif lighting == 'cool':
+            params['warmth'] *= 1.1  # 차가운 조명에서는 warmth 높이기
+        
+        return params
+    
+    def _prepare_image(self, image):
+        """이미지 전처리"""
+        return cv2.convertScaleAbs(image)
+    
+    def _adjust_brightness_contrast(self, image, params):
+        """밝기/대비 조정"""
+        brightness = params.get('brightness', 1.0)
+        contrast = params.get('contrast', 1.0)
+        
+        # alpha: 대비, beta: 밝기
+        alpha = contrast
+        beta = (brightness - 1.0) * 30
+        
+        adjusted = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
+        return np.clip(adjusted, 0, 255).astype(np.uint8)
+    
+    def _adjust_warmth(self, image, params):
+        """색온도 조정"""
+        warmth = params.get('warmth', 1.0)
+        
+        if abs(warmth - 1.0) < 0.01:
+            return image
+        
+        b, g, r = cv2.split(image.astype(np.float32))
+        
+        if warmth > 1.0:  # 따뜻하게
+            r = np.clip(r * warmth, 0, 255)
+            b = np.clip(b * (2.0 - warmth), 0, 255)
+        else:  # 차갑게
+            r = np.clip(r * warmth, 0, 255)
+            b = np.clip(b * (2.0 - warmth), 0, 255)
+        
+        return cv2.merge([b, g, r]).astype(np.uint8)
+    
+    def _adjust_saturation(self, image, params):
+        """채도 조정"""
+        saturation = params.get('saturation', 1.0)
+        
+        if abs(saturation - 1.0) < 0.01:
+            return image
+        
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[:,:,1] = np.clip(hsv[:,:,1] * saturation, 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    
+    def _enhance_sharpness(self, image, params):
+        """선명도 향상 (언샤프 마스킹)"""
+        sharpness = params.get('sharpness', 1.0)
+        
+        if abs(sharpness - 1.0) < 0.01:
+            return image
+        
+        # 가우시안 블러 적용
+        sigma = max(0.5, 2.0 - sharpness)
+        gaussian = cv2.GaussianBlur(image, (0, 0), sigma)
+        
+        # 언샤프 마스킹
+        amount = sharpness
+        unsharp = cv2.addWeighted(image, 1 + amount, gaussian, -amount, 0)
+        
+        return np.clip(unsharp, 0, 255).astype(np.uint8)
+    
+    def _enhance_clarity(self, image, params):
+        """국지적 대비 향상 (CLAHE)"""
+        clarity = params.get('clarity', 1.0)
+        
+        if abs(clarity - 1.0) < 0.01:
+            return image
+        
+        # LAB 색공간으로 변환
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        
+        # L 채널에 CLAHE 적용
+        clip_limit = max(1.0, clarity * 2.0)
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8,8))
+        lab[:,:,0] = clahe.apply(lab[:,:,0])
+        
+        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    
+    def _apply_gamma_correction(self, image, params):
+        """감마 보정"""
+        gamma = params.get('gamma', 1.0)
+        
+        if abs(gamma - 1.0) < 0.01:
+            return image
+        
+        # 감마 보정 룩업 테이블 생성
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+        
+        return cv2.LUT(image, table)
+
+# 글로벌 인스턴스
+enhancer = WeddingRingEnhancer()
+
+# 구글시트 연동 (선택사항 - 크리덴셜 파일 필요)
+def init_google_sheets():
+    """구글시트 초기화 (크리덴셜 파일이 있는 경우)"""
+    try:
+        # service_account.json 파일이 있는 경우
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_file('service_account.json', scopes=scope)
+        client = gspread.authorize(creds)
+        return client.open('Wedding_Ring_Enhancement_Data').sheet1
+    except:
+        logger.warning("Google Sheets not initialized - using local storage")
+        return None
+
+# 구글시트 인스턴스 (선택사항)
+try:
+    sheet = init_google_sheets()
+except:
+    sheet = None
+
+def log_enhancement_data(image_id, params, ring_type, lighting, quality_score=None, user_satisfaction=None):
+    """보정 데이터 로깅"""
+    log_data = {
+        'timestamp': datetime.now().isoformat(),
+        'image_id': image_id,
+        'ring_type': ring_type,
+        'lighting': lighting,
+        'brightness': params.get('brightness'),
+        'contrast': params.get('contrast'),
+        'warmth': params.get('warmth'),
+        'saturation': params.get('saturation'),
+        'sharpness': params.get('sharpness'),
+        'clarity': params.get('clarity'),
+        'gamma': params.get('gamma'),
+        'quality_score': quality_score,
+        'user_satisfaction': user_satisfaction
+    }
+    
+    # 구글시트에 저장 (가능한 경우)
+    if sheet:
+        try:
+            row = [
+                log_data['timestamp'], log_data['image_id'], log_data['ring_type'],
+                log_data['lighting'], log_data['brightness'], log_data['contrast'],
+                log_data['warmth'], log_data['saturation'], log_data['sharpness'],
+                log_data['clarity'], log_data['gamma'], log_data['quality_score'],
+                log_data['user_satisfaction']
+            ]
+            sheet.append_row(row)
+        except Exception as e:
+            logger.error(f"Failed to log to Google Sheets: {e}")
+    
+    # 로컬에도 저장
+    enhancer.learning_data.append(log_data)
+    
+    return log_data
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """서버 상태 확인"""
     return jsonify({
         "status": "healthy",
-        "message": "Make.com 워크플로우 서버가 정상 작동 중입니다"
+        "message": "Claude 분석 기반 웨딩링 보정 서버 가동 중",
+        "version": "1.0.0",
+        "total_processed": len(enhancer.learning_data)
     })
 
-@app.route('/detect_black_marking', methods=['POST'])
-def detect_black_marking():
-    """검은색 마킹 감지 및 ROI 좌표 반환"""
+@app.route('/enhance_wedding_ring', methods=['POST'])
+def enhance_wedding_ring():
+    """웨딩링 이미지 보정 메인 API"""
     try:
-        print("=== detect_black_marking 시작 ===")
-        
-        # JSON 데이터 받기
         data = request.get_json()
-        if not data or 'image_base64' not in data:
+        
+        # 필수 데이터 확인
+        if 'image_base64' not in data:
             return jsonify({"error": "image_base64 필드가 필요합니다"}), 400
         
-        # Base64 이미지 디코딩
-        image_base64 = data['image_base64']
-        print(f"Base64 데이터 길이: {len(image_base64)}")
-        
+        # 이미지 디코딩
         try:
-            image_data = base64.b64decode(image_base64)
-            image_array = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            image_data = base64.b64decode(data['image_base64'])
+            image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
             
             if image is None:
                 return jsonify({"error": "이미지 디코딩 실패"}), 400
                 
-        except Exception as decode_error:
-            return jsonify({"error": "Base64 디코딩 실패", "details": str(decode_error)}), 400
+        except Exception as e:
+            return jsonify({"error": f"이미지 처리 실패: {str(e)}"}), 400
         
-        print(f"이미지 크기: {image.shape}")
+        # 메타데이터 추출
+        image_id = data.get('image_id', f'img_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+        custom_params = data.get('custom_parameters', None)
+        ring_type = data.get('ring_type', None)
         
-        # 그레이스케일로 변환 (검은색 감지에 효과적)
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # 검은색 범위 정의 (0-40 정도의 매우 어두운 픽셀)
-        _, black_mask = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY_INV)
-        
-        # 노이즈 제거 및 연결
-        kernel = np.ones((7,7), np.uint8)
-        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel)
-        black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
-        
-        # 윤곽선 찾기
-        contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # ROI 좌표 계산 - 가장 큰 사각형 영역만 선택
-        roi_list = []
-        mask = np.zeros(image.shape[:2], dtype=np.uint8)
-        
-        if contours:
-            # 가장 큰 윤곽선 찾기
-            largest_contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
-            
-            if area > 1000:  # 최소 면적 체크
-                x, y, w, h = cv2.boundingRect(largest_contour)
-                
-                # 여유 공간 추가 (검은색 테두리 안쪽 영역)
-                padding = 20
-                x += padding
-                y += padding
-                w -= padding * 2
-                h -= padding * 2
-                
-                # 경계 체크
-                x = max(0, x)
-                y = max(0, y)
-                w = min(w, image.shape[1] - x)
-                h = min(h, image.shape[0] - y)
-                
-                roi_list.append({
-                    "x": int(x),
-                    "y": int(y), 
-                    "width": int(w),
-                    "height": int(h),
-                    "area": int(area)
-                })
-                
-                # 마스크에 영역 추가 (inpainting용)
-                cv2.fillPoly(mask, [largest_contour], 255)
-        
-        print(f"감지된 검은색 영역 수: {len(roi_list)}")
-        if roi_list:
-            print(f"링 영역: {roi_list[0]}")
-        
-        # 마스크를 Base64로 인코딩
-        _, buffer = cv2.imencode('.png', mask)
-        mask_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        return jsonify({
-            "success": True,
-            "roi_coordinates": roi_list,
-            "mask_base64": mask_base64,
-            "total_markings": len(roi_list),
-            "detection_type": "black_color"
-        })
-        
-    except Exception as e:
-        print(f"detect_black_marking 에러: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": "서버 에러", "details": str(e)}), 500
-
-@app.route('/detect_red_marking', methods=['POST'])
-def detect_red_marking():
-    """빨간색 마킹 감지 및 ROI 좌표 반환 (기존 버전)"""
-    try:
-        print("=== detect_red_marking 시작 ===")
-        
-        # JSON 데이터 받기
-        data = request.get_json()
-        if not data or 'image_base64' not in data:
-            return jsonify({"error": "image_base64 필드가 필요합니다"}), 400
-        
-        # Base64 이미지 디코딩
-        image_base64 = data['image_base64']
-        print(f"Base64 데이터 길이: {len(image_base64)}")
-        
-        try:
-            image_data = base64.b64decode(image_base64)
-            image_array = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                return jsonify({"error": "이미지 디코딩 실패"}), 400
-                
-        except Exception as decode_error:
-            return jsonify({"error": "Base64 디코딩 실패", "details": str(decode_error)}), 400
-        
-        print(f"이미지 크기: {image.shape}")
-        
-        # HSV 색공간으로 변환 (빨간색 감지에 더 효과적)
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        
-        # 빨간색 범위 정의 (HSV) - #ff0000에 최적화
-        lower_red1 = np.array([0, 100, 100])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 100, 100])
-        upper_red2 = np.array([180, 255, 255])
-        
-        # 빨간색 마스크 생성
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        red_mask = mask1 + mask2
-        
-        # 노이즈 제거 및 연결
-        kernel = np.ones((7,7), np.uint8)
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
-        
-        # 윤곽선 찾기
-        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # ROI 좌표 계산 - 가장 큰 사각형 영역만 선택
-        roi_list = []
-        mask = np.zeros(image.shape[:2], dtype=np.uint8)
-        
-        if contours:
-            # 가장 큰 윤곽선 찾기
-            largest_contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
-            
-            if area > 1000:  # 최소 면적 체크
-                x, y, w, h = cv2.boundingRect(largest_contour)
-                
-                # 여유 공간 추가 (빨간색 테두리 안쪽 영역)
-                padding = 20
-                x += padding
-                y += padding
-                w -= padding * 2
-                h -= padding * 2
-                
-                # 경계 체크
-                x = max(0, x)
-                y = max(0, y)
-                w = min(w, image.shape[1] - x)
-                h = min(h, image.shape[0] - y)
-                
-                roi_list.append({
-                    "x": int(x),
-                    "y": int(y), 
-                    "width": int(w),
-                    "height": int(h),
-                    "area": int(area)
-                })
-                
-                # 마스크에 영역 추가 (inpainting용)
-                cv2.fillPoly(mask, [largest_contour], 255)
-        
-        print(f"감지된 빨간색 영역 수: {len(roi_list)}")
-        if roi_list:
-            print(f"링 영역: {roi_list[0]}")
-        
-        # 마스크를 Base64로 인코딩
-        _, buffer = cv2.imencode('.png', mask)
-        mask_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        return jsonify({
-            "success": True,
-            "roi_coordinates": roi_list,
-            "mask_base64": mask_base64,
-            "total_markings": len(roi_list),
-            "detection_type": "red_color"
-        })
-        
-    except Exception as e:
-        print(f"detect_red_marking 에러: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": "서버 에러", "details": str(e)}), 500
-
-@app.route('/generate_thumbnails', methods=['POST'])
-def generate_thumbnails():
-    """ROI 기반 썸네일 생성 (강화된 JSON 파싱)"""
-    try:
-        print("=== generate_thumbnails 시작 ===")
-        
-        # 강화된 JSON 파싱
-        raw_data = request.get_data(as_text=True)
-        print(f"Raw 데이터 길이: {len(raw_data)}")
-        print(f"Raw 데이터 시작: {raw_data[:100]}")
-        
-        # 여러 방법으로 JSON 파싱 시도
-        data = None
-        
-        # 방법 1: 기본 JSON 파싱
-        try:
-            data = json.loads(raw_data)
-        except json.JSONDecodeError as e:
-            print(f"기본 JSON 파싱 실패: {e}")
-            
-            # 방법 2: 정규표현식으로 필드 추출
-            try:
-                # enhanced_image 필드 추출
-                enhanced_image_match = re.search(r'"enhanced_image":\s*"([^"]+)"', raw_data)
-                roi_coords_match = re.search(r'"roi_coords":\s*(\{[^}]+\})', raw_data)
-                sizes_match = re.search(r'"sizes":\s*(\[[^\]]+\])', raw_data)
-                
-                if enhanced_image_match:
-                    data = {
-                        "enhanced_image": enhanced_image_match.group(1),
-                        "roi_coords": json.loads(roi_coords_match.group(1)) if roi_coords_match else {},
-                        "sizes": json.loads(sizes_match.group(1)) if sizes_match else ["1000x1300"]
-                    }
-                    print("정규표현식 파싱 성공!")
-                    
-            except Exception as regex_error:
-                print(f"정규표현식 파싱도 실패: {regex_error}")
-                return jsonify({"error": "JSON 파싱 불가능", "details": str(e)}), 400
-        
-        if not data:
-            return jsonify({"error": "모든 JSON 파싱 방법 실패"}), 400
-            
-        print(f"파싱된 데이터 키들: {list(data.keys())}")
-        
-        # 필드 추출
-        enhanced_image_b64 = data.get('enhanced_image', '')
-        roi_coords = data.get('roi_coords', {})
-        sizes = data.get('sizes', ['1000x1300'])
-        
-        if not enhanced_image_b64:
-            return jsonify({"error": "enhanced_image 필드가 필요합니다"}), 400
-        
-        # Base64 디코딩
-        try:
-            image_data = base64.b64decode(enhanced_image_b64)
-            image_array = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                return jsonify({"error": "이미지 디코딩 실패"}), 400
-                
-        except Exception as decode_error:
-            return jsonify({"error": "Base64 디코딩 실패", "details": str(decode_error)}), 400
-        
-        print(f"원본 이미지 크기: {image.shape}")
-        
-        # ROI 크롭
-        if roi_coords and all(k in roi_coords for k in ['x', 'y', 'width', 'height']):
-            x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['width'], roi_coords['height']
-            
-            # 이미지 경계 체크
-            img_h, img_w = image.shape[:2]
-            x = max(0, min(x, img_w - 1))
-            y = max(0, min(y, img_h - 1))
-            w = min(w, img_w - x)
-            h = min(h, img_h - y)
-            
-            print(f"크롭 좌표: x={x}, y={y}, w={w}, h={h}")
-            cropped_image = image[y:y+h, x:x+w]
-            print(f"크롭된 이미지 크기: {cropped_image.shape}")
-        else:
-            print("ROI 좌표 없음 - 전체 이미지 사용")
-            cropped_image = image
-        
-        # 썸네일 생성
-        thumbnails = {}
-        for size in sizes:
-            try:
-                width, height = map(int, size.split('x'))
-                resized = cv2.resize(cropped_image, (width, height), interpolation=cv2.INTER_LANCZOS4)
-                
-                # 품질 높은 JPEG 인코딩
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
-                _, buffer = cv2.imencode('.jpg', resized, encode_params)
-                
-                thumbnail_b64 = base64.b64encode(buffer).decode('utf-8')
-                thumbnails[f'thumbnail_{size}'] = thumbnail_b64
-                
-            except Exception as thumb_error:
-                print(f"썸네일 {size} 생성 실패: {thumb_error}")
-        
-        print("=== generate_thumbnails 성공 ===")
-        return jsonify({
-            "success": True,
-            "thumbnails": thumbnails,
-            "roi_used": roi_coords,
-            "original_size": f"{image.shape[1]}x{image.shape[0]}",
-            "cropped_size": f"{cropped_image.shape[1]}x{cropped_image.shape[0]}"
-        })
-        
-    except Exception as e:
-        print(f"generate_thumbnails 전체 에러: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": "서버 에러", "details": str(e)}), 500
-
-@app.route('/generate_thumbnail_binary', methods=['POST'])
-def generate_thumbnail_binary():
-    """ROI 크롭 후 바이너리 파일 직접 반환 (강화된 JSON 파싱)"""
-    try:
-        print("=== generate_thumbnail_binary 시작 ===")
-        
-        # 강화된 JSON 파싱 (generate_thumbnails와 동일)
-        raw_data = request.get_data(as_text=True)
-        print(f"Raw 데이터 길이: {len(raw_data)}")
-        print(f"Raw 데이터 시작: {raw_data[:100]}")
-        
-        # 여러 방법으로 JSON 파싱 시도
-        data = None
-        
-        # 방법 1: 기본 JSON 파싱
-        try:
-            data = json.loads(raw_data)
-        except json.JSONDecodeError as e:
-            print(f"기본 JSON 파싱 실패: {e}")
-            
-            # 방법 2: 정규표현식으로 필드 추출
-            try:
-                enhanced_image_match = re.search(r'"enhanced_image":\s*"([^"]+)"', raw_data)
-                roi_coords_match = re.search(r'"roi_coords":\s*(\{[^}]+\})', raw_data)
-                
-                if enhanced_image_match:
-                    data = {
-                        "enhanced_image": enhanced_image_match.group(1),
-                        "roi_coords": json.loads(roi_coords_match.group(1)) if roi_coords_match else {}
-                    }
-                    print("정규표현식 파싱 성공!")
-                    
-            except Exception as regex_error:
-                print(f"정규표현식 파싱도 실패: {regex_error}")
-                return "JSON 파싱 불가능", 400
-        
-        if not data:
-            return "모든 JSON 파싱 방법 실패", 400
-            
-        print(f"파싱된 데이터 키들: {list(data.keys())}")
-        
-        enhanced_image_b64 = data.get('enhanced_image', '')
-        roi_coords = data.get('roi_coords', {})
-        
-        if not enhanced_image_b64:
-            print("enhanced_image 필드 없음")
-            return "enhanced_image 필드가 필요합니다", 400
-        
-        print(f"Base64 데이터 길이: {len(enhanced_image_b64)}")
-        print(f"ROI 좌표: {roi_coords}")
-        
-        # Base64 디코딩
-        try:
-            image_data = base64.b64decode(enhanced_image_b64)
-            image_array = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                print("이미지 디코딩 실패")
-                return "이미지 디코딩 실패", 400
-                
-            print(f"원본 이미지 크기: {image.shape}")
-            
-        except Exception as decode_error:
-            print(f"Base64 디코딩 에러: {decode_error}")
-            return f"Base64 디코딩 실패: {str(decode_error)}", 400
-        
-        # ROI 크롭
-        if roi_coords and all(k in roi_coords for k in ['x', 'y', 'width', 'height']):
-            x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['width'], roi_coords['height']
-            
-            # 경계 체크
-            img_h, img_w = image.shape[:2]
-            x = max(0, min(x, img_w - 1))
-            y = max(0, min(y, img_h - 1))
-            w = min(w, img_w - x)
-            h = min(h, img_h - y)
-            
-            print(f"크롭 좌표: x={x}, y={y}, w={w}, h={h}")
-            cropped_image = image[y:y+h, x:x+w]
-            print(f"크롭된 이미지 크기: {cropped_image.shape}")
-        else:
-            print("ROI 좌표 없음 - 전체 이미지 사용")
-            cropped_image = image
-        
-        # 1000x1300으로 리사이즈
-        resized = cv2.resize(cropped_image, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
-        print(f"리사이즈된 이미지 크기: {resized.shape}")
-        
-        # 고품질 JPEG로 인코딩
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
-        success, buffer = cv2.imencode('.jpg', resized, encode_params)
-        
-        if not success:
-            print("JPEG 인코딩 실패")
-            return "JPEG 인코딩 실패", 500
-        
-        print(f"인코딩된 이미지 크기: {len(buffer)} bytes")
-        
-        # 바이너리 직접 반환
-        response = app.response_class(
-            buffer.tobytes(),
-            mimetype='image/jpeg',
-            headers={
-                'Content-Disposition': 'attachment; filename=thumbnail.jpg',
-                'Content-Length': str(len(buffer))
-            }
+        # 보정 실행
+        enhanced_image, used_params, detected_ring_type, detected_lighting = enhancer.enhance(
+            image, custom_params, ring_type
         )
         
-        print("=== generate_thumbnail_binary 성공 ===")
-        return response
+        # 업스케일링 (옵션)
+        if data.get('upscale', False):
+            scale_factor = data.get('scale_factor', 2.0)
+            height, width = enhanced_image.shape[:2]
+            new_size = (int(width * scale_factor), int(height * scale_factor))
+            enhanced_image = cv2.resize(enhanced_image, new_size, interpolation=cv2.INTER_LANCZOS4)
+        
+        # 결과 인코딩
+        _, buffer = cv2.imencode('.jpg', enhanced_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        result_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        # 데이터 로깅
+        log_data = log_enhancement_data(
+            image_id, used_params, detected_ring_type, detected_lighting
+        )
+        
+        return jsonify({
+            "enhanced_image": result_base64,
+            "parameters_used": used_params,
+            "detected_ring_type": detected_ring_type,
+            "detected_lighting": detected_lighting,
+            "image_id": image_id,
+            "log_data": log_data,
+            "success": True
+        })
         
     except Exception as e:
-        print(f"generate_thumbnail_binary 전체 에러: {e}")
-        import traceback
-        traceback.print_exc()
-        return f"서버 에러: {str(e)}", 500
+        logger.error(f"Enhancement API error: {e}")
+        return jsonify({"error": f"서버 내부 오류: {str(e)}"}), 500
+
+@app.route('/analyze_b001_style', methods=['POST'])
+def analyze_b001_style():
+    """B_001 완성본들의 스타일 분석 (선택적 기능)"""
+    try:
+        data = request.get_json()
+        
+        # 여러 B_001 완성본들 분석
+        b001_images = data.get('b001_images', [])
+        
+        if not b001_images:
+            return jsonify({"error": "분석할 B_001 이미지들이 필요합니다"}), 400
+        
+        style_analysis = []
+        
+        for img_data in b001_images:
+            image_data = base64.b64decode(img_data)
+            image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
+            
+            if image is not None:
+                # 스타일 특성 분석
+                brightness_level = np.mean(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+                contrast_level = np.std(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+                
+                hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                saturation_level = np.mean(hsv[:,:,1])
+                
+                style_analysis.append({
+                    'brightness': float(brightness_level),
+                    'contrast': float(contrast_level),
+                    'saturation': float(saturation_level)
+                })
+        
+        if style_analysis:
+            # 평균 스타일 특성 계산
+            avg_style = {
+                'target_brightness': np.mean([s['brightness'] for s in style_analysis]),
+                'target_contrast': np.mean([s['contrast'] for s in style_analysis]),
+                'target_saturation': np.mean([s['saturation'] for s in style_analysis])
+            }
+            
+            return jsonify({
+                "b001_style_analysis": style_analysis,
+                "average_style_target": avg_style,
+                "success": True
+            })
+        else:
+            return jsonify({"error": "유효한 이미지가 없습니다"}), 400
+        
+    except Exception as e:
+        logger.error(f"B001 style analysis error: {e}")
+        return jsonify({"error": f"B001 스타일 분석 실패: {str(e)}"}), 500
+
+@app.route('/batch_test_parameters', methods=['POST'])
+def batch_test_parameters():
+    """여러 파라미터로 동시 테스트 (Claude 분석용)"""
+    try:
+        data = request.get_json()
+        
+        # 이미지 디코딩
+        image_data = base64.b64decode(data['image_base64'])
+        image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return jsonify({"error": "이미지 디코딩 실패"}), 400
+        
+        # 여러 파라미터 세트
+        parameter_sets = data['parameter_sets']
+        results = {}
+        
+        for i, params in enumerate(parameter_sets):
+            enhanced, used_params, ring_type, lighting = enhancer.enhance(image, params)
+            
+            _, buffer = cv2.imencode('.jpg', enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            result_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            results[f'result_{i+1}'] = {
+                'image': result_base64,
+                'parameters': used_params,
+                'ring_type': ring_type,
+                'lighting': lighting
+            }
+        
+        return jsonify({
+            "results": results,
+            "success": True,
+            "message": f"{len(parameter_sets)}개 파라미터 조합으로 테스트 완료"
+        })
+        
+    except Exception as e:
+        logger.error(f"Batch test error: {e}")
+        return jsonify({"error": f"배치 테스트 실패: {str(e)}"}), 500
+
+@app.route('/update_parameters', methods=['POST'])
+def update_parameters():
+    """Claude 분석 결과로 파라미터 업데이트"""
+    try:
+        data = request.get_json()
+        
+        # 새로운 기본 파라미터
+        if 'default_params' in data:
+            enhancer.default_params.update(data['default_params'])
+        
+        # 링 타입별 파라미터
+        if 'ring_specific_params' in data:
+            enhancer.ring_specific_params.update(data['ring_specific_params'])
+        
+        return jsonify({
+            "message": "파라미터가 성공적으로 업데이트되었습니다",
+            "current_default_params": enhancer.default_params,
+            "current_ring_params": enhancer.ring_specific_params,
+            "success": True
+        })
+        
+    except Exception as e:
+        logger.error(f"Parameter update error: {e}")
+        return jsonify({"error": f"파라미터 업데이트 실패: {str(e)}"}), 500
+
+@app.route('/get_learning_data', methods=['GET'])
+def get_learning_data():
+    """축적된 학습 데이터 조회 (Claude 분석용)"""
+    try:
+        # 최근 30일 데이터만
+        recent_data = []
+        thirty_days_ago = datetime.now().timestamp() - (30 * 24 * 60 * 60)
+        
+        for data_point in enhancer.learning_data:
+            try:
+                timestamp = datetime.fromisoformat(data_point['timestamp']).timestamp()
+                if timestamp > thirty_days_ago:
+                    recent_data.append(data_point)
+            except:
+                continue
+        
+        # 통계 계산
+        if recent_data:
+            total_images = len(recent_data)
+            avg_satisfaction = np.mean([d.get('user_satisfaction', 0) for d in recent_data if d.get('user_satisfaction')])
+            
+            # 성공 사례 (만족도 8 이상)
+            success_cases = [d for d in recent_data if d.get('user_satisfaction', 0) >= 8]
+            success_rate = len(success_cases) / total_images if total_images > 0 else 0
+        else:
+            total_images = 0
+            avg_satisfaction = 0
+            success_rate = 0
+        
+        return jsonify({
+            "recent_data": recent_data,
+            "statistics": {
+                "total_images": total_images,
+                "avg_satisfaction": round(avg_satisfaction, 2),
+                "success_rate": round(success_rate * 100, 1)
+            },
+            "success": True
+        })
+        
+    except Exception as e:
+        logger.error(f"Get learning data error: {e}")
+        return jsonify({"error": f"학습 데이터 조회 실패: {str(e)}"}), 500
+
+@app.route('/feedback', methods=['POST'])
+def record_feedback():
+    """사용자 피드백 기록"""
+    try:
+        data = request.get_json()
+        
+        image_id = data.get('image_id')
+        quality_score = data.get('quality_score')  # 1-10
+        user_satisfaction = data.get('user_satisfaction')  # 1-10
+        selected = data.get('selected', False)
+        
+        # 기존 데이터 업데이트
+        for i, log_data in enumerate(enhancer.learning_data):
+            if log_data.get('image_id') == image_id:
+                enhancer.learning_data[i]['quality_score'] = quality_score
+                enhancer.learning_data[i]['user_satisfaction'] = user_satisfaction
+                enhancer.learning_data[i]['selected'] = selected
+                break
+        
+        return jsonify({
+            "message": "피드백이 성공적으로 기록되었습니다",
+            "success": True
+        })
+        
+    except Exception as e:
+        logger.error(f"Feedback recording error: {e}")
+        return jsonify({"error": f"피드백 기록 실패: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=False)
