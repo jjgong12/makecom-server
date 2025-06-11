@@ -1,332 +1,224 @@
 from flask import Flask, request, jsonify, send_file
-import base64
-import io
 import cv2
 import numpy as np
+import base64
 from PIL import Image
-import json
+import io
+import traceback
 
 app = Flask(__name__)
 
-def base64_to_image(base64_string):
-    """Base64 문자열을 PIL Image로 변환"""
-    try:
-        # Base64 디코딩
-        image_data = base64.b64decode(base64_string)
-        # PIL Image로 변환
-        image = Image.open(io.BytesIO(image_data))
-        return image
-    except Exception as e:
-        print(f"Base64 to Image 변환 오류: {e}")
-        return None
-
-def image_to_base64(image):
-    """PIL Image를 Base64 문자열로 변환"""
-    try:
-        # 이미지를 바이트로 변환
-        buffer = io.BytesIO()
-        image.save(buffer, format='JPEG', quality=95)
-        img_bytes = buffer.getvalue()
-        
-        # Base64 인코딩
-        base64_string = base64.b64encode(img_bytes).decode('utf-8')
-        return base64_string
-    except Exception as e:
-        print(f"Image to Base64 변환 오류: {e}")
-        return None
-
-def image_to_binary(image):
-    """PIL Image를 바이너리 BytesIO로 변환"""
-    try:
-        buffer = io.BytesIO()
-        image.save(buffer, format='JPEG', quality=95)
-        buffer.seek(0)
-        return buffer
-    except Exception as e:
-        print(f"Image to Binary 변환 오류: {e}")
-        return None
-
-def detect_black_marking_in_image(image):
-    """이미지에서 검은색 마킹 영역 탐지"""
-    try:
-        # PIL Image를 OpenCV 형식으로 변환
-        opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        # 그레이스케일 변환
-        gray = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2GRAY)
-        
-        # 검은색 영역 탐지 (임계값 조정 가능)
-        _, binary = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
-        
-        # 연결된 구성 요소 찾기
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        roi_coordinates = []
-        
-        for contour in contours:
-            # 작은 노이즈 제거 (면적 기준)
-            area = cv2.contourArea(contour)
-            if area > 100:  # 최소 면적 100픽셀
-                # 경계 상자 계산
-                x, y, w, h = cv2.boundingRect(contour)
-                
-                # ROI 좌표 저장 (x, y, width, height)
-                roi_coordinates.append({
-                    "x": int(x),
-                    "y": int(y), 
-                    "width": int(w),
-                    "height": int(h),
-                    "area": int(area)
-                })
-        
-        # 면적 기준으로 정렬 (큰 것부터)
-        roi_coordinates.sort(key=lambda x: x['area'], reverse=True)
-        
-        return roi_coordinates, contours
-        
-    except Exception as e:
-        print(f"검은색 마킹 탐지 오류: {e}")
-        return [], []
-
-def generate_thumbnail(image, roi_coords, size):
-    """지정된 ROI 영역의 썸네일 생성 (정확한 크롭)"""
-    try:
-        # ROI 영역 추출
-        if roi_coords:
-            # 첫 번째 ROI 사용 (가장 큰 영역)
-            roi = roi_coords[0] if isinstance(roi_coords, list) else roi_coords
-            x, y, w, h = roi['x'], roi['y'], roi['width'], roi['height']
-            
-            # 이미지 크기 확인
-            img_width, img_height = image.size
-            
-            # ROI 좌표 검증 및 조정
-            x = max(0, min(x, img_width))
-            y = max(0, min(y, img_height))
-            w = min(w, img_width - x)
-            h = min(h, img_height - y)
-            
-            # 🔥 정확한 ROI 영역 크롭 (링만 정확히 추출)
-            cropped = image.crop((x, y, x + w, y + h))
-        else:
-            # ROI가 없으면 전체 이미지 사용
-            cropped = image
-        
-        # 썸네일 크기 파싱 (예: "1000x1300")
-        if 'x' in size:
-            width, height = map(int, size.split('x'))
-        else:
-            width = height = int(size)
-        
-        # 🔥 고품질 리사이즈 (LANCZOS4 사용)
-        resized = cropped.resize((width, height), Image.Resampling.LANCZOS)
-        
-        return resized
-        
-    except Exception as e:
-        print(f"썸네일 생성 오류: {e}")
-        return None
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "healthy", "message": "Make.com 워크플로우 서버가 정상 작동 중입니다"})
 
 @app.route('/detect_black_marking', methods=['POST'])
 def detect_black_marking():
-    """검은색 마킹 탐지 API (마스크 포함)"""
     try:
-        # JSON 데이터 받기
         data = request.get_json()
+        image_base64 = data['image_base64']
         
-        if not data or 'image_base64' not in data:
-            return jsonify({
-                'success': False,
-                'error': 'image_base64 필드가 필요합니다'
-            }), 400
+        # Base64 디코딩
+        image_data = base64.b64decode(image_base64)
+        nparr = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        # Base64 이미지 디코딩
-        image = base64_to_image(data['image_base64'])
-        if image is None:
-            return jsonify({
-                'success': False,
-                'error': '이미지 디코딩에 실패했습니다'
-            }), 400
+        # 검은색 영역 감지
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # 검은색 마킹 탐지
-        roi_coordinates, contours = detect_black_marking_in_image(image)
+        # 마스크 생성
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        roi_list = []
         
-        # 🔥 마스크 이미지 생성 (Topaz inpainting용)
-        opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        mask = np.zeros(opencv_image.shape[:2], dtype=np.uint8)
-        
-        # 검은색 영역을 흰색(255)으로 채우기 (inpainting 마스크)
         for contour in contours:
-            cv2.fillPoly(mask, [contour], 255)
+            area = cv2.contourArea(contour)
+            if area > 1000:  # 최소 크기 필터
+                x, y, w, h = cv2.boundingRect(contour)
+                roi_list.append({
+                    "x": int(x), 
+                    "y": int(y), 
+                    "width": int(w), 
+                    "height": int(h),
+                    "area": int(area)
+                })
+                cv2.fillPoly(mask, [contour], 255)
         
         # 마스크를 Base64로 인코딩
         _, buffer = cv2.imencode('.png', mask)
         mask_base64 = base64.b64encode(buffer).decode('utf-8')
         
         return jsonify({
-            'success': True,
-            'roi_coordinates': roi_coordinates,
-            'mask_base64': mask_base64,  # 🔥 Topaz inpainting용 마스크 추가!
-            'total_markings': len(roi_coordinates)
+            "roi_coordinates": roi_list,
+            "mask_base64": mask_base64,
+            "success": True,
+            "total_markings": len(roi_list)
         })
         
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': f'서버 오류: {str(e)}'
-        }), 500
+        print(f"detect_black_marking 에러: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/generate_thumbnails', methods=['POST'])
 def generate_thumbnails():
-    """썸네일 생성 API (정확한 크롭) - Base64 반환"""
     try:
-        # JSON 데이터 받기
+        print("=== generate_thumbnails 시작 ===")
+        
         data = request.get_json()
+        print(f"받은 데이터 키: {list(data.keys())}")
         
-        required_fields = ['enhanced_image', 'roi_coords', 'sizes']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({
-                    'success': False,
-                    'error': f'{field} 필드가 필요합니다'
-                }), 400
+        enhanced_image = data.get('enhanced_image', '')
+        roi_coords = data.get('roi_coords', {})
+        sizes = data.get('sizes', ['1000x1300'])
         
-        # Base64 이미지 디코딩
-        image = base64_to_image(data['enhanced_image'])
+        print(f"enhanced_image 길이: {len(enhanced_image)}")
+        print(f"roi_coords 타입: {type(roi_coords)}, 값: {roi_coords}")
+        print(f"sizes: {sizes}")
+        
+        # ROI 좌표 처리 - 배열인지 객체인지 확인
+        if isinstance(roi_coords, list):
+            if len(roi_coords) > 0:
+                roi = roi_coords[0]
+            else:
+                return jsonify({"error": "ROI 좌표 배열이 비어있습니다"}), 400
+        else:
+            roi = roi_coords
+        
+        print(f"사용할 ROI: {roi}")
+        
+        # 필수 키 확인
+        required_keys = ['x', 'y', 'width', 'height']
+        for key in required_keys:
+            if key not in roi:
+                return jsonify({"error": f"ROI에 {key} 필드가 없습니다"}), 400
+        
+        # Base64 디코딩
+        if not enhanced_image:
+            return jsonify({"error": "enhanced_image가 비어있습니다"}), 400
+            
+        try:
+            image_data = base64.b64decode(enhanced_image)
+            nparr = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        except Exception as decode_error:
+            print(f"이미지 디코딩 에러: {decode_error}")
+            return jsonify({"error": f"이미지 디코딩 실패: {decode_error}"}), 400
+        
         if image is None:
-            return jsonify({
-                'success': False,
-                'error': '이미지 디코딩에 실패했습니다'
-            }), 400
+            return jsonify({"error": "이미지 디코딩 결과가 None입니다"}), 400
         
-        # ROI 좌표 파싱
-        roi_coords = data['roi_coords']
-        sizes = data['sizes']
+        print(f"원본 이미지 크기: {image.shape}")
         
-        # 🔥 정확한 크롭을 위한 썸네일 생성
+        # ROI 좌표로 크롭
+        x = int(roi['x'])
+        y = int(roi['y'])
+        w = int(roi['width'])
+        h = int(roi['height'])
+        
+        print(f"원래 ROI: x={x}, y={y}, w={w}, h={h}")
+        
+        # 경계 확인 및 조정
+        img_height, img_width = image.shape[:2]
+        x = max(0, min(x, img_width - 1))
+        y = max(0, min(y, img_height - 1))
+        w = max(1, min(w, img_width - x))
+        h = max(1, min(h, img_height - y))
+        
+        print(f"조정된 ROI: x={x}, y={y}, w={w}, h={h}")
+        print(f"이미지 크기: width={img_width}, height={img_height}")
+        
+        if w <= 0 or h <= 0:
+            return jsonify({"error": f"잘못된 ROI 크기: width={w}, height={h}"}), 400
+        
+        # 크롭 실행
+        try:
+            cropped = image[y:y+h, x:x+w]
+            print(f"크롭된 이미지 크기: {cropped.shape}")
+        except Exception as crop_error:
+            print(f"크롭 에러: {crop_error}")
+            return jsonify({"error": f"크롭 실패: {crop_error}"}), 400
+        
+        # 썸네일 생성
         thumbnails = {}
-        
         for size in sizes:
-            thumbnail = generate_thumbnail(image, roi_coords, size)
-            if thumbnail:
-                thumbnail_base64 = image_to_base64(thumbnail)
-                if thumbnail_base64:
-                    thumbnails[f'thumbnail_{size}'] = thumbnail_base64
+            try:
+                width, height = map(int, size.split('x'))
+                resized = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                
+                _, buffer = cv2.imencode('.jpg', resized, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                thumbnail_base64 = base64.b64encode(buffer).decode('utf-8')
+                thumbnails[f'thumbnail_{size}'] = thumbnail_base64
+                
+                print(f"썸네일 {size} 생성 완료")
+            except Exception as thumb_error:
+                print(f"썸네일 {size} 생성 에러: {thumb_error}")
+                continue
         
-        # 🔥 크롭된 영역의 마스크도 생성 (필요시)
-        opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        mask = np.zeros(opencv_image.shape[:2], dtype=np.uint8)
-        
-        if roi_coords:
-            roi = roi_coords[0] if isinstance(roi_coords, list) else roi_coords
-            x, y, w, h = roi['x'], roi['y'], roi['width'], roi['height']
-            cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
-        
-        _, buffer = cv2.imencode('.png', mask)
-        mask_base64 = base64.b64encode(buffer).decode('utf-8')
+        print("=== generate_thumbnails 완료 ===")
         
         return jsonify({
-            'success': True,
-            'thumbnails': thumbnails,
-            'mask_base64': mask_base64,  # 🔥 크롭 영역 마스크 추가
-            'generated_count': len(thumbnails)
+            "thumbnails": thumbnails,
+            "success": True,
+            "roi_used": roi,
+            "original_image_size": f"{img_width}x{img_height}",
+            "cropped_size": f"{w}x{h}"
         })
         
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': f'서버 오류: {str(e)}'
-        }), 500
+        print(f"generate_thumbnails 전체 에러: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": f"서버 에러: {str(e)}", "traceback": traceback.format_exc()}), 500
 
-# 🔥 새로 추가: 바이너리 파일 직접 반환 엔드포인트
 @app.route('/generate_thumbnail_binary', methods=['POST'])
 def generate_thumbnail_binary():
-    """썸네일 생성 API (정확한 크롭) - 바이너리 파일 직접 반환"""
     try:
-        # JSON 데이터 받기
         data = request.get_json()
-        
-        required_fields = ['enhanced_image', 'roi_coords']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({
-                    'success': False,
-                    'error': f'{field} 필드가 필요합니다'
-                }), 400
-        
-        # Base64 이미지 디코딩
-        image = base64_to_image(data['enhanced_image'])
-        if image is None:
-            return jsonify({
-                'success': False,
-                'error': '이미지 디코딩에 실패했습니다'
-            }), 400
-        
-        # ROI 좌표 파싱
+        enhanced_image = data['enhanced_image']
         roi_coords = data['roi_coords']
-        size = data.get('size', '1000x1300')  # 기본 크기
+        size = data.get('size', '1000x1300')
         
-        # 🔥 썸네일 생성
-        thumbnail = generate_thumbnail(image, roi_coords, size)
-        if thumbnail is None:
-            return jsonify({
-                'success': False,
-                'error': '썸네일 생성에 실패했습니다'
-            }), 500
+        # ROI 좌표 처리
+        if isinstance(roi_coords, list):
+            roi = roi_coords[0] if len(roi_coords) > 0 else {}
+        else:
+            roi = roi_coords
         
-        # 🔥 바이너리 데이터로 변환
-        image_buffer = image_to_binary(thumbnail)
-        if image_buffer is None:
-            return jsonify({
-                'success': False,
-                'error': '이미지 바이너리 변환에 실패했습니다'
-            }), 500
+        # Base64 디코딩
+        image_data = base64.b64decode(enhanced_image)
+        nparr = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        # 🔥 바이너리 파일 직접 반환
+        if image is None:
+            return jsonify({"error": "이미지 디코딩 실패"}), 500
+        
+        # ROI 좌표로 크롭
+        x, y, w, h = int(roi['x']), int(roi['y']), int(roi['width']), int(roi['height'])
+        
+        # 경계 확인
+        x = max(0, x)
+        y = max(0, y)
+        w = min(w, image.shape[1] - x)
+        h = min(h, image.shape[0] - y)
+        
+        cropped = image[y:y+h, x:x+w]
+        
+        # 리사이즈
+        width, height = map(int, size.split('x'))
+        resized = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LANCZOS4)
+        
+        # 바이너리 반환
+        _, buffer = cv2.imencode('.jpg', resized, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        
         return send_file(
-            image_buffer,
+            io.BytesIO(buffer.tobytes()),
             mimetype='image/jpeg',
-            as_attachment=False,
-            download_name=f'thumbnail_{size}.jpg'
+            as_attachment=False
         )
         
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': f'서버 오류: {str(e)}'
-        }), 500
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    """서버 상태 확인"""
-    return jsonify({
-        'status': 'healthy',
-        'message': 'Make.com 워크플로우 서버가 정상 작동 중입니다'
-    })
-
-@app.route('/', methods=['GET'])
-def home():
-    """홈페이지"""
-    return jsonify({
-        'service': 'Make.com 워크플로우 API 서버',
-        'version': '2.0.0',
-        'endpoints': {
-            '/detect_black_marking': 'POST - 검은색 마킹 탐지 (마스크 포함)',
-            '/generate_thumbnails': 'POST - 썸네일 생성 (Base64 반환)',
-            '/generate_thumbnail_binary': 'POST - 썸네일 생성 (바이너리 파일 반환)',
-            '/health': 'GET - 서버 상태 확인'
-        }
-    })
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    print("🚀 Make.com 워크플로우 API 서버 시작!")
-    print("📍 엔드포인트:")
-    print("   POST /detect_black_marking - 검은색 마킹 탐지 (마스크 포함)")
-    print("   POST /generate_thumbnails - 썸네일 생성 (Base64 반환)")
-    print("   POST /generate_thumbnail_binary - 썸네일 생성 (바이너리 파일 반환)")
-    print("   GET  /health - 서버 상태 확인")
-    print("   GET  / - 서비스 정보")
-    
-    import os
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=8080)
