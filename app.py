@@ -71,19 +71,19 @@ def detect_black_marking_in_image(image):
         # 면적 기준으로 정렬 (큰 것부터)
         roi_coordinates.sort(key=lambda x: x['area'], reverse=True)
         
-        return roi_coordinates
+        return roi_coordinates, contours
         
     except Exception as e:
         print(f"검은색 마킹 탐지 오류: {e}")
-        return []
+        return [], []
 
 def generate_thumbnail(image, roi_coords, size):
-    """지정된 ROI 영역의 썸네일 생성"""
+    """지정된 ROI 영역의 썸네일 생성 (정확한 크롭)"""
     try:
         # ROI 영역 추출
         if roi_coords:
             # 첫 번째 ROI 사용 (가장 큰 영역)
-            roi = roi_coords[0]
+            roi = roi_coords[0] if isinstance(roi_coords, list) else roi_coords
             x, y, w, h = roi['x'], roi['y'], roi['width'], roi['height']
             
             # 이미지 크기 확인
@@ -95,7 +95,7 @@ def generate_thumbnail(image, roi_coords, size):
             w = min(w, img_width - x)
             h = min(h, img_height - y)
             
-            # ROI 영역 크롭
+            # 🔥 정확한 ROI 영역 크롭 (링만 정확히 추출)
             cropped = image.crop((x, y, x + w, y + h))
         else:
             # ROI가 없으면 전체 이미지 사용
@@ -107,18 +107,10 @@ def generate_thumbnail(image, roi_coords, size):
         else:
             width = height = int(size)
         
-        # 썸네일 생성 (비율 유지하면서 리사이즈)
-        cropped.thumbnail((width, height), Image.Resampling.LANCZOS)
+        # 🔥 고품질 리사이즈 (LANCZOS4 사용)
+        resized = cropped.resize((width, height), Image.Resampling.LANCZOS)
         
-        # 새로운 이미지 생성 (배경색: 흰색)
-        thumbnail = Image.new('RGB', (width, height), (255, 255, 255))
-        
-        # 중앙에 배치
-        x_offset = (width - cropped.width) // 2
-        y_offset = (height - cropped.height) // 2
-        thumbnail.paste(cropped, (x_offset, y_offset))
-        
-        return thumbnail
+        return resized
         
     except Exception as e:
         print(f"썸네일 생성 오류: {e}")
@@ -126,7 +118,7 @@ def generate_thumbnail(image, roi_coords, size):
 
 @app.route('/detect_black_marking', methods=['POST'])
 def detect_black_marking():
-    """검은색 마킹 탐지 API"""
+    """검은색 마킹 탐지 API (마스크 포함)"""
     try:
         # JSON 데이터 받기
         data = request.get_json()
@@ -146,11 +138,24 @@ def detect_black_marking():
             }), 400
         
         # 검은색 마킹 탐지
-        roi_coordinates = detect_black_marking_in_image(image)
+        roi_coordinates, contours = detect_black_marking_in_image(image)
+        
+        # 🔥 마스크 이미지 생성 (Topaz inpainting용)
+        opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        mask = np.zeros(opencv_image.shape[:2], dtype=np.uint8)
+        
+        # 검은색 영역을 흰색(255)으로 채우기 (inpainting 마스크)
+        for contour in contours:
+            cv2.fillPoly(mask, [contour], 255)
+        
+        # 마스크를 Base64로 인코딩
+        _, buffer = cv2.imencode('.png', mask)
+        mask_base64 = base64.b64encode(buffer).decode('utf-8')
         
         return jsonify({
             'success': True,
             'roi_coordinates': roi_coordinates,
+            'mask_base64': mask_base64,  # 🔥 Topaz inpainting용 마스크 추가!
             'total_markings': len(roi_coordinates)
         })
         
@@ -162,7 +167,7 @@ def detect_black_marking():
 
 @app.route('/generate_thumbnails', methods=['POST'])
 def generate_thumbnails():
-    """썸네일 생성 API"""
+    """썸네일 생성 API (정확한 크롭)"""
     try:
         # JSON 데이터 받기
         data = request.get_json()
@@ -187,7 +192,7 @@ def generate_thumbnails():
         roi_coords = data['roi_coords']
         sizes = data['sizes']
         
-        # 각 크기별 썸네일 생성
+        # 🔥 정확한 크롭을 위한 썸네일 생성
         thumbnails = {}
         
         for size in sizes:
@@ -197,9 +202,22 @@ def generate_thumbnails():
                 if thumbnail_base64:
                     thumbnails[f'thumbnail_{size}'] = thumbnail_base64
         
+        # 🔥 크롭된 영역의 마스크도 생성 (필요시)
+        opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        mask = np.zeros(opencv_image.shape[:2], dtype=np.uint8)
+        
+        if roi_coords:
+            roi = roi_coords[0] if isinstance(roi_coords, list) else roi_coords
+            x, y, w, h = roi['x'], roi['y'], roi['width'], roi['height']
+            cv2.rectangle(mask, (x, y), (x + w, y + h), 255, -1)
+        
+        _, buffer = cv2.imencode('.png', mask)
+        mask_base64 = base64.b64encode(buffer).decode('utf-8')
+        
         return jsonify({
             'success': True,
             'thumbnails': thumbnails,
+            'mask_base64': mask_base64,  # 🔥 크롭 영역 마스크 추가
             'generated_count': len(thumbnails)
         })
         
@@ -224,8 +242,8 @@ def home():
         'service': 'Make.com 워크플로우 API 서버',
         'version': '1.0.0',
         'endpoints': {
-            '/detect_black_marking': 'POST - 검은색 마킹 탐지',
-            '/generate_thumbnails': 'POST - 썸네일 생성',
+            '/detect_black_marking': 'POST - 검은색 마킹 탐지 (마스크 포함)',
+            '/generate_thumbnails': 'POST - 썸네일 생성 (정확한 크롭)',
             '/health': 'GET - 서버 상태 확인'
         }
     })
@@ -233,8 +251,8 @@ def home():
 if __name__ == '__main__':
     print("🚀 Make.com 워크플로우 API 서버 시작!")
     print("📍 엔드포인트:")
-    print("   POST /detect_black_marking - 검은색 마킹 탐지")
-    print("   POST /generate_thumbnails - 썸네일 생성")
+    print("   POST /detect_black_marking - 검은색 마킹 탐지 (마스크 포함)")
+    print("   POST /generate_thumbnails - 썸네일 생성 (정확한 크롭)")
     print("   GET  /health - 서버 상태 확인")
     print("   GET  / - 서비스 정보")
     
