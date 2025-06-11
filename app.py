@@ -320,6 +320,124 @@ def generate_thumbnails():
         traceback.print_exc()
         return jsonify({"error": "서버 에러", "details": str(e)}), 500
 
+@app.route('/generate_thumbnail_binary', methods=['POST'])
+def generate_thumbnail_binary():
+    """ROI 크롭 후 바이너리 파일 직접 반환 (강화된 JSON 파싱)"""
+    try:
+        print("=== generate_thumbnail_binary 시작 ===")
+        
+        # 강화된 JSON 파싱 (generate_thumbnails와 동일)
+        raw_data = request.get_data(as_text=True)
+        print(f"Raw 데이터 길이: {len(raw_data)}")
+        print(f"Raw 데이터 시작: {raw_data[:100]}")
+        
+        # 여러 방법으로 JSON 파싱 시도
+        data = None
+        
+        # 방법 1: 기본 JSON 파싱
+        try:
+            data = json.loads(raw_data)
+        except json.JSONDecodeError as e:
+            print(f"기본 JSON 파싱 실패: {e}")
+            
+            # 방법 2: 정규표현식으로 필드 추출
+            try:
+                enhanced_image_match = re.search(r'"enhanced_image":\s*"([^"]+)"', raw_data)
+                roi_coords_match = re.search(r'"roi_coords":\s*(\{[^}]+\})', raw_data)
+                
+                if enhanced_image_match:
+                    data = {
+                        "enhanced_image": enhanced_image_match.group(1),
+                        "roi_coords": json.loads(roi_coords_match.group(1)) if roi_coords_match else {}
+                    }
+                    print("정규표현식 파싱 성공!")
+                    
+            except Exception as regex_error:
+                print(f"정규표현식 파싱도 실패: {regex_error}")
+                return "JSON 파싱 불가능", 400
+        
+        if not data:
+            return "모든 JSON 파싱 방법 실패", 400
+            
+        print(f"파싱된 데이터 키들: {list(data.keys())}")
+        
+        enhanced_image_b64 = data.get('enhanced_image', '')
+        roi_coords = data.get('roi_coords', {})
+        
+        if not enhanced_image_b64:
+            print("enhanced_image 필드 없음")
+            return "enhanced_image 필드가 필요합니다", 400
+        
+        print(f"Base64 데이터 길이: {len(enhanced_image_b64)}")
+        print(f"ROI 좌표: {roi_coords}")
+        
+        # Base64 디코딩
+        try:
+            image_data = base64.b64decode(enhanced_image_b64)
+            image_array = np.frombuffer(image_data, np.uint8)
+            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                print("이미지 디코딩 실패")
+                return "이미지 디코딩 실패", 400
+                
+            print(f"원본 이미지 크기: {image.shape}")
+            
+        except Exception as decode_error:
+            print(f"Base64 디코딩 에러: {decode_error}")
+            return f"Base64 디코딩 실패: {str(decode_error)}", 400
+        
+        # ROI 크롭
+        if roi_coords and all(k in roi_coords for k in ['x', 'y', 'width', 'height']):
+            x, y, w, h = roi_coords['x'], roi_coords['y'], roi_coords['width'], roi_coords['height']
+            
+            # 경계 체크
+            img_h, img_w = image.shape[:2]
+            x = max(0, min(x, img_w - 1))
+            y = max(0, min(y, img_h - 1))
+            w = min(w, img_w - x)
+            h = min(h, img_h - y)
+            
+            print(f"크롭 좌표: x={x}, y={y}, w={w}, h={h}")
+            cropped_image = image[y:y+h, x:x+w]
+            print(f"크롭된 이미지 크기: {cropped_image.shape}")
+        else:
+            print("ROI 좌표 없음 - 전체 이미지 사용")
+            cropped_image = image
+        
+        # 1000x1300으로 리사이즈
+        resized = cv2.resize(cropped_image, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
+        print(f"리사이즈된 이미지 크기: {resized.shape}")
+        
+        # 고품질 JPEG로 인코딩
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
+        success, buffer = cv2.imencode('.jpg', resized, encode_params)
+        
+        if not success:
+            print("JPEG 인코딩 실패")
+            return "JPEG 인코딩 실패", 500
+        
+        print(f"인코딩된 이미지 크기: {len(buffer)} bytes")
+        
+        # 바이너리 직접 반환
+        response = app.response_class(
+            buffer.tobytes(),
+            mimetype='image/jpeg',
+            headers={
+                'Content-Disposition': 'attachment; filename=thumbnail.jpg',
+                'Content-Length': str(len(buffer))
+            }
+        )
+        
+        print("=== generate_thumbnail_binary 성공 ===")
+        return response
+        
+    except Exception as e:
+        print(f"generate_thumbnail_binary 전체 에러: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"서버 에러: {str(e)}", 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port, debug=True)
