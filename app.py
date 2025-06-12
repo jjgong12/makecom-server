@@ -13,36 +13,36 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-class NaturalWeddingRingEnhancer:
-    """v5.1 Natural Wedding Ring Enhancement with White Light Overlay"""
+class LightroomStyleWeddingRingEnhancer:
+    """v5.2 Lightroom Style Wedding Ring Enhancement"""
     
     def __init__(self):
-        # v5.1 강화된 파라미터 - 3번 수준 달성
+        # v5.2 라이트룸 스타일 파라미터
         self.metal_params = {
             'white_gold': {
-                'natural': {'brightness': 1.35, 'contrast': 1.20, 'warmth': 0.90, 'saturation': 1.05, 'sharpness': 1.30, 'clarity': 1.25, 'gamma': 1.03},
-                'warm': {'brightness': 1.40, 'contrast': 1.25, 'warmth': 0.75, 'saturation': 1.00, 'sharpness': 1.35, 'clarity': 1.30, 'gamma': 1.05},
-                'cool': {'brightness': 1.30, 'contrast': 1.15, 'warmth': 0.95, 'saturation': 1.08, 'sharpness': 1.25, 'clarity': 1.20, 'gamma': 1.02}
+                'natural': {'exposure': 0.6, 'highlights': -25, 'whites': 35, 'shadows': 15, 'contrast': 15, 'clarity': 25, 'vibrance': 8, 'warmth': -300},
+                'warm': {'exposure': 0.7, 'highlights': -30, 'whites': 40, 'shadows': 20, 'contrast': 18, 'clarity': 30, 'vibrance': 5, 'warmth': -500},
+                'cool': {'exposure': 0.5, 'highlights': -20, 'whites': 30, 'shadows': 12, 'contrast': 12, 'clarity': 20, 'vibrance': 10, 'warmth': -200}
             },
             'rose_gold': {
-                'natural': {'brightness': 1.25, 'contrast': 1.15, 'warmth': 1.15, 'saturation': 1.20, 'sharpness': 1.20, 'clarity': 1.18, 'gamma': 1.00},
-                'warm': {'brightness': 1.20, 'contrast': 1.10, 'warmth': 1.00, 'saturation': 1.15, 'sharpness': 1.15, 'clarity': 1.12, 'gamma': 0.98},
-                'cool': {'brightness': 1.35, 'contrast': 1.20, 'warmth': 1.30, 'saturation': 1.30, 'sharpness': 1.30, 'clarity': 1.25, 'gamma': 1.05}
+                'natural': {'exposure': 0.5, 'highlights': -20, 'whites': 30, 'shadows': 18, 'contrast': 12, 'clarity': 20, 'vibrance': 15, 'warmth': 200},
+                'warm': {'exposure': 0.4, 'highlights': -15, 'whites': 25, 'shadows': 15, 'contrast': 10, 'clarity': 18, 'vibrance': 12, 'warmth': 100},
+                'cool': {'exposure': 0.7, 'highlights': -25, 'whites': 35, 'shadows': 22, 'contrast': 15, 'clarity': 25, 'vibrance': 20, 'warmth': 400}
             },
             'champagne_gold': {
-                'natural': {'brightness': 1.30, 'contrast': 1.18, 'warmth': 1.05, 'saturation': 1.12, 'sharpness': 1.25, 'clarity': 1.22, 'gamma': 1.02},
-                'warm': {'brightness': 1.25, 'contrast': 1.15, 'warmth': 0.92, 'saturation': 1.08, 'sharpness': 1.22, 'clarity': 1.18, 'gamma': 1.00},
-                'cool': {'brightness': 1.35, 'contrast': 1.22, 'warmth': 1.15, 'saturation': 1.18, 'sharpness': 1.30, 'clarity': 1.25, 'gamma': 1.05}
+                'natural': {'exposure': 0.6, 'highlights': -22, 'whites': 32, 'shadows': 16, 'contrast': 14, 'clarity': 22, 'vibrance': 12, 'warmth': 150},
+                'warm': {'exposure': 0.5, 'highlights': -18, 'whites': 28, 'shadows': 14, 'contrast': 12, 'clarity': 20, 'vibrance': 10, 'warmth': 50},
+                'cool': {'exposure': 0.7, 'highlights': -25, 'whites': 35, 'shadows': 18, 'contrast': 16, 'clarity': 25, 'vibrance': 15, 'warmth': 250}
             },
             'yellow_gold': {
-                'natural': {'brightness': 1.32, 'contrast': 1.20, 'warmth': 1.20, 'saturation': 1.25, 'sharpness': 1.22, 'clarity': 1.20, 'gamma': 1.03},
-                'warm': {'brightness': 1.25, 'contrast': 1.15, 'warmth': 1.05, 'saturation': 1.18, 'sharpness': 1.18, 'clarity': 1.15, 'gamma': 1.00},
-                'cool': {'brightness': 1.40, 'contrast': 1.25, 'warmth': 1.35, 'saturation': 1.35, 'sharpness': 1.30, 'clarity': 1.25, 'gamma': 1.08}
+                'natural': {'exposure': 0.6, 'highlights': -20, 'whites': 35, 'shadows': 18, 'contrast': 15, 'clarity': 22, 'vibrance': 18, 'warmth': 300},
+                'warm': {'exposure': 0.5, 'highlights': -15, 'whites': 30, 'shadows': 15, 'contrast': 12, 'clarity': 20, 'vibrance': 15, 'warmth': 200},
+                'cool': {'exposure': 0.8, 'highlights': -30, 'whites': 40, 'shadows': 22, 'contrast': 18, 'clarity': 25, 'vibrance': 25, 'warmth': 500}
             }
         }
     
     def detect_ring_metal(self, image):
-        """보수적 금속 감지 (애매하면 champagne_gold)"""
+        """보수적 금속 감지"""
         try:
             hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
             h_mean = np.mean(hsv[:, :, 0])
@@ -55,12 +55,12 @@ class NaturalWeddingRingEnhancer:
             elif 15 <= h_mean <= 35 and 40 <= s_mean <= 90:
                 return 'yellow_gold'
             else:
-                return 'champagne_gold'  # 기본값
+                return 'champagne_gold'
         except:
             return 'champagne_gold'
     
     def detect_lighting(self, image):
-        """보수적 조명 감지 (애매하면 natural)"""
+        """보수적 조명 감지"""
         try:
             lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
             a_mean = np.mean(lab[:, :, 1])
@@ -71,110 +71,89 @@ class NaturalWeddingRingEnhancer:
             elif b_mean < 125:
                 return 'cool'
             else:
-                return 'natural'  # 기본값
+                return 'natural'
         except:
             return 'natural'
     
-    def create_white_light_overlay(self, image):
-        """🔥 핵심 기능: 하얀색 조명 오버레이 효과"""
-        try:
-            height, width = image.shape[:2]
-            
-            # 상단 중앙에서 시작하는 radial gradient
-            center_x, center_y = width // 2, height // 4  # 상단에서 1/4 지점
-            
-            # 거리 맵 생성
-            y, x = np.ogrid[:height, :width]
-            distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-            max_distance = np.sqrt(width**2 + height**2)
-            
-            # 하얀 조명 그라디언트 (중앙이 밝고 가장자리로 갈수록 어두워짐)
-            gradient = 1.0 - (distance / max_distance)
-            gradient = np.clip(gradient, 0.3, 1.0)  # 최소 30% 밝기 보장
-            
-            # 3채널로 확장
-            overlay = np.dstack([gradient, gradient, gradient])
-            overlay = (overlay * 255).astype(np.uint8)
-            
-            return overlay
-        except Exception as e:
-            logger.error(f"White light overlay error: {e}")
-            return np.ones_like(image) * 255
-    
-    def enhance_ring_basic(self, image, params):
-        """기본 링 보정 + 하얀 조명 효과"""
+    def apply_lightroom_style(self, image, params):
+        """🔥 라이트룸 스타일 보정 (균등하고 자연스럽게)"""
         try:
             # 1. 노이즈 제거
             denoised = cv2.bilateralFilter(image, 9, 75, 75)
             
-            # 2. 하얀 조명 오버레이 적용
-            white_overlay = self.create_white_light_overlay(denoised)
-            lit_image = cv2.addWeighted(denoised, 0.82, white_overlay, 0.18, 0)
+            # 2. LAB 색공간으로 변환 (라이트룸과 유사한 처리)
+            lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+            l_channel, a_channel, b_channel = cv2.split(lab)
             
-            # 3. PIL로 변환하여 세밀한 조정
-            pil_image = Image.fromarray(cv2.cvtColor(lit_image, cv2.COLOR_BGR2RGB))
+            # 3. Exposure (전체적인 밝기) - 라이트룸의 Exposure 슬라이더
+            exposure_factor = 1.0 + (params['exposure'] / 2.0)  # 0.6 → 1.3배
+            l_channel = np.clip(l_channel.astype(np.float32) * exposure_factor, 0, 255)
             
-            # 4. 밝기 조정
-            brightness_enhancer = ImageEnhance.Brightness(pil_image)
-            enhanced = brightness_enhancer.enhance(params['brightness'])
+            # 4. Highlights (밝은 부분 조정) - 라이트룸의 Highlights 슬라이더
+            if params['highlights'] != 0:
+                highlight_mask = l_channel > 180  # 밝은 영역 마스크
+                highlight_adjustment = 1.0 + (params['highlights'] / 100.0)  # -25 → 0.75배
+                l_channel[highlight_mask] = np.clip(l_channel[highlight_mask] * highlight_adjustment, 0, 255)
             
-            # 5. 대비 조정
-            contrast_enhancer = ImageEnhance.Contrast(enhanced)
-            enhanced = contrast_enhancer.enhance(params['contrast'])
+            # 5. Whites (화이트 포인트) - 라이트룸의 Whites 슬라이더
+            if params['whites'] != 0:
+                white_mask = l_channel > 200  # 매우 밝은 영역
+                white_adjustment = params['whites'] / 100.0  # 35 → +0.35
+                l_channel[white_mask] = np.clip(l_channel[white_mask] + white_adjustment * 50, 0, 255)
             
-            # 6. 선명도 조정
-            sharpness_enhancer = ImageEnhance.Sharpness(enhanced)
-            enhanced = sharpness_enhancer.enhance(params['sharpness'])
+            # 6. Shadows (어두운 부분 들어올리기) - 라이트룸의 Shadows 슬라이더
+            if params['shadows'] != 0:
+                shadow_mask = l_channel < 100  # 어두운 영역 마스크
+                shadow_adjustment = 1.0 + (params['shadows'] / 100.0)  # 15 → 1.15배
+                l_channel[shadow_mask] = np.clip(l_channel[shadow_mask] * shadow_adjustment, 0, 255)
             
-            # 7. 채도 조정 (warmth/saturation 반영)
-            rgb_array = np.array(enhanced)
+            # 7. LAB 다시 합성
+            lab_enhanced = cv2.merge([l_channel.astype(np.uint8), a_channel, b_channel])
+            rgb_enhanced = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
             
-            # warmth 조정 (색온도)
-            if params['warmth'] != 1.0:
-                rgb_array[:, :, 0] = np.clip(rgb_array[:, :, 0] * params['warmth'], 0, 255)  # Red
-                rgb_array[:, :, 2] = np.clip(rgb_array[:, :, 2] * (2.0 - params['warmth']), 0, 255)  # Blue
+            # 8. RGB에서 추가 조정
+            rgb_array = rgb_enhanced.astype(np.float32)
             
-            # saturation 조정
-            if params['saturation'] != 1.0:
-                hsv_temp = cv2.cvtColor(rgb_array.astype(np.uint8), cv2.COLOR_RGB2HSV)
-                hsv_temp[:, :, 1] = np.clip(hsv_temp[:, :, 1] * params['saturation'], 0, 255)
-                rgb_array = cv2.cvtColor(hsv_temp, cv2.COLOR_HSV2RGB)
+            # 9. Temperature/Warmth 조정 (라이트룸의 Temp 슬라이더)
+            if params['warmth'] != 0:
+                temp_factor = params['warmth'] / 1000.0  # -300 → -0.3
+                # 음수: 차갑게 (블루 증가), 양수: 따뜻하게 (레드 증가)
+                if temp_factor < 0:  # 차갑게
+                    rgb_array[:, :, 2] = np.clip(rgb_array[:, :, 2] * (1.0 - temp_factor), 0, 255)  # Blue 증가
+                    rgb_array[:, :, 0] = np.clip(rgb_array[:, :, 0] * (1.0 + temp_factor), 0, 255)  # Red 감소
+                else:  # 따뜻하게
+                    rgb_array[:, :, 0] = np.clip(rgb_array[:, :, 0] * (1.0 + temp_factor), 0, 255)  # Red 증가
+                    rgb_array[:, :, 2] = np.clip(rgb_array[:, :, 2] * (1.0 - temp_factor), 0, 255)  # Blue 감소
             
-            # 8. 감마 보정
-            if params['gamma'] != 1.0:
-                rgb_array = np.power(rgb_array / 255.0, 1.0 / params['gamma']) * 255.0
-                rgb_array = np.clip(rgb_array, 0, 255)
+            # 10. Vibrance (자연스러운 채도) - 라이트룸의 Vibrance 슬라이더
+            if params['vibrance'] != 0:
+                hsv_temp = cv2.cvtColor(rgb_array.astype(np.uint8), cv2.COLOR_BGR2HSV)
+                vibrance_factor = 1.0 + (params['vibrance'] / 100.0)  # 15 → 1.15배
+                
+                # Vibrance는 이미 포화된 색상은 적게, 덜 포화된 색상은 많이 조정
+                saturation_mask = hsv_temp[:, :, 1] < 128  # 덜 포화된 영역만
+                hsv_temp[saturation_mask, 1] = np.clip(hsv_temp[saturation_mask, 1] * vibrance_factor, 0, 255)
+                
+                rgb_array = cv2.cvtColor(hsv_temp, cv2.COLOR_HSV2BGR).astype(np.float32)
             
-            # 9. CLAHE 적용 (clarity)
-            if params['clarity'] > 1.0:
-                lab = cv2.cvtColor(rgb_array.astype(np.uint8), cv2.COLOR_RGB2LAB)
-                clahe = cv2.createCLAHE(clipLimit=params['clarity'], tileGridSize=(8, 8))
-                lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-                rgb_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+            # 11. Contrast (대비) - 라이트룸의 Contrast 슬라이더
+            if params['contrast'] != 0:
+                contrast_factor = 1.0 + (params['contrast'] / 100.0)  # 15 → 1.15배
+                # 128을 중심으로 대비 조정
+                rgb_array = np.clip(128 + (rgb_array - 128) * contrast_factor, 0, 255)
             
-            # 10. 최종 하이라이트 부스팅 (금속 반사 살리기)
-            rgb_array = self.boost_highlights(rgb_array)
+            # 12. Clarity (명료도) - 라이트룸의 Clarity 슬라이더
+            if params['clarity'] > 0:
+                clarity_factor = 1.0 + (params['clarity'] / 100.0)  # 25 → 1.25배
+                # 언샤프 마스킹으로 미드톤 대비 향상
+                blurred = cv2.GaussianBlur(rgb_array.astype(np.uint8), (0, 0), 2.0)
+                mask = rgb_array.astype(np.float32) - blurred.astype(np.float32)
+                rgb_array = np.clip(rgb_array + mask * (clarity_factor - 1.0), 0, 255)
             
-            return cv2.cvtColor(rgb_array.astype(np.uint8), cv2.COLOR_RGB2BGR)
+            return rgb_array.astype(np.uint8)
             
         except Exception as e:
-            logger.error(f"Basic ring enhancement error: {e}")
-            return image
-    
-    def boost_highlights(self, image):
-        """금속 하이라이트 부스팅"""
-        try:
-            # 밝은 영역 감지 (상위 20%)
-            gray = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_RGB2GRAY)
-            threshold = np.percentile(gray, 80)
-            highlight_mask = gray > threshold
-            
-            # 하이라이트 영역만 15% 추가 밝기
-            boosted = image.copy()
-            boosted[highlight_mask] = np.clip(boosted[highlight_mask] * 1.15, 0, 255)
-            
-            return boosted
-        except:
+            logger.error(f"Lightroom style enhancement error: {e}")
             return image
     
     def _prepare_image(self, image):
@@ -192,7 +171,7 @@ class NaturalWeddingRingEnhancer:
             return image
     
     def enhance(self, image):
-        """메인 보정 함수 - v5.1 하얀 조명 시스템"""
+        """메인 보정 함수 - v5.2 라이트룸 스타일"""
         try:
             # 1. 이미지 전처리
             prepared_image = self._prepare_image(image)
@@ -203,14 +182,14 @@ class NaturalWeddingRingEnhancer:
             
             logger.info(f"Detected: {metal_type} ring, {lighting_type} lighting")
             
-            # 3. 파라미터 선택
+            # 3. 라이트룸 파라미터 선택
             params = self.metal_params[metal_type][lighting_type]
             
-            # 4. 보정 적용
-            enhanced_image = self.enhance_ring_basic(prepared_image, params)
+            # 4. 라이트룸 스타일 보정 적용
+            enhanced_image = self.apply_lightroom_style(prepared_image, params)
             
-            # 5. 원본과 블렌딩 (85:15 - 더 보정된 느낌)
-            final_image = cv2.addWeighted(prepared_image, 0.15, enhanced_image, 0.85, 0)
+            # 5. 원본과 자연스럽게 블렌딩 (90:10 - 라이트룸처럼 자연스럽게)
+            final_image = cv2.addWeighted(prepared_image, 0.10, enhanced_image, 0.90, 0)
             
             return final_image, metal_type, lighting_type, params
             
@@ -219,25 +198,25 @@ class NaturalWeddingRingEnhancer:
             return image, "unknown", "unknown", {}
 
 # 글로벌 enhancer 인스턴스
-enhancer = NaturalWeddingRingEnhancer()
+enhancer = LightroomStyleWeddingRingEnhancer()
 
 @app.route('/')
 def home():
     """서버 상태 및 엔드포인트 정보"""
     return jsonify({
-        "status": "Wedding Ring AI v5.1 - White Light Overlay System",
-        "version": "5.1",
+        "status": "Wedding Ring AI v5.2 - Lightroom Style Enhancement",
+        "version": "5.2",
         "features": [
-            "Natural 28-pair data based enhancement",
-            "White light overlay effect",
-            "Professional studio lighting simulation",
-            "4 metal types auto-detection",
-            "3 lighting conditions adaptation",
-            "Highlight boosting for metal reflection"
+            "Lightroom-style natural enhancement",
+            "Exposure, Highlights, Whites, Shadows adjustment",
+            "Temperature and Vibrance control",
+            "Clarity and Contrast optimization",
+            "Professional photo editing simulation",
+            "Uniform brightness enhancement"
         ],
         "endpoints": {
             "/health": "Server health check",
-            "/enhance_wedding_ring_advanced": "🔥 Main endpoint - White light overlay system",
+            "/enhance_wedding_ring_advanced": "🔥 Main endpoint - Lightroom style system",
             "/enhance_wedding_ring_natural": "Natural enhancement",
             "/enhance_wedding_ring_segmented": "Legacy segmented enhancement",
             "/enhance_wedding_ring_binary": "Basic binary enhancement"
@@ -247,11 +226,11 @@ def home():
 @app.route('/health')
 def health():
     """서버 상태 확인"""
-    return jsonify({"status": "healthy", "version": "5.1"})
+    return jsonify({"status": "healthy", "version": "5.2"})
 
 @app.route('/enhance_wedding_ring_advanced', methods=['POST'])
 def enhance_wedding_ring_advanced():
-    """🔥 메인 엔드포인트 - v5.1 하얀 조명 시스템"""
+    """🔥 메인 엔드포인트 - v5.2 라이트룸 스타일 시스템"""
     try:
         data = request.get_json()
         
@@ -265,7 +244,7 @@ def enhance_wedding_ring_advanced():
         if image is None:
             return jsonify({"error": "Invalid image data"}), 400
         
-        # v5.1 하얀 조명 보정 적용
+        # v5.2 라이트룸 스타일 보정 적용
         enhanced_image, metal_type, lighting_type, params = enhancer.enhance(image)
         
         # JPEG 인코딩 (고품질)
@@ -279,13 +258,13 @@ def enhance_wedding_ring_advanced():
         enhanced_bytes = io.BytesIO(encoded_image.tobytes())
         enhanced_bytes.seek(0)
         
-        logger.info(f"✅ Enhanced: {metal_type} ring, {lighting_type} lighting")
+        logger.info(f"✅ Enhanced (Lightroom Style): {metal_type} ring, {lighting_type} lighting")
         
         return send_file(
             enhanced_bytes,
             mimetype='image/jpeg',
             as_attachment=False,
-            download_name='enhanced_wedding_ring_v51.jpg'
+            download_name='enhanced_wedding_ring_v52.jpg'
         )
         
     except Exception as e:
@@ -294,7 +273,7 @@ def enhance_wedding_ring_advanced():
 
 @app.route('/enhance_wedding_ring_natural', methods=['POST'])
 def enhance_wedding_ring_natural():
-    """자연스러운 보정 (v5.1과 동일)"""
+    """자연스러운 보정 (v5.2와 동일)"""
     return enhance_wedding_ring_advanced()
 
 @app.route('/enhance_wedding_ring_segmented', methods=['POST'])
