@@ -1,76 +1,96 @@
+from flask import Flask, request, jsonify
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 import base64
 import io
-from flask import Flask, request, jsonify, Response, render_template_string
-import os
+import logging
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-class DetailPreservingEnhancer:
+class WeddingRingEnhancerV625:
     def __init__(self):
-        # 배경 영역 파라미터 (더 보수적, 원본에 가깝게)
-        self.background_params = {
+        # v6.2.5 적정선 조정 파라미터 (v6.3 문제 해결)
+        self.metal_params = {
             'white_gold': {
-                'natural': {'brightness': 1.15, 'contrast': 1.08, 'sharpness': 1.10, 'clarity': 1.05},
-                'warm': {'brightness': 1.18, 'contrast': 1.10, 'sharpness': 1.12, 'clarity': 1.07},
-                'cool': {'brightness': 1.12, 'contrast': 1.06, 'sharpness': 1.08, 'clarity': 1.04}
+                'natural': {
+                    'bg_brightness': 1.22, 'bg_contrast': 1.12, 'bg_sharpness': 1.15, 'bg_clarity': 1.08,
+                    'ring_brightness': 1.30, 'ring_contrast': 1.18, 'ring_sharpness': 1.25, 'ring_clarity': 1.15  # 1.65→1.30으로 감소
+                },
+                'warm': {
+                    'bg_brightness': 1.18, 'bg_contrast': 1.08, 'bg_sharpness': 1.12, 'bg_clarity': 1.05,
+                    'ring_brightness': 1.28, 'ring_contrast': 1.15, 'ring_sharpness': 1.22, 'ring_clarity': 1.12
+                },
+                'cool': {
+                    'bg_brightness': 1.25, 'bg_contrast': 1.15, 'bg_sharpness': 1.18, 'bg_clarity': 1.10,
+                    'ring_brightness': 1.32, 'ring_contrast': 1.20, 'ring_sharpness': 1.28, 'ring_clarity': 1.18
+                }
             },
             'rose_gold': {
-                'natural': {'brightness': 1.14, 'contrast': 1.07, 'sharpness': 1.09, 'clarity': 1.05},
-                'warm': {'brightness': 1.10, 'contrast': 1.05, 'sharpness': 1.07, 'clarity': 1.03},
-                'cool': {'brightness': 1.20, 'contrast': 1.12, 'sharpness': 1.15, 'clarity': 1.08}
+                'natural': {
+                    'bg_brightness': 1.15, 'bg_contrast': 1.08, 'bg_sharpness': 1.10, 'bg_clarity': 1.05,
+                    'ring_brightness': 1.25, 'ring_contrast': 1.12, 'ring_sharpness': 1.18, 'ring_clarity': 1.10
+                },
+                'warm': {
+                    'bg_brightness': 1.10, 'bg_contrast': 1.05, 'bg_sharpness': 1.08, 'bg_clarity': 1.02,
+                    'ring_brightness': 1.22, 'ring_contrast': 1.08, 'ring_sharpness': 1.15, 'ring_clarity': 1.08
+                },
+                'cool': {
+                    'bg_brightness': 1.25, 'bg_contrast': 1.15, 'bg_sharpness': 1.15, 'bg_clarity': 1.08,
+                    'ring_brightness': 1.35, 'ring_contrast': 1.18, 'ring_sharpness': 1.25, 'ring_clarity': 1.15
+                }
             },
             'champagne_gold': {
-                'natural': {'brightness': 1.16, 'contrast': 1.09, 'sharpness': 1.10, 'clarity': 1.06},
-                'warm': {'brightness': 1.13, 'contrast': 1.07, 'sharpness': 1.08, 'clarity': 1.04},
-                'cool': {'brightness': 1.19, 'contrast': 1.11, 'sharpness': 1.13, 'clarity': 1.07}
+                'natural': {
+                    'bg_brightness': 1.18, 'bg_contrast': 1.12, 'bg_sharpness': 1.12, 'bg_clarity': 1.08,
+                    'ring_brightness': 1.28, 'ring_contrast': 1.15, 'ring_sharpness': 1.22, 'ring_clarity': 1.12
+                },
+                'warm': {
+                    'bg_brightness': 1.15, 'bg_contrast': 1.10, 'bg_sharpness': 1.10, 'bg_clarity': 1.05,
+                    'ring_brightness': 1.25, 'ring_contrast': 1.12, 'ring_sharpness': 1.20, 'ring_clarity': 1.10
+                },
+                'cool': {
+                    'bg_brightness': 1.22, 'bg_contrast': 1.15, 'bg_sharpness': 1.15, 'bg_clarity': 1.10,
+                    'ring_brightness': 1.32, 'ring_contrast': 1.18, 'ring_sharpness': 1.25, 'ring_clarity': 1.15
+                }
             },
             'yellow_gold': {
-                'natural': {'brightness': 1.17, 'contrast': 1.10, 'sharpness': 1.11, 'clarity': 1.06},
-                'warm': {'brightness': 1.11, 'contrast': 1.06, 'sharpness': 1.07, 'clarity': 1.03},
-                'cool': {'brightness': 1.22, 'contrast': 1.14, 'sharpness': 1.16, 'clarity': 1.09}
-            }
-        }
-        
-        # 웨딩링 영역 파라미터 (확대샷 수준, 디테일 보존)
-        self.ring_params = {
-            'white_gold': {
-                'natural': {'brightness': 1.50, 'contrast': 1.30, 'sharpness': 1.45, 'clarity': 1.35},
-                'warm': {'brightness': 1.55, 'contrast': 1.35, 'sharpness': 1.50, 'clarity': 1.40},
-                'cool': {'brightness': 1.45, 'contrast': 1.25, 'sharpness': 1.40, 'clarity': 1.30}
-            },
-            'rose_gold': {
-                'natural': {'brightness': 1.48, 'contrast': 1.28, 'sharpness': 1.42, 'clarity': 1.32},
-                'warm': {'brightness': 1.43, 'contrast': 1.23, 'sharpness': 1.38, 'clarity': 1.28},
-                'cool': {'brightness': 1.58, 'contrast': 1.38, 'sharpness': 1.55, 'clarity': 1.45}
-            },
-            'champagne_gold': {
-                'natural': {'brightness': 1.52, 'contrast': 1.32, 'sharpness': 1.46, 'clarity': 1.36},
-                'warm': {'brightness': 1.46, 'contrast': 1.26, 'sharpness': 1.40, 'clarity': 1.30},
-                'cool': {'brightness': 1.60, 'contrast': 1.40, 'sharpness': 1.58, 'clarity': 1.48}
-            },
-            'yellow_gold': {
-                'natural': {'brightness': 1.54, 'contrast': 1.34, 'sharpness': 1.48, 'clarity': 1.38},
-                'warm': {'brightness': 1.44, 'contrast': 1.24, 'sharpness': 1.36, 'clarity': 1.26},
-                'cool': {'brightness': 1.65, 'contrast': 1.45, 'sharpness': 1.65, 'clarity': 1.55}
+                'natural': {
+                    'bg_brightness': 1.20, 'bg_contrast': 1.15, 'bg_sharpness': 1.12, 'bg_clarity': 1.08,
+                    'ring_brightness': 1.30, 'ring_contrast': 1.18, 'ring_sharpness': 1.25, 'ring_clarity': 1.15
+                },
+                'warm': {
+                    'bg_brightness': 1.12, 'bg_contrast': 1.08, 'bg_sharpness': 1.08, 'bg_clarity': 1.05,
+                    'ring_brightness': 1.22, 'ring_contrast': 1.12, 'ring_sharpness': 1.18, 'ring_clarity': 1.10
+                },
+                'cool': {
+                    'bg_brightness': 1.28, 'bg_contrast': 1.20, 'bg_sharpness': 1.18, 'bg_clarity': 1.12,
+                    'ring_brightness': 1.38, 'ring_contrast': 1.22, 'ring_sharpness': 1.30, 'ring_clarity': 1.18
+                }
             }
         }
     
-    def detect_ring_type(self, image):
+    def detect_metal_type(self, image):
         """보수적 금속 감지"""
         try:
             hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-            h_mean = np.mean(hsv[:, :, 0])
-            s_mean = np.mean(hsv[:, :, 1])
+            h, s, v = cv2.split(hsv)
             
-            if s_mean < 25:
-                return 'white_gold'
-            elif h_mean < 15 or h_mean > 160:
-                return 'rose_gold'
-            elif 15 <= h_mean <= 30:
-                return 'yellow_gold'
+            # 보수적 기준 - 애매하면 champagne_gold
+            avg_hue = np.mean(h[v > 50])
+            avg_sat = np.mean(s[v > 50])
+            
+            if avg_hue < 15 or avg_hue > 165:
+                if avg_sat < 50:
+                    return 'white_gold'
+                else:
+                    return 'rose_gold'
+            elif 15 <= avg_hue <= 35:
+                if avg_sat > 80:
+                    return 'yellow_gold'
+                else:
+                    return 'champagne_gold'
             else:
                 return 'champagne_gold'
         except:
@@ -80,283 +100,195 @@ class DetailPreservingEnhancer:
         """보수적 조명 감지"""
         try:
             lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-            b_mean = np.mean(lab[:, :, 2])
+            l, a, b = cv2.split(lab)
             
-            if b_mean > 135:
-                return 'warm'
-            elif b_mean < 115:
+            avg_b = np.mean(b)
+            
+            if avg_b < 120:
                 return 'cool'
+            elif avg_b > 140:
+                return 'warm'
             else:
                 return 'natural'
         except:
             return 'natural'
     
-    def create_precision_ring_mask(self, image):
-        """정밀한 웨딩링 마스크 생성 (디테일 보존용)"""
-        try:
-            # HSV 변환
-            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-            
-            # 더 정교한 금속 영역 감지
-            # 조건 1: 밝기 기반 (더 넓은 범위)
-            _, bright_mask1 = cv2.threshold(hsv[:, :, 2], 70, 255, cv2.THRESH_BINARY)
-            _, bright_mask2 = cv2.threshold(hsv[:, :, 2], 200, 255, cv2.THRESH_BINARY_INV)
-            bright_combined = cv2.bitwise_and(bright_mask1, bright_mask2)
-            
-            # 조건 2: 채도 기반 (금속의 특성)
-            _, sat_mask1 = cv2.threshold(hsv[:, :, 1], 15, 255, cv2.THRESH_BINARY)
-            _, sat_mask2 = cv2.threshold(hsv[:, :, 1], 180, 255, cv2.THRESH_BINARY_INV)
-            sat_combined = cv2.bitwise_and(sat_mask1, sat_mask2)
-            
-            # 두 조건 결합
-            combined_mask = cv2.bitwise_and(bright_combined, sat_combined)
-            
-            # 정교한 모폴로지 연산
-            kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-            kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-            
-            # 작은 노이즈 제거
-            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel_small)
-            # 연결 강화
-            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel_medium)
-            
-            # 디테일 보존을 위한 적당한 블러 (너무 강하지 않게)
-            combined_mask = cv2.GaussianBlur(combined_mask, (21, 21), 0)
-            
-            # 0-1 범위로 정규화
-            mask_normalized = combined_mask.astype(np.float32) / 255.0
-            
-            return mask_normalized
-        except:
-            return np.ones((image.shape[0], image.shape[1]), dtype=np.float32)
+    def create_wedding_ring_mask(self, image):
+        """정밀한 웨딩링 마스크 생성"""
+        height, width = image.shape[:2]
+        
+        # HSV 기반 금속 감지
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        
+        # 금속 색상 범위 (더 넓게)
+        lower_metal1 = np.array([0, 20, 100])
+        upper_metal1 = np.array([30, 255, 255])
+        lower_metal2 = np.array([15, 15, 80])
+        upper_metal2 = np.array([35, 100, 255])
+        
+        mask1 = cv2.inRange(hsv, lower_metal1, upper_metal1)
+        mask2 = cv2.inRange(hsv, lower_metal2, upper_metal2)
+        metal_mask = cv2.bitwise_or(mask1, mask2)
+        
+        # 밝기 기반 보완
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        bright_mask = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY)[1]
+        
+        # 결합 및 정제
+        combined_mask = cv2.bitwise_and(metal_mask, bright_mask)
+        
+        # 형태학적 연산으로 정제
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+        
+        # 가우시안 블러로 부드러운 경계
+        combined_mask = cv2.GaussianBlur(combined_mask, (5, 5), 0)
+        
+        return combined_mask
     
-    def enhance_with_detail_preservation(self, image, params):
-        """디테일 보존하며 파라미터 기반 보정"""
-        try:
-            # PIL로 변환
-            pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    def enhance_region(self, image, params, mask=None):
+        """영역별 보정 적용"""
+        img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        
+        # PIL 기반 안전 보정
+        if 'brightness' in params:
+            enhancer = ImageEnhance.Brightness(img_pil)
+            img_pil = enhancer.enhance(params['brightness'])
+        
+        if 'contrast' in params:
+            enhancer = ImageEnhance.Contrast(img_pil)
+            img_pil = enhancer.enhance(params['contrast'])
+        
+        if 'sharpness' in params:
+            enhancer = ImageEnhance.Sharpness(img_pil)
+            img_pil = enhancer.enhance(params['sharpness'])
+        
+        enhanced = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        
+        # CLAHE 적용 (완화된 설정)
+        if 'clarity' in params and params['clarity'] > 1.0:
+            lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
             
-            # 1. 밝기 향상 (확대샷 수준)
-            brightness_enhancer = ImageEnhance.Brightness(pil_image)
-            enhanced = brightness_enhancer.enhance(params['brightness'])
+            # v6.3 문제 해결: 16x16 타일 (8x8→16x16으로 완화)
+            clip_limit = min(2.0, (params['clarity'] - 1.0) * 4.0 + 1.0)
+            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(16, 16))
+            l = clahe.apply(l)
             
-            # 2. 대비 강화 (디테일 살리기)
-            contrast_enhancer = ImageEnhance.Contrast(enhanced)
-            enhanced = contrast_enhancer.enhance(params['contrast'])
-            
-            # 3. 선명도 강화 (디테일 보존)
-            sharpness_enhancer = ImageEnhance.Sharpness(enhanced)
-            enhanced = sharpness_enhancer.enhance(params['sharpness'])
-            
-            # OpenCV로 변환
-            enhanced_cv = cv2.cvtColor(np.array(enhanced), cv2.COLOR_RGB2BGR)
-            
-            # 4. 고강도 CLAHE (디테일 극대화)
-            lab = cv2.cvtColor(enhanced_cv, cv2.COLOR_BGR2LAB)
-            clahe = cv2.createCLAHE(clipLimit=params['clarity'], tileGridSize=(8, 8))  # 더 작은 타일로 디테일 강화
-            lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-            enhanced_cv = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-            
-            return enhanced_cv
-        except:
-            return image
+            enhanced = cv2.merge([l, a, b])
+            enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        
+        return enhanced
     
-    def selective_detail_enhancement(self, image, ring_mask, background_params, ring_params):
-        """영역별 선택적 디테일 보정"""
+    def enhance_wedding_ring(self, image_data):
+        """메인 보정 함수"""
         try:
-            # 배경 영역 보정 (보수적)
-            background_enhanced = self.enhance_with_detail_preservation(image, background_params)
-            
-            # 웨딩링 영역 보정 (확대샷 수준 + 디테일 강화)
-            ring_enhanced = self.enhance_with_detail_preservation(image, ring_params)
-            
-            # 정밀한 블렌딩
-            result = background_enhanced.astype(np.float32)
-            ring_enhanced_f = ring_enhanced.astype(np.float32)
-            
-            # 3채널 마스크 확장
-            mask_3d = np.stack([ring_mask, ring_mask, ring_mask], axis=2)
-            
-            # 웨딩링 영역 선택적 적용
-            result = result * (1 - mask_3d) + ring_enhanced_f * mask_3d
-            
-            # 정수형 변환
-            result = np.clip(result, 0, 255).astype(np.uint8)
-            
-            return result
-        except:
-            return image
-    
-    def advanced_noise_reduction(self, image):
-        """고급 노이즈 제거 (디테일 보존)"""
-        try:
-            # 디테일 보존형 bilateral filter
-            result = cv2.bilateralFilter(image, 7, 80, 80)
-            return result
-        except:
-            return image
-    
-    def detail_aware_highlight_boost(self, image, boost_factor=0.08):
-        """디테일 인식 하이라이트 부스팅"""
-        try:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            
-            # 상위 20% 밝은 영역 (더 선택적)
-            threshold = np.percentile(gray, 80)
-            highlight_mask = (gray > threshold).astype(np.float32)
-            
-            # 적당한 블러 (디테일 보존)
-            highlight_mask = cv2.GaussianBlur(highlight_mask, (15, 15), 0)
-            
-            # 8% 하이라이트 증가 (확대샷 수준)
-            result = image.astype(np.float32)
-            for c in range(3):
-                result[:, :, c] += result[:, :, c] * highlight_mask * boost_factor
-            
-            result = np.clip(result, 0, 255).astype(np.uint8)
-            return result
-        except:
-            return image
-    
-    def conservative_blend_with_original(self, enhanced, original, blend_ratio=0.80):
-        """더 보수적인 원본 블렌딩"""
-        try:
-            # 80% 보정 + 20% 원본 (더 자연스럽게)
-            result = cv2.addWeighted(enhanced, blend_ratio, original, 1 - blend_ratio, 0)
-            return result
-        except:
-            return enhanced
-    
-    def enhance_wedding_ring_with_details(self, image_data):
-        """디테일 보존 + 확대샷 수준 메인 함수"""
-        try:
-            # 1. 이미지 디코딩 및 리사이징
+            # 이미지 디코딩 및 리샘플링
             nparr = np.frombuffer(image_data, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            original = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
-            if image is None:
-                raise ValueError("Failed to decode image")
+            height, width = original.shape[:2]
+            if height > 2048 or width > 2048:
+                scale = min(2048/height, 2048/width)
+                new_height, new_width = int(height * scale), int(width * scale)
+                original = cv2.resize(original, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
             
-            # 메모리 최적화
-            height, width = image.shape[:2]
-            if width > 2048:
-                scale = 2048 / width
-                new_width = 2048
-                new_height = int(height * scale)
-                image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+            # 노이즈 제거
+            denoised = cv2.bilateralFilter(original, 9, 75, 75)
             
-            original = image.copy()
+            # 금속/조명 감지
+            metal_type = self.detect_metal_type(denoised)
+            lighting = self.detect_lighting(denoised)
             
-            # 2. 자동 분석
-            ring_type = self.detect_ring_type(image)
-            lighting = self.detect_lighting(image)
-            background_params = self.background_params[ring_type][lighting]
-            ring_params = self.ring_params[ring_type][lighting]
+            params = self.metal_params.get(metal_type, self.metal_params['champagne_gold'])[lighting]
             
-            # 3. 고급 노이즈 제거 (디테일 보존)
-            image = self.advanced_noise_reduction(image)
+            # 웨딩링 마스크 생성
+            ring_mask = self.create_wedding_ring_mask(denoised)
+            bg_mask = cv2.bitwise_not(ring_mask)
             
-            # 4. 정밀한 웨딩링 마스크 생성
-            ring_mask = self.create_precision_ring_mask(image)
+            # 배경 보정 (보수적)
+            bg_params = {
+                'brightness': params['bg_brightness'],
+                'contrast': params['bg_contrast'],
+                'sharpness': params['bg_sharpness'],
+                'clarity': params['bg_clarity']
+            }
+            bg_enhanced = self.enhance_region(denoised, bg_params)
             
-            # 5. 영역별 선택적 디테일 보정 (핵심)
-            image = self.selective_detail_enhancement(image, ring_mask, background_params, ring_params)
+            # 웨딩링 보정 (적정선 조정)
+            ring_params = {
+                'brightness': params['ring_brightness'],
+                'contrast': params['ring_contrast'],
+                'sharpness': params['ring_sharpness'],
+                'clarity': params['ring_clarity']
+            }
+            ring_enhanced = self.enhance_region(denoised, ring_params)
             
-            # 6. 디테일 인식 하이라이트 부스팅
-            image = self.detail_aware_highlight_boost(image, 0.08)
+            # 마스크 적용하여 결합
+            ring_mask_3d = cv2.merge([ring_mask, ring_mask, ring_mask]) / 255.0
+            bg_mask_3d = cv2.merge([bg_mask, bg_mask, bg_mask]) / 255.0
             
-            # 7. 보수적 원본 블렌딩
-            result = self.conservative_blend_with_original(image, original, 0.80)
+            combined = (ring_enhanced * ring_mask_3d + bg_enhanced * bg_mask_3d).astype(np.uint8)
             
-            # 8. JPEG 인코딩
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95, int(cv2.IMWRITE_JPEG_PROGRESSIVE), 1]
-            _, buffer = cv2.imencode('.jpg', result, encode_param)
+            # 보수적 블렌딩 (80% 보정 + 20% 원본)
+            final_result = cv2.addWeighted(combined, 0.8, denoised, 0.2, 0)
             
-            return buffer.tobytes(), ring_type, lighting
+            # 미묘한 하이라이트 부스팅
+            gray = cv2.cvtColor(final_result, cv2.COLOR_BGR2GRAY)
+            highlight_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)[1]
+            highlight_boost = cv2.addWeighted(final_result, 1.0, final_result, 0.05, 0)
+            highlight_mask_3d = cv2.merge([highlight_mask, highlight_mask, highlight_mask]) / 255.0
+            final_result = (highlight_boost * highlight_mask_3d + final_result * (1 - highlight_mask_3d)).astype(np.uint8)
+            
+            return final_result, metal_type, lighting
             
         except Exception as e:
-            print(f"Enhancement error: {str(e)}")
-            raise
-
-# Flask 앱 설정
-enhancer = DetailPreservingEnhancer()
+            logging.error(f"Enhancement error: {str(e)}")
+            return None, "error", "error"
 
 @app.route('/')
-def home():
-    return """
-    <h1>🔥 Wedding Ring V6.3 Detail Preserving System</h1>
-    <h2>Available Endpoints:</h2>
-    <ul>
-        <li><strong>/health</strong> - Server status</li>
-        <li><strong>/enhance_wedding_ring_v6</strong> - Detail Preserving Enhancement ⭐</li>
-        <li><strong>/enhance_wedding_ring_advanced</strong> - V6.2 System (backup)</li>
-    </ul>
-    <p><strong>V6.3 Features:</strong></p>
-    <ul>
-        <li>✅ 배경: 원본에 더 가까움 (1.10-1.22)</li>
-        <li>✅ 웨딩링: 확대샷 수준 밝기 (1.45-1.65)</li>
-        <li>✅ 디테일 극대화 (밀그레인, 큐빅, 텍스처)</li>
-        <li>✅ 정밀한 마스크 + 보수적 블렌딩</li>
-    </ul>
-    """
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "version": "v6.2.5",
+        "message": "Wedding Ring Enhancement API - v6.3 문제 해결 버전",
+        "endpoints": [
+            "/health",
+            "/enhance_wedding_ring_v625"
+        ]
+    })
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "version": "6.3", "message": "Detail Preserving System Ready"})
+    return jsonify({"status": "healthy", "version": "v6.2.5"})
 
-@app.route('/enhance_wedding_ring_v6', methods=['POST'])
-def enhance_wedding_ring_v6():
-    """V6.3 디테일 보존 메인 엔드포인트"""
+@app.route('/enhance_wedding_ring_v625', methods=['POST'])
+def enhance_wedding_ring_v625():
     try:
         data = request.get_json()
         if not data or 'image_base64' not in data:
-            return jsonify({"error": "No image_base64 provided"}), 400
+            return jsonify({"error": "No image data provided"}), 400
         
         # Base64 디코딩
         image_data = base64.b64decode(data['image_base64'])
         
-        # 디테일 보존 보정 수행
-        enhanced_image, ring_type, lighting = enhancer.enhance_wedding_ring_with_details(image_data)
+        # 보정 수행
+        enhancer = WeddingRingEnhancerV625()
+        enhanced_image, metal_type, lighting = enhancer.enhance_wedding_ring(image_data)
         
-        # 바이너리 응답 반환
-        return Response(
-            enhanced_image,
-            mimetype='image/jpeg',
-            headers={
-                'X-Ring-Type': ring_type,
-                'X-Lighting': lighting,
-                'X-Version': '6.3-Detail-Preserving'
-            }
-        )
+        if enhanced_image is None:
+            return jsonify({"error": "Enhancement failed"}), 500
         
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/enhance_wedding_ring_advanced', methods=['POST'])
-def enhance_wedding_ring_advanced():
-    """V6.2 백업 엔드포인트"""
-    try:
-        data = request.get_json()
-        if not data or 'image_base64' not in data:
-            return jsonify({"error": "No image_base64 provided"}), 400
+        # JPEG 인코딩
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
+        _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
         
-        # V6.3 로직으로 처리 (동일)
-        image_data = base64.b64decode(data['image_base64'])
-        enhanced_image, ring_type, lighting = enhancer.enhance_wedding_ring_with_details(image_data)
-        
-        return Response(
-            enhanced_image,
-            mimetype='image/jpeg',
-            headers={
-                'X-Ring-Type': ring_type,
-                'X-Lighting': lighting,
-                'X-Version': '6.3-Backup'
-            }
-        )
+        return buffer.tobytes(), 200, {'Content-Type': 'image/jpeg'}
         
     except Exception as e:
+        logging.error(f"API error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=8080)
