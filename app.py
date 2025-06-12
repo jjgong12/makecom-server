@@ -9,14 +9,14 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-class GentleLightroomEnhancer:
+class BalancedMidVersionEnhancer:
     def __init__(self):
-        self.name = "GentleLightroomEnhancer"
+        self.name = "BalancedMidVersionEnhancer"
         
     def enhance_image(self, image_base64):
         """
-        버전10 + 라이트룸 살짝 반영 시스템
-        자연스럽게 조금만 개선
+        버전10 + 버전17 중간값 시스템 (버전13.5)
+        안정성과 개선 효과의 완벽한 균형
         """
         try:
             # Base64 디코딩
@@ -37,15 +37,15 @@ class GentleLightroomEnhancer:
             cv_image = cv2.bilateralFilter(cv_image, 5, 20, 20)  # 약하게 처리
             image = Image.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
             
-            # 2. 밝기 조정 (버전10 기준 + 라이트룸 살짝)
-            # 1.18 → 1.22 (4% 증가만)
+            # 2. 밝기 조정 (버전10과 버전17의 중간)
+            # 버전10: 1.18, 버전17: 1.22 → 중간: 1.20
             enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(1.22)  # 22% 향상 (자연스럽게)
+            image = enhancer.enhance(1.20)  # 20% 향상 (중간값)
             
-            # 3. 대비 조정 (버전10 기준 + 라이트룸 살짝)
-            # 1.12 → 1.15 (3% 증가만)
+            # 3. 대비 조정 (버전10과 버전17의 중간)
+            # 버전10: 1.12, 버전17: 1.15 → 중간: 1.14
             enhancer = ImageEnhance.Contrast(image)
-            image = enhancer.enhance(1.15)  # 15% 향상 (자연스럽게)
+            image = enhancer.enhance(1.14)  # 14% 향상 (중간값)
             
             # 4. 색온도 조정 (매우 약하게, 버전10 기준)
             # LAB 색공간에서 살짝만 조정
@@ -53,25 +53,27 @@ class GentleLightroomEnhancer:
             lab_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab_image)
             
-            # A 채널: 베이지 톤 제거 (매우 약하게)
-            a = cv2.add(a, -3)  # 3만큼만 (자연스럽게)
+            # A 채널: 베이지 톤 제거 (중간값)
+            # 버전10: -4, 버전17: -3 → 중간: -3.5 ≈ -4
+            a = cv2.add(a, -4)  # 4만큼 (중간값)
             
-            # B 채널: 따뜻함 감소 (매우 약하게)  
-            b = cv2.add(b, -4)  # 4만큼만 (자연스럽게)
+            # B 채널: 따뜻함 감소 (중간값)  
+            # 버전10: -3, 버전17: -4 → 중간: -3.5 ≈ -4
+            b = cv2.add(b, -4)  # 4만큼 (중간값)
             
             lab_image = cv2.merge([l, a, b])
             cv_image = cv2.cvtColor(lab_image, cv2.COLOR_LAB2BGR)
             image = Image.fromarray(cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB))
             
-            # 5. 화이트 오버레이 (버전10 기준 + 살짝)
-            # 10% → 12% (2% 증가만)
+            # 5. 화이트 오버레이 (버전10과 버전17의 중간)
+            # 버전10: 10%, 버전17: 12% → 중간: 11%
             pure_white = Image.new('RGB', image.size, (255, 255, 255))
-            image = Image.blend(image, pure_white, 0.12)  # 12% 블렌딩 (자연스럽게)
+            image = Image.blend(image, pure_white, 0.11)  # 11% 블렌딩 (중간값)
             
-            # 6. 선명도 조정 (버전10 기준 + 살짝)
-            # 1.15 → 1.18 (3% 증가만)
+            # 6. 선명도 조정 (버전10과 버전17의 중간)
+            # 버전10: 1.15, 버전17: 1.18 → 중간: 1.17
             enhancer = ImageEnhance.Sharpness(image)
-            image = enhancer.enhance(1.18)  # 18% 향상 (자연스럽게)
+            image = enhancer.enhance(1.17)  # 17% 향상 (중간값)
             
             # 7. 미세한 하이라이트 부스팅 (매우 약하게)
             # 상위 5% 영역만 8% 증가 (매우 보수적)
@@ -81,9 +83,9 @@ class GentleLightroomEnhancer:
             img_array[highlight_mask] = np.clip(img_array[highlight_mask] * 1.08, 0, 255)  # 8% 증가
             image = Image.fromarray(img_array.astype(np.uint8))
             
-            # 8. 원본과 블렌딩 (자연스러움 유지)
-            # 원본 영향 10% (자연스러움 보장)
-            original_influence = 0.10  # 10% 원본 보존
+            # 8. 원본과 블렌딩 (중간값)
+            # 버전10: 15%, 버전17: 10% → 중간: 12.5% ≈ 12%
+            original_influence = 0.12  # 12% 원본 보존 (중간값)
             if original_influence > 0:
                 original = Image.open(io.BytesIO(base64.b64decode(image_base64))).convert('RGB')
                 if max(original.size) > 2048:
@@ -112,32 +114,32 @@ class GentleLightroomEnhancer:
             return output_buffer.getvalue()
             
         except Exception as e:
-            print(f"Gentle Enhancement error: {str(e)}")
+            print(f"Balanced Enhancement error: {str(e)}")
             print(traceback.format_exc())
             return None
 
 # 글로벌 enhancer 인스턴스
-enhancer = GentleLightroomEnhancer()
+enhancer = BalancedMidVersionEnhancer()
 
 @app.route('/')
 def home():
     return jsonify({
-        "status": "Wedding Ring Enhancement API - Gentle Version",
-        "version": "Gentle v10.5",
-        "description": "Natural enhancement based on Version 10 + gentle Lightroom touches",
+        "status": "Wedding Ring Enhancement API - Perfect Balance",
+        "version": "Balanced v13.5",
+        "description": "Perfect balance between Version 10 stability and Version 17 enhancement",
         "analysis": {
-            "base": "Version 10 parameters (proven stable)",
-            "enhancement": "Gentle Lightroom analysis application",
-            "philosophy": "자연스러움 우선, 과도한 보정 방지",
-            "adjustments": "버전10 + 라이트룸 살짝 (12% 화이트 블렌딩)"
+            "base": "Version 10 (proven stable) + Version 17 (enhanced) 중간값",
+            "philosophy": "안정성과 효과의 완벽한 균형",
+            "method": "수학적 중간값 계산으로 최적 파라미터 도출",
+            "result": "자연스러우면서도 확실한 개선 효과"
         },
         "parameters": {
-            "brightness": "1.22 (22% - 자연스럽게)",
-            "contrast": "1.15 (15% - 균형있게)",
-            "white_overlay": "12% (자연스럽게)",
-            "sharpness": "1.18 (18% - 적절하게)",
-            "color_temp": "매우 약한 조정",
-            "original_blend": "10% (자연스러움 보장)"
+            "brightness": "1.20 (20% - 중간값)",
+            "contrast": "1.14 (14% - 중간값)",
+            "white_overlay": "11% (중간값)",
+            "sharpness": "1.17 (17% - 중간값)",
+            "color_temp": "A:-4, B:-4 (중간값)",
+            "original_blend": "12% (중간값)"
         },
         "endpoints": [
             "/health",
@@ -154,11 +156,11 @@ def health():
     return jsonify({
         "status": "healthy", 
         "timestamp": datetime.now().isoformat(),
-        "version": "Gentle v10.5",
-        "enhancement_level": "Natural & Balanced"
+        "version": "Balanced v13.5",
+        "enhancement_level": "Perfect Balance - Stable & Effective"
     })
 
-def enhance_gentle():
+def enhance_balanced():
     try:
         data = request.get_json()
         if not data or 'image_base64' not in data:
@@ -166,7 +168,7 @@ def enhance_gentle():
         
         image_base64 = data['image_base64']
         
-        # 자연스러운 처리
+        # 균형잡힌 처리
         enhanced_image_bytes = enhancer.enhance_image(image_base64)
         
         if enhanced_image_bytes is None:
@@ -177,41 +179,41 @@ def enhance_gentle():
             io.BytesIO(enhanced_image_bytes),
             mimetype='image/jpeg',
             as_attachment=True,
-            download_name=f'gentle_enhanced_{int(datetime.now().timestamp())}.jpg'
+            download_name=f'balanced_v13_5_{int(datetime.now().timestamp())}.jpg'
         )
         
     except Exception as e:
         print(f"API error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# 모든 엔드포인트를 자연스러운 처리로 통일
+# 모든 엔드포인트를 균형잡힌 처리로 통일
 @app.route('/enhance_wedding_ring_v6', methods=['POST'])
 def enhance_v6():
-    return enhance_gentle()
+    return enhance_balanced()
 
 @app.route('/enhance_wedding_ring_advanced', methods=['POST'])
 def enhance_advanced():
-    return enhance_gentle()
+    return enhance_balanced()
 
 @app.route('/enhance_wedding_ring_segmented', methods=['POST'])
 def enhance_segmented():
-    return enhance_gentle()
+    return enhance_balanced()
 
 @app.route('/enhance_wedding_ring_binary', methods=['POST'])
 def enhance_binary():
-    return enhance_gentle()
+    return enhance_balanced()
 
 @app.route('/enhance_wedding_ring_natural', methods=['POST'])
 def enhance_natural():
-    return enhance_gentle()
+    return enhance_balanced()
 
 @app.route('/enhance_wedding_ring_simple', methods=['POST'])
 def enhance_simple():
-    return enhance_gentle()
+    return enhance_balanced()
 
-@app.route('/enhance_wedding_ring_gentle', methods=['POST'])
-def enhance_gentle_route():
-    return enhance_gentle()
+@app.route('/enhance_wedding_ring_balanced', methods=['POST'])
+def enhance_balanced_route():
+    return enhance_balanced()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
