@@ -219,8 +219,22 @@ class NaturalWeddingRingEnhancer:
             print(f"Natural processing error: {e}")
             return image, {'error': str(e)}
 
-# Flask 앱 엔드포인트들
+# Flask 앱 인스턴스
 enhancer = NaturalWeddingRingEnhancer()
+
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'message': 'Wedding Ring Enhancement API',
+        'version': 'v5.0_natural',
+        'endpoints': [
+            '/health',
+            '/enhance_wedding_ring_advanced',
+            '/enhance_wedding_ring_segmented',
+            '/enhance_wedding_ring_binary',
+            '/enhance_wedding_ring_natural'
+        ]
+    })
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -229,6 +243,106 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'version': 'v5.0_natural'
     })
+
+@app.route('/enhance_wedding_ring_advanced', methods=['POST'])
+def enhance_wedding_ring_advanced():
+    """A_001 컨셉샷용 자연스러운 보정 (커플링 작아도 무시 안함)"""
+    try:
+        data = request.get_json()
+        image_base64 = data['image_base64']
+        
+        # Base64 디코딩
+        image_data = base64.b64decode(image_base64)
+        image_array = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return jsonify({'error': 'Invalid image data'}), 400
+        
+        # 자연스러운 보정 처리
+        enhanced_image, metadata = enhancer.process_image_natural(image)
+        
+        # JPEG로 인코딩 (고품질)
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95, int(cv2.IMWRITE_JPEG_PROGRESSIVE), 1]
+        _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
+        
+        # 바이너리 데이터로 직접 반환
+        return send_file(
+            io.BytesIO(buffer.tobytes()),
+            mimetype='image/jpeg',
+            as_attachment=True,
+            download_name=f'advanced_enhanced_{int(time.time())}.jpg'
+        )
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/enhance_wedding_ring_segmented', methods=['POST'])
+def enhance_wedding_ring_segmented():
+    """기존 segmented 엔드포인트 - 자연스러운 보정으로 교체"""
+    try:
+        data = request.get_json()
+        image_base64 = data['image_base64']
+        
+        # Base64 디코딩
+        image_data = base64.b64decode(image_base64)
+        image_array = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return jsonify({'error': 'Invalid image data'}), 400
+        
+        # 자연스러운 보정 처리 (동일)
+        enhanced_image, metadata = enhancer.process_image_natural(image)
+        
+        # JPEG로 인코딩
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
+        _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
+        
+        return send_file(
+            io.BytesIO(buffer.tobytes()),
+            mimetype='image/jpeg',
+            as_attachment=True,
+            download_name=f'segmented_enhanced_{int(time.time())}.jpg'
+        )
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/enhance_wedding_ring_binary', methods=['POST'])
+def enhance_wedding_ring_binary():
+    """기존 binary 엔드포인트 - 자연스러운 보정으로 교체"""
+    try:
+        data = request.get_json()
+        image_base64 = data['image_base64']
+        
+        # Base64 디코딩
+        image_data = base64.b64decode(image_base64)
+        image_array = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            return jsonify({'error': 'Invalid image data'}), 400
+        
+        # 자연스러운 보정 처리
+        enhanced_image, metadata = enhancer.process_image_natural(image)
+        
+        # JPEG로 인코딩
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
+        _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
+        
+        return send_file(
+            io.BytesIO(buffer.tobytes()),
+            mimetype='image/jpeg',
+            as_attachment=True,
+            download_name=f'binary_enhanced_{int(time.time())}.jpg'
+        )
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/enhance_wedding_ring_natural', methods=['POST'])
 def enhance_wedding_ring_natural():
@@ -258,39 +372,6 @@ def enhance_wedding_ring_natural():
             mimetype='image/jpeg',
             as_attachment=True,
             download_name=f'natural_enhanced_{int(time.time())}.jpg'
-        )
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/enhance_wedding_ring_segmented', methods=['POST'])
-def enhance_wedding_ring_segmented():
-    """기존 엔드포인트 - 자연스러운 보정으로 교체"""
-    try:
-        data = request.get_json()
-        image_base64 = data['image_base64']
-        
-        # Base64 디코딩
-        image_data = base64.b64decode(image_base64)
-        image_array = np.frombuffer(image_data, np.uint8)
-        image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-        
-        if image is None:
-            return jsonify({'error': 'Invalid image data'}), 400
-        
-        # 자연스러운 보정 처리 (동일)
-        enhanced_image, metadata = enhancer.process_image_natural(image)
-        
-        # JPEG로 인코딩
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
-        _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
-        
-        return send_file(
-            io.BytesIO(buffer.tobytes()),
-            mimetype='image/jpeg',
-            as_attachment=True,
-            download_name=f'segmented_enhanced_{int(time.time())}.jpg'
         )
         
     except Exception as e:
