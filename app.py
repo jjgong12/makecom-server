@@ -9,7 +9,7 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-class SegmentedWeddingRingEnhancer:
+class AdvancedWeddingRingEnhancer:
     def __init__(self):
         # 28쌍 학습 데이터 기반 최적 파라미터
         self.metal_params = {
@@ -91,140 +91,304 @@ class SegmentedWeddingRingEnhancer:
             print(f"Lighting detection error: {e}")
             return 'natural'
 
-    def extract_ring_region(self, image):
-        """웨딩링 영역 자동 추출"""
+    def extract_ring_region_enhanced(self, image):
+        """커플링 영역 확대 - 더 정확한 감지"""
         try:
+            h, w = image.shape[:2]
+            
             # HSV 변환
             hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-            h, s, v = cv2.split(hsv)
+            h_channel, s_channel, v_channel = cv2.split(hsv)
             
-            # 금속 특성 기반 마스크 생성
-            # 1. 밝기 기반 (금속 반사)
-            bright_mask = v > 120
+            # 1. 금속 반사 영역 감지 (확대)
+            bright_mask = v_channel > 100  # 기존 120에서 100으로 낮춤
             
-            # 2. 채도 기반 (금속 특성)
-            metal_mask = (s > 20) & (s < 200)
+            # 2. 금속 색상 범위 확대
+            metal_mask1 = (h_channel < 40) | (h_channel > 140)  # 금색/은색/로즈골드 범위 확대
+            metal_mask2 = (h_channel >= 40) & (h_channel <= 140) & (s_channel < 120)  # 화이트골드 범위 확대
+            metal_mask = metal_mask1 | metal_mask2
             
-            # 3. 색상 기반 (금속 색상 범위)
-            color_mask1 = (h < 30) | (h > 150)  # 금색/은색/로즈골드
-            color_mask2 = (h >= 30) & (h <= 150) & (s < 100)  # 화이트골드
-            color_mask = color_mask1 | color_mask2
+            # 3. 채도 조건 완화
+            saturation_mask = (s_channel > 10) & (s_channel < 250)  # 범위 확대
             
-            # 마스크 결합
-            ring_mask = bright_mask & metal_mask & color_mask
+            # 4. 모든 조건 결합
+            ring_mask = bright_mask & metal_mask & saturation_mask
             
-            # 형태학적 연산으로 노이즈 제거
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            ring_mask = cv2.morphologyEx(ring_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
-            ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_OPEN, kernel)
+            # 5. 형태학적 연산으로 노이즈 제거 및 영역 확대
+            kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))  # 크기 증가
+            ring_mask = cv2.morphologyEx(ring_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel_close)
             
-            # 가장 큰 연결 컴포넌트만 유지
+            kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_OPEN, kernel_open)
+            
+            # 6. 팽창 연산으로 영역 더 확대
+            kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
+            ring_mask = cv2.dilate(ring_mask, kernel_dilate, iterations=2)
+            
+            # 7. 연결 컴포넌트 분석 - 가장 큰 영역들 유지 (여러 개 링 고려)
             contours, _ = cv2.findContours(ring_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
-                largest_contour = max(contours, key=cv2.contourArea)
+                # 면적 기준으로 정렬
+                contours = sorted(contours, key=cv2.contourArea, reverse=True)
                 ring_mask = np.zeros_like(ring_mask)
-                cv2.fillPoly(ring_mask, [largest_contour], 255)
+                
+                # 상위 2개 윤곽선 유지 (커플링 2개)
+                for i, contour in enumerate(contours[:2]):
+                    if cv2.contourArea(contour) > 1000:  # 최소 면적 조건
+                        cv2.fillPoly(ring_mask, [contour], 255)
+            
+            # 8. 경계 부드럽게 처리 (테두리 아티팩트 해결)
+            ring_mask = cv2.GaussianBlur(ring_mask.astype(np.float32), (5, 5), 2)
+            ring_mask = (ring_mask > 0.3).astype(np.uint8) * 255
             
             return ring_mask.astype(bool)
             
         except Exception as e:
-            print(f"Ring extraction error: {e}")
-            # 실패시 중앙 영역을 링으로 가정
+            print(f"Enhanced ring extraction error: {e}")
+            # 실패시 중앙 영역들을 링으로 가정
             h, w = image.shape[:2]
             mask = np.zeros((h, w), dtype=bool)
-            cv2.circle(mask, (w//2, h//2), min(w, h)//4, True, -1)
+            # 2개 링 가정
+            cv2.circle(mask, (w//3, h//2), min(w, h)//6, True, -1)
+            cv2.circle(mask, (2*w//3, h//2), min(w, h)//6, True, -1)
             return mask
 
-    def enhance_ring_basic(self, ring_region):
-        """웨딩링 영역 기본 보정 - 노이즈 제거 + 선명도 + 최소한의 보정"""
-        if ring_region is None or ring_region.size == 0:
-            return ring_region
-        
-        # 웨딩링 기본 보정 파라미터 (문서 기준)
-        ring_basic_params = {
-            'brightness': 1.02,      # 최소한의 밝기 조정
-            'contrast': 1.05,        # 살짝 대비 향상
-            'sharpness': 1.25,       # 유무광 재질 확인 가능한 선명도
-            'noise_reduction': 1.15, # 노이즈 제거
-            'clarity': 1.08          # 기본적인 명료도
-        }
-        
+    def detect_surface_finish(self, ring_region):
+        """유무광 재질 감지"""
         try:
+            if ring_region.size == 0:
+                return 'polished'
+            
+            # 그레이스케일 변환
+            gray = cv2.cvtColor(ring_region, cv2.COLOR_BGR2GRAY)
+            
+            # Laplacian 분산으로 텍스처 분석
+            laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            
+            # 히스토그램 분석
+            hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+            
+            # 밝은 픽셀 비율 계산
+            bright_ratio = np.sum(hist[200:]) / np.sum(hist)
+            
+            # 표준편차 계산
+            std_dev = np.std(gray)
+            
+            # 유광/무광 판단
+            if bright_ratio > 0.15 and std_dev > 50:
+                return 'polished'  # 유광 (반사가 강함)
+            else:
+                return 'matte'     # 무광 (반사가 약함)
+                
+        except Exception as e:
+            print(f"Surface finish detection error: {e}")
+            return 'polished'
+
+    def enhance_cubic_details(self, ring_region):
+        """큐빅/밀그레인 디테일 강화"""
+        try:
+            if ring_region.size == 0:
+                return ring_region
+            
+            # 1. 매우 밝은 영역 감지 (큐빅/다이아몬드)
+            gray = cv2.cvtColor(ring_region, cv2.COLOR_BGR2GRAY)
+            cubic_mask = gray > 220
+            
+            # 2. 작은 연결 컴포넌트 찾기 (작은 큐빅들)
+            contours, _ = cv2.findContours(cubic_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            detail_enhanced = ring_region.copy()
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if 10 < area < 500:  # 작은 큐빅 크기 범위
+                    # 마스크 생성
+                    mask = np.zeros(gray.shape, dtype=np.uint8)
+                    cv2.fillPoly(mask, [contour], 255)
+                    
+                    # 해당 영역만 추출
+                    cubic_region = ring_region.copy()
+                    cubic_region[mask == 0] = 0
+                    
+                    # 큐빅 영역 강화
+                    enhanced_cubic = self.enhance_cubic_sparkle(cubic_region, mask)
+                    
+                    # 원본에 적용
+                    detail_enhanced[mask > 0] = enhanced_cubic[mask > 0]
+            
+            # 3. 밀그레인 패턴 강화 (가장자리 세밀한 패턴)
+            detail_enhanced = self.enhance_milgrain_pattern(detail_enhanced)
+            
+            return detail_enhanced
+            
+        except Exception as e:
+            print(f"Cubic detail enhancement error: {e}")
+            return ring_region
+
+    def enhance_cubic_sparkle(self, cubic_region, mask):
+        """개별 큐빅 반짝임 강화"""
+        try:
+            # LAB 색공간에서 밝기 강화
+            lab = cv2.cvtColor(cubic_region, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            
+            # L 채널 강화 (밝기)
+            l[mask > 0] = np.clip(l[mask > 0] * 1.3, 0, 255)
+            
+            # 대비 강화
+            l[mask > 0] = np.clip((l[mask > 0] - 128) * 1.4 + 128, 0, 255)
+            
+            enhanced_lab = cv2.merge([l, a, b])
+            enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+            
+            # 언샤프 마스킹으로 선명도 극대화
+            gaussian = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
+            enhanced = cv2.addWeighted(enhanced, 2.0, gaussian, -1.0, 0)
+            
+            return enhanced
+            
+        except Exception as e:
+            print(f"Cubic sparkle error: {e}")
+            return cubic_region
+
+    def enhance_milgrain_pattern(self, ring_region):
+        """밀그레인 패턴 강화"""
+        try:
+            # 가장자리 감지
+            gray = cv2.cvtColor(ring_region, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 50, 150)
+            
+            # 가장자리 주변 선명도 강화
+            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+            sharpened = cv2.filter2D(ring_region, -1, kernel)
+            
+            # 가장자리에만 적용
+            edge_dilated = cv2.dilate(edges, np.ones((3,3), np.uint8), iterations=1)
+            enhanced = ring_region.copy()
+            enhanced[edge_dilated > 0] = sharpened[edge_dilated > 0]
+            
+            return enhanced
+            
+        except Exception as e:
+            print(f"Milgrain enhancement error: {e}")
+            return ring_region
+
+    def enhance_ring_professional(self, ring_region, surface_finish):
+        """유무광 재질에 따른 프로페셔널 보정"""
+        try:
+            if ring_region.size == 0:
+                return ring_region
+            
             # 1. 노이즈 제거 (bilateral filter)
             denoised = cv2.bilateralFilter(ring_region, 9, 75, 75)
             
-            # 2. 밝기/대비 조정
-            brightness_factor = ring_basic_params['brightness']
-            contrast_factor = ring_basic_params['contrast']
+            # 2. 유무광에 따른 차별 보정
+            if surface_finish == 'polished':
+                # 유광: 반사와 대비 강화
+                enhanced = self.enhance_polished_surface(denoised)
+            else:
+                # 무광: 질감과 균일성 강화
+                enhanced = self.enhance_matte_surface(denoised)
             
-            # 밝기/대비 적용
-            enhanced = cv2.convertScaleAbs(denoised, 
-                                         alpha=contrast_factor, 
-                                         beta=(brightness_factor - 1.0) * 50)
+            # 3. 밝은 조명을 받은 것처럼 보정
+            brightened = self.simulate_bright_lighting(enhanced)
             
-            # 3. 선명도 향상 (언샤프 마스킹)
-            sharpness_factor = ring_basic_params['sharpness']
-            gaussian_blur = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
-            sharpened = cv2.addWeighted(enhanced, sharpness_factor, 
-                                       gaussian_blur, -(sharpness_factor - 1.0), 0)
+            # 4. 큐빅/밀그레인 디테일 강화
+            detail_enhanced = self.enhance_cubic_details(brightened)
             
-            # 4. CLAHE 적용 (명료도 향상)
-            clarity_factor = ring_basic_params['clarity']
-            lab = cv2.cvtColor(sharpened, cv2.COLOR_BGR2LAB)
+            # 5. 적당한 선명도 조절
+            final = self.adjust_product_sharpness(detail_enhanced)
+            
+            return final
+            
+        except Exception as e:
+            print(f"Professional ring enhancement error: {e}")
+            return ring_region
+
+    def enhance_polished_surface(self, image):
+        """유광 표면 강화"""
+        try:
+            # 대비 강화
+            enhanced = cv2.convertScaleAbs(image, alpha=1.15, beta=5)
+            
+            # 반사 영역 강화
+            lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
             l, a, b = cv2.split(lab)
             
-            # 클립 리미트 조정
-            clip_limit = 2.0 * clarity_factor
-            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+            # 밝은 부분 더 밝게
+            l = np.where(l > 180, np.clip(l * 1.1, 0, 255), l)
+            
+            enhanced_lab = cv2.merge([l.astype(np.uint8), a, b])
+            return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+            
+        except Exception as e:
+            print(f"Polished enhancement error: {e}")
+            return image
+
+    def enhance_matte_surface(self, image):
+        """무광 표면 강화"""
+        try:
+            # 균일성 강화 (CLAHE)
+            lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             l = clahe.apply(l)
             
             enhanced_lab = cv2.merge([l, a, b])
-            final_ring = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+            enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
             
-            return final_ring
+            # 질감 보존하면서 밝기 조정
+            enhanced = cv2.convertScaleAbs(enhanced, alpha=1.08, beta=8)
+            
+            return enhanced
             
         except Exception as e:
-            print(f"Error in enhance_ring_basic: {e}")
-            return ring_region
+            print(f"Matte enhancement error: {e}")
+            return image
 
-    def apply_tone_harmony(self, ring_region, background_enhanced, original_bg):
-        """배경 톤 조화 - 배경 색감을 웨딩링에 70% 반영"""
+    def simulate_bright_lighting(self, image):
+        """밝은 조명을 받은 것처럼 시뮬레이션"""
         try:
-            # 배경 색감 변화량 계산
-            bg_lab = cv2.cvtColor(original_bg, cv2.COLOR_BGR2LAB)
-            bg_enhanced_lab = cv2.cvtColor(background_enhanced, cv2.COLOR_BGR2LAB)
+            # 전체적인 밝기 향상
+            brightened = cv2.convertScaleAbs(image, alpha=1.12, beta=15)
             
-            # 평균 색감 변화
-            delta_l = np.mean(bg_enhanced_lab[:,:,0]) - np.mean(bg_lab[:,:,0])
-            delta_a = np.mean(bg_enhanced_lab[:,:,1]) - np.mean(bg_lab[:,:,1])
-            delta_b = np.mean(bg_enhanced_lab[:,:,2]) - np.mean(bg_lab[:,:,2])
+            # 하이라이트 영역 강화
+            lab = cv2.cvtColor(brightened, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
             
-            # 웨딩링을 LAB로 변환
-            ring_lab = cv2.cvtColor(ring_region, cv2.COLOR_BGR2LAB)
-            l, a, b = cv2.split(ring_lab)
+            # 감마 보정으로 자연스러운 밝기
+            gamma = 0.9
+            lookup_table = np.array([((i / 255.0) ** (1.0 / gamma)) * 255 for i in range(256)]).astype("uint8")
+            l = cv2.LUT(l, lookup_table)
             
-            # 배경 톤 변화를 70% 반영 (문서 기준)
-            l = np.clip(l + delta_l * 0.5, 0, 255)  # 밝기는 50%만
-            a = np.clip(a + delta_a * 0.7, 0, 255)  # A채널 70%
-            b = np.clip(b + delta_b * 0.7, 0, 255)  # B채널 70%
-            
-            # 다시 합치고 BGR로 변환
-            harmonized_lab = cv2.merge([l.astype(np.uint8), a.astype(np.uint8), b.astype(np.uint8)])
-            harmonized_ring = cv2.cvtColor(harmonized_lab, cv2.COLOR_LAB2BGR)
-            
-            return harmonized_ring
+            enhanced_lab = cv2.merge([l, a, b])
+            return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
             
         except Exception as e:
-            print(f"Tone harmony error: {e}")
-            return ring_region
+            print(f"Bright lighting simulation error: {e}")
+            return image
 
-    def enhance_background_28pairs(self, background_region, metal_type, lighting):
-        """배경 영역을 28쌍 after 수준으로 보정"""
+    def adjust_product_sharpness(self, image):
+        """제품 선명도 적당히 조절"""
+        try:
+            # 언샤프 마스킹
+            gaussian = cv2.GaussianBlur(image, (0, 0), 1.5)
+            sharpened = cv2.addWeighted(image, 1.4, gaussian, -0.4, 0)
+            
+            return sharpened
+            
+        except Exception as e:
+            print(f"Sharpness adjustment error: {e}")
+            return image
+
+    def apply_final_color_grading(self, image, metal_type, lighting):
+        """전체 이미지 after 수준 색감 조정"""
         try:
             params = self.metal_params[metal_type][lighting]
             
             # PIL로 변환
-            pil_image = Image.fromarray(cv2.cvtColor(background_region, cv2.COLOR_BGR2RGB))
+            pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
             
             # 1. 밝기 조정
             enhancer = ImageEnhance.Brightness(pil_image)
@@ -234,7 +398,7 @@ class SegmentedWeddingRingEnhancer:
             enhancer = ImageEnhance.Contrast(pil_image)
             pil_image = enhancer.enhance(params['contrast'])
             
-            # 3. 색상 조정 (warmth)
+            # 3. 색온도 조정 (warmth)
             if params['warmth'] != 1.0:
                 img_array = np.array(pil_image)
                 img_array = img_array.astype(np.float32)
@@ -253,35 +417,31 @@ class SegmentedWeddingRingEnhancer:
             enhancer = ImageEnhance.Color(pil_image)
             pil_image = enhancer.enhance(params['saturation'])
             
-            # 5. 선명도 조정
-            enhancer = ImageEnhance.Sharpness(pil_image)
-            pil_image = enhancer.enhance(params['sharpness'])
-            
             # OpenCV로 변환
-            enhanced_bg = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+            enhanced = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
             
-            # 6. CLAHE (명료도)
+            # 5. CLAHE (명료도)
             if params['clarity'] != 1.0:
-                lab = cv2.cvtColor(enhanced_bg, cv2.COLOR_BGR2LAB)
+                lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
                 l, a, b = cv2.split(lab)
                 clahe = cv2.createCLAHE(clipLimit=2.0*params['clarity'], tileGridSize=(8,8))
                 l = clahe.apply(l)
-                enhanced_bg = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+                enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
             
-            # 7. 감마 보정
+            # 6. 감마 보정
             if params['gamma'] != 1.0:
                 gamma = params['gamma']
                 lookup_table = np.array([((i / 255.0) ** (1.0 / gamma)) * 255 for i in range(256)]).astype("uint8")
-                enhanced_bg = cv2.LUT(enhanced_bg, lookup_table)
+                enhanced = cv2.LUT(enhanced, lookup_table)
             
-            return enhanced_bg
+            return enhanced
             
         except Exception as e:
-            print(f"Background enhancement error: {e}")
-            return background_region
+            print(f"Final color grading error: {e}")
+            return image
 
-    def process_image_segmented(self, image):
-        """영역별 차별 보정 메인 프로세스"""
+    def process_image_advanced(self, image):
+        """새로운 고급 보정 프로세스"""
         try:
             start_time = time.time()
             
@@ -299,56 +459,62 @@ class SegmentedWeddingRingEnhancer:
             
             print(f"Detected: {metal_type}, {lighting}")
             
-            # 2. 웨딩링 영역 추출
-            ring_mask = self.extract_ring_region(image)
+            # 2. 커플링 영역 확대 감지
+            ring_mask = self.extract_ring_region_enhanced(image)
             
-            # 3. 영역 분리
+            # 3. 링 영역 추출
             ring_region = image.copy()
             ring_region[~ring_mask] = 0
             
-            background_region = image.copy()
-            background_region[ring_mask] = 0
+            # 4. 유무광 재질 분석
+            surface_finish = self.detect_surface_finish(ring_region)
+            print(f"Surface finish: {surface_finish}")
             
-            # 4. 배경 영역 28쌍 after 수준 보정
-            background_enhanced = self.enhance_background_28pairs(background_region, metal_type, lighting)
+            # 5. 커플링 프로페셔널 보정
+            ring_enhanced = self.enhance_ring_professional(ring_region, surface_finish)
             
-            # 5. 웨딩링 기본 보정
-            ring_basic_enhanced = self.enhance_ring_basic(ring_region)
+            # 6. 링 영역을 원본에 합성 (부드러운 블렌딩)
+            result = image.copy()
             
-            # 6. 배경 톤을 웨딩링에 70% 반영
-            ring_harmonized = self.apply_tone_harmony(ring_basic_enhanced, background_enhanced, background_region)
+            # 마스크를 부드럽게 처리 (테두리 아티팩트 완전 제거)
+            mask_float = ring_mask.astype(np.float32)
+            mask_blurred = cv2.GaussianBlur(mask_float, (7, 7), 2)
             
-            # 7. 두 영역 합성
-            result = background_enhanced.copy()
-            result[ring_mask] = ring_harmonized[ring_mask]
+            for c in range(3):
+                result[:,:,c] = (ring_enhanced[:,:,c] * mask_blurred + 
+                               image[:,:,c] * (1 - mask_blurred))
+            
+            # 7. 전체 이미지 after 수준 색감 조정
+            final_result = self.apply_final_color_grading(result, metal_type, lighting)
             
             processing_time = time.time() - start_time
-            print(f"Processing time: {processing_time:.2f}s")
+            print(f"Advanced processing time: {processing_time:.2f}s")
             
-            return result, {
+            return final_result, {
                 'metal_type': metal_type,
                 'lighting': lighting,
+                'surface_finish': surface_finish,
                 'processing_time': processing_time
             }
             
         except Exception as e:
-            print(f"Segmented processing error: {e}")
+            print(f"Advanced processing error: {e}")
             return image, {'error': str(e)}
 
 # Flask 앱 엔드포인트들
-enhancer = SegmentedWeddingRingEnhancer()
+enhancer = AdvancedWeddingRingEnhancer()
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': 'v3.0_segmented'
+        'version': 'v4.0_advanced'
     })
 
-@app.route('/enhance_wedding_ring_segmented', methods=['POST'])
-def enhance_wedding_ring_segmented():
-    """메인 영역별 차별 보정 엔드포인트"""
+@app.route('/enhance_wedding_ring_advanced', methods=['POST'])
+def enhance_wedding_ring_advanced():
+    """새로운 고급 보정 엔드포인트"""
     try:
         data = request.get_json()
         image_base64 = data['image_base64']
@@ -361,8 +527,8 @@ def enhance_wedding_ring_segmented():
         if image is None:
             return jsonify({'error': 'Invalid image data'}), 400
         
-        # 영역별 차별 보정 처리
-        enhanced_image, metadata = enhancer.process_image_segmented(image)
+        # 고급 보정 처리
+        enhanced_image, metadata = enhancer.process_image_advanced(image)
         
         # JPEG로 인코딩 (고품질)
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95, int(cv2.IMWRITE_JPEG_PROGRESSIVE), 1]
@@ -373,16 +539,16 @@ def enhance_wedding_ring_segmented():
             io.BytesIO(buffer.tobytes()),
             mimetype='image/jpeg',
             as_attachment=True,
-            download_name=f'segmented_enhanced_{int(time.time())}.jpg'
+            download_name=f'advanced_enhanced_{int(time.time())}.jpg'
         )
         
     except Exception as e:
         print(f"Error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/enhance_wedding_ring_binary', methods=['POST'])
-def enhance_wedding_ring_binary():
-    """백업용 통합 보정 엔드포인트"""
+@app.route('/enhance_wedding_ring_segmented', methods=['POST'])
+def enhance_wedding_ring_segmented():
+    """기존 영역별 차별 보정 엔드포인트 (백업용)"""
     try:
         data = request.get_json()
         image_base64 = data['image_base64']
@@ -395,37 +561,8 @@ def enhance_wedding_ring_binary():
         if image is None:
             return jsonify({'error': 'Invalid image data'}), 400
         
-        # 메모리 최적화를 위한 크기 조정
-        h, w = image.shape[:2]
-        if max(h, w) > 2048:
-            scale = 2048 / max(h, w)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        
-        # 간단한 통합 보정 (기존 방식)
-        metal_type = enhancer.detect_metal_type(image)
-        lighting = enhancer.detect_lighting(image)
-        params = enhancer.metal_params[metal_type][lighting]
-        
-        # PIL 보정
-        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        
-        # 밝기, 대비, 채도, 선명도 조정
-        enhancer_brightness = ImageEnhance.Brightness(pil_image)
-        pil_image = enhancer_brightness.enhance(params['brightness'])
-        
-        enhancer_contrast = ImageEnhance.Contrast(pil_image)
-        pil_image = enhancer_contrast.enhance(params['contrast'])
-        
-        enhancer_color = ImageEnhance.Color(pil_image)
-        pil_image = enhancer_color.enhance(params['saturation'])
-        
-        enhancer_sharpness = ImageEnhance.Sharpness(pil_image)
-        pil_image = enhancer_sharpness.enhance(params['sharpness'])
-        
-        # OpenCV로 변환
-        enhanced_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+        # 고급 보정 처리 (동일한 로직)
+        enhanced_image, metadata = enhancer.process_image_advanced(image)
         
         # JPEG로 인코딩
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
@@ -435,7 +572,7 @@ def enhance_wedding_ring_binary():
             io.BytesIO(buffer.tobytes()),
             mimetype='image/jpeg',
             as_attachment=True,
-            download_name=f'enhanced_{int(time.time())}.jpg'
+            download_name=f'segmented_enhanced_{int(time.time())}.jpg'
         )
         
     except Exception as e:
