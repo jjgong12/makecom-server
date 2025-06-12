@@ -9,9 +9,9 @@ import logging
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-class SimpleColorEnhancer:
+class FinalWeddingRingEnhancer:
     def __init__(self):
-        # 28쌍 After 기반 색감 조정 파라미터
+        # 28쌍 After 기반 최종 색감 조정 파라미터
         self.color_params = {
             'natural': {
                 'brightness': 1.22,        # 22% 밝기 향상
@@ -101,8 +101,8 @@ class SimpleColorEnhancer:
         result = image * (1 - distance_mask) + overlay * distance_mask
         return result.astype(np.uint8)
     
-    def simple_enhance(self, image_data):
-        """단순 전체 색감 조정"""
+    def enhance_wedding_ring(self, image_data):
+        """최종 보정 함수 - 단순 전체 색감 조정"""
         try:
             # 이미지 디코딩 및 리샘플링
             nparr = np.frombuffer(image_data, np.uint8)
@@ -168,22 +168,82 @@ class SimpleColorEnhancer:
             logging.error(f"Enhancement error: {str(e)}")
             return None, "error"
 
+# 전역 enhancer 인스턴스
+enhancer = FinalWeddingRingEnhancer()
+
+def process_image(image_data):
+    """공통 이미지 처리 함수"""
+    enhanced_image, lighting = enhancer.enhance_wedding_ring(image_data)
+    
+    if enhanced_image is None:
+        return None
+    
+    # JPEG 인코딩
+    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
+    _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
+    return buffer.tobytes()
+
 @app.route('/')
 def health_check():
     return jsonify({
         "status": "healthy",
-        "version": "Simple Color v1.0",
-        "message": "단순 전체 색감 조정 - 마스킹 없는 깔끔한 처리",
+        "version": "Final v1.0",
+        "message": "최종 웨딩링 보정 시스템 - 모든 엔드포인트 호환",
         "endpoints": [
             "/health",
+            "/enhance_wedding_ring_binary",
+            "/enhance_wedding_ring_advanced", 
             "/enhance_wedding_ring_v6",
+            "/enhance_wedding_ring_v625",
+            "/enhance_wedding_ring_smart",
             "/enhance_wedding_ring_simple"
-        ]
+        ],
+        "note": "모든 엔드포인트가 동일한 최신 시스템 사용"
     })
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "version": "Simple Color v1.0"})
+    return jsonify({"status": "healthy", "version": "Final v1.0"})
+
+# === 기존 엔드포인트들 모두 지원 ===
+
+@app.route('/enhance_wedding_ring_binary', methods=['POST'])
+def enhance_wedding_ring_binary():
+    try:
+        data = request.get_json()
+        if not data or 'image_base64' not in data:
+            return jsonify({"error": "No image data provided"}), 400
+        
+        image_data = base64.b64decode(data['image_base64'])
+        result = process_image(image_data)
+        
+        if result is None:
+            return jsonify({"error": "Enhancement failed"}), 500
+        
+        return result, 200, {'Content-Type': 'image/jpeg'}
+        
+    except Exception as e:
+        logging.error(f"API error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/enhance_wedding_ring_advanced', methods=['POST'])
+def enhance_wedding_ring_advanced():
+    try:
+        data = request.get_json()
+        if not data or 'image_base64' not in data:
+            return jsonify({"error": "No image data provided"}), 400
+        
+        image_data = base64.b64decode(data['image_base64'])
+        result = process_image(image_data)
+        
+        if result is None:
+            return jsonify({"error": "Enhancement failed"}), 500
+        
+        return result, 200, {'Content-Type': 'image/jpeg'}
+        
+    except Exception as e:
+        logging.error(f"API error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/enhance_wedding_ring_v6', methods=['POST'])
 def enhance_wedding_ring_v6():
@@ -192,21 +252,51 @@ def enhance_wedding_ring_v6():
         if not data or 'image_base64' not in data:
             return jsonify({"error": "No image data provided"}), 400
         
-        # Base64 디코딩
         image_data = base64.b64decode(data['image_base64'])
+        result = process_image(image_data)
         
-        # 단순 색감 조정
-        enhancer = SimpleColorEnhancer()
-        enhanced_image, lighting = enhancer.simple_enhance(image_data)
-        
-        if enhanced_image is None:
+        if result is None:
             return jsonify({"error": "Enhancement failed"}), 500
         
-        # JPEG 인코딩
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
-        _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
+        return result, 200, {'Content-Type': 'image/jpeg'}
         
-        return buffer.tobytes(), 200, {'Content-Type': 'image/jpeg'}
+    except Exception as e:
+        logging.error(f"API error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/enhance_wedding_ring_v625', methods=['POST'])
+def enhance_wedding_ring_v625():
+    try:
+        data = request.get_json()
+        if not data or 'image_base64' not in data:
+            return jsonify({"error": "No image data provided"}), 400
+        
+        image_data = base64.b64decode(data['image_base64'])
+        result = process_image(image_data)
+        
+        if result is None:
+            return jsonify({"error": "Enhancement failed"}), 500
+        
+        return result, 200, {'Content-Type': 'image/jpeg'}
+        
+    except Exception as e:
+        logging.error(f"API error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/enhance_wedding_ring_smart', methods=['POST'])
+def enhance_wedding_ring_smart():
+    try:
+        data = request.get_json()
+        if not data or 'image_base64' not in data:
+            return jsonify({"error": "No image data provided"}), 400
+        
+        image_data = base64.b64decode(data['image_base64'])
+        result = process_image(image_data)
+        
+        if result is None:
+            return jsonify({"error": "Enhancement failed"}), 500
+        
+        return result, 200, {'Content-Type': 'image/jpeg'}
         
     except Exception as e:
         logging.error(f"API error: {str(e)}")
@@ -219,21 +309,13 @@ def enhance_wedding_ring_simple():
         if not data or 'image_base64' not in data:
             return jsonify({"error": "No image data provided"}), 400
         
-        # Base64 디코딩
         image_data = base64.b64decode(data['image_base64'])
+        result = process_image(image_data)
         
-        # 단순 색감 조정
-        enhancer = SimpleColorEnhancer()
-        enhanced_image, lighting = enhancer.simple_enhance(image_data)
-        
-        if enhanced_image is None:
+        if result is None:
             return jsonify({"error": "Enhancement failed"}), 500
         
-        # JPEG 인코딩
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 95]
-        _, buffer = cv2.imencode('.jpg', enhanced_image, encode_param)
-        
-        return buffer.tobytes(), 200, {'Content-Type': 'image/jpeg'}
+        return result, 200, {'Content-Type': 'image/jpeg'}
         
     except Exception as e:
         logging.error(f"API error: {str(e)}")
