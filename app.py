@@ -181,6 +181,34 @@ class WeddingRingEnhancerV625:
         
         return enhanced
     
+    def smooth_background(self, image, ring_mask):
+        """배경 음영/그림자 제거"""
+        # 배경 영역만 추출
+        bg_mask = cv2.bitwise_not(ring_mask)
+        bg_only = cv2.bitwise_and(image, image, mask=bg_mask)
+        
+        # 배경의 평균 색상 계산
+        bg_pixels = image[bg_mask > 0]
+        if len(bg_pixels) > 0:
+            avg_color = np.mean(bg_pixels, axis=0)
+            
+            # 가우시안 블러로 부드럽게
+            blurred_bg = cv2.GaussianBlur(image, (51, 51), 0)
+            
+            # 배경을 평균 색상으로 점진적 교체
+            smooth_bg = image.copy()
+            bg_mask_3d = cv2.merge([bg_mask, bg_mask, bg_mask]) / 255.0
+            
+            # 30% 평균 색상, 70% 블러된 배경으로 조합
+            uniform_bg = np.full_like(image, avg_color)
+            smooth_background = cv2.addWeighted(blurred_bg, 0.7, uniform_bg, 0.3, 0)
+            
+            # 배경만 교체 (웨딩링은 보존)
+            result = image * (1 - bg_mask_3d) + smooth_background * bg_mask_3d
+            return result.astype(np.uint8)
+        
+        return image
+
     def enhance_wedding_ring(self, image_data):
         """메인 보정 함수"""
         try:
@@ -197,14 +225,20 @@ class WeddingRingEnhancerV625:
             # 노이즈 제거
             denoised = cv2.bilateralFilter(original, 9, 75, 75)
             
+            # 웨딩링 마스크 먼저 생성 (배경 평활화용)
+            ring_mask = self.create_wedding_ring_mask(denoised)
+            
+            # 배경 음영/그림자 제거
+            smoothed = self.smooth_background(denoised, ring_mask)
+            
             # 금속/조명 감지
-            metal_type = self.detect_metal_type(denoised)
-            lighting = self.detect_lighting(denoised)
+            metal_type = self.detect_metal_type(smoothed)
+            lighting = self.detect_lighting(smoothed)
             
             params = self.metal_params.get(metal_type, self.metal_params['champagne_gold'])[lighting]
             
-            # 웨딩링 마스크 생성
-            ring_mask = self.create_wedding_ring_mask(denoised)
+            # 웨딩링 마스크 재생성 (평활화된 이미지 기준)
+            ring_mask = self.create_wedding_ring_mask(smoothed)
             bg_mask = cv2.bitwise_not(ring_mask)
             
             # 배경 보정 (보수적)
@@ -214,7 +248,7 @@ class WeddingRingEnhancerV625:
                 'sharpness': params['bg_sharpness'],
                 'clarity': params['bg_clarity']
             }
-            bg_enhanced = self.enhance_region(denoised, bg_params)
+            bg_enhanced = self.enhance_region(smoothed, bg_params)
             
             # 웨딩링 보정 (적정선 조정)
             ring_params = {
@@ -223,7 +257,7 @@ class WeddingRingEnhancerV625:
                 'sharpness': params['ring_sharpness'],
                 'clarity': params['ring_clarity']
             }
-            ring_enhanced = self.enhance_region(denoised, ring_params)
+            ring_enhanced = self.enhance_region(smoothed, ring_params)
             
             # 마스크 적용하여 결합
             ring_mask_3d = cv2.merge([ring_mask, ring_mask, ring_mask]) / 255.0
@@ -231,8 +265,8 @@ class WeddingRingEnhancerV625:
             
             combined = (ring_enhanced * ring_mask_3d + bg_enhanced * bg_mask_3d).astype(np.uint8)
             
-            # 보수적 블렌딩 (80% 보정 + 20% 원본)
-            final_result = cv2.addWeighted(combined, 0.8, denoised, 0.2, 0)
+            # 보수적 블렌딩 (85% 보정 + 15% 평활화된 원본)
+            final_result = cv2.addWeighted(combined, 0.85, smoothed, 0.15, 0)
             
             # 미묘한 하이라이트 부스팅
             gray = cv2.cvtColor(final_result, cv2.COLOR_BGR2GRAY)
@@ -251,20 +285,20 @@ class WeddingRingEnhancerV625:
 def health_check():
     return jsonify({
         "status": "healthy",
-        "version": "v6.2.5",
-        "message": "Wedding Ring Enhancement API - v6.3 문제 해결 버전",
+        "version": "v6.2.5-smooth",
+        "message": "Wedding Ring Enhancement API - 배경 음영/그림자 제거 기능 추가",
         "endpoints": [
             "/health",
-            "/enhance_wedding_ring_v625"
+            "/enhance_wedding_ring_v625_smooth"
         ]
     })
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "version": "v6.2.5"})
+    return jsonify({"status": "healthy", "version": "v6.2.5-smooth"})
 
-@app.route('/enhance_wedding_ring_v625', methods=['POST'])
-def enhance_wedding_ring_v625():
+@app.route('/enhance_wedding_ring_v625_smooth', methods=['POST'])
+def enhance_wedding_ring_v625_smooth():
     try:
         data = request.get_json()
         if not data or 'image_base64' not in data:
