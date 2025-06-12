@@ -13,35 +13,37 @@ logging.basicConfig(level=logging.INFO)
 
 class SegmentedWeddingRingEnhancer:
     def __init__(self):
-        # 28쌍 학습 데이터 기반 웨딩링 전용 집중 보정 (강화)
-        self.ring_focused_params = {
-            'white_gold': {
-                'natural': {'brightness': 1.45, 'contrast': 1.35, 'warmth': 0.88, 'saturation': 0.95, 'sharpness': 1.70, 'clarity': 1.45, 'gamma': 1.05},
-                'warm': {'brightness': 1.50, 'contrast': 1.40, 'warmth': 0.70, 'saturation': 0.90, 'sharpness': 1.75, 'clarity': 1.50, 'gamma': 1.07},
-                'cool': {'brightness': 1.40, 'contrast': 1.30, 'warmth': 0.95, 'saturation': 0.98, 'sharpness': 1.65, 'clarity': 1.40, 'gamma': 1.03}
-            },
-            'rose_gold': {
-                'natural': {'brightness': 1.35, 'contrast': 1.28, 'warmth': 1.35, 'saturation': 1.30, 'sharpness': 1.55, 'clarity': 1.35, 'gamma': 1.02},
-                'warm': {'brightness': 1.30, 'contrast': 1.25, 'warmth': 1.15, 'saturation': 1.25, 'sharpness': 1.50, 'clarity': 1.30, 'gamma': 0.99},
-                'cool': {'brightness': 1.45, 'contrast': 1.35, 'warmth': 1.50, 'saturation': 1.40, 'sharpness': 1.60, 'clarity': 1.40, 'gamma': 1.06}
-            },
-            'champagne_gold': {
-                'natural': {'brightness': 1.38, 'contrast': 1.32, 'warmth': 1.20, 'saturation': 1.20, 'sharpness': 1.60, 'clarity': 1.40, 'gamma': 1.04},
-                'warm': {'brightness': 1.35, 'contrast': 1.30, 'warmth': 1.05, 'saturation': 1.15, 'sharpness': 1.55, 'clarity': 1.35, 'gamma': 1.02},
-                'cool': {'brightness': 1.42, 'contrast': 1.35, 'warmth': 1.30, 'saturation': 1.25, 'sharpness': 1.65, 'clarity': 1.45, 'gamma': 1.06}
-            },
-            'yellow_gold': {
-                'natural': {'brightness': 1.40, 'contrast': 1.35, 'warmth': 1.40, 'saturation': 1.35, 'sharpness': 1.58, 'clarity': 1.37, 'gamma': 1.05},
-                'warm': {'brightness': 1.32, 'contrast': 1.28, 'warmth': 1.25, 'saturation': 1.27, 'sharpness': 1.53, 'clarity': 1.32, 'gamma': 1.01},
-                'cool': {'brightness': 1.48, 'contrast': 1.40, 'warmth': 1.55, 'saturation': 1.43, 'sharpness': 1.65, 'clarity': 1.43, 'gamma': 1.07}
-            }
+        # 웨딩링 기본 보정 파라미터 (노이즈 제거 + 선명도 위주)
+        self.ring_basic_params = {
+            'brightness': 1.02,     # 최소한의 밝기 조정
+            'contrast': 1.05,       # 살짝 대비 향상
+            'sharpness': 1.25,      # 유무광 재질 확인 가능한 선명도
+            'noise_reduction': 1.15, # 노이즈 제거
+            'clarity': 1.08         # 기본적인 명료도
         }
         
-        # 28쌍 학습 데이터 기반 배경 전용 분위기 조성 (after 수준으로 강화)
-        self.background_focused_params = {
-            'natural': {'brightness': 1.18, 'contrast': 1.12, 'warmth': 1.08, 'saturation': 1.08, 'gamma': 1.00},
-            'warm': {'brightness': 1.15, 'contrast': 1.10, 'warmth': 0.95, 'saturation': 1.05, 'gamma': 0.98},
-            'cool': {'brightness': 1.22, 'contrast': 1.15, 'warmth': 1.18, 'saturation': 1.12, 'gamma': 1.02}
+        # 배경 파라미터 = 28쌍 학습 데이터 그대로 (완전한 after 결과)
+        self.background_after_params = {
+            'white_gold': {
+                'natural': {'brightness': 1.22, 'contrast': 1.12, 'warmth': 0.95, 'saturation': 1.00, 'sharpness': 1.30, 'clarity': 1.18, 'gamma': 1.01},
+                'warm': {'brightness': 1.28, 'contrast': 1.18, 'warmth': 0.80, 'saturation': 0.95, 'sharpness': 1.35, 'clarity': 1.22, 'gamma': 1.03},
+                'cool': {'brightness': 1.18, 'contrast': 1.08, 'warmth': 1.00, 'saturation': 1.03, 'sharpness': 1.25, 'clarity': 1.15, 'gamma': 0.99}
+            },
+            'rose_gold': {
+                'natural': {'brightness': 1.15, 'contrast': 1.08, 'warmth': 1.20, 'saturation': 1.15, 'sharpness': 1.15, 'clarity': 1.10, 'gamma': 0.98},
+                'warm': {'brightness': 1.10, 'contrast': 1.05, 'warmth': 1.05, 'saturation': 1.10, 'sharpness': 1.10, 'clarity': 1.05, 'gamma': 0.95},
+                'cool': {'brightness': 1.25, 'contrast': 1.15, 'warmth': 1.35, 'saturation': 1.25, 'sharpness': 1.25, 'clarity': 1.20, 'gamma': 1.02}
+            },
+            'champagne_gold': {
+                'natural': {'brightness': 1.18, 'contrast': 1.12, 'warmth': 1.08, 'saturation': 1.08, 'sharpness': 1.22, 'clarity': 1.15, 'gamma': 1.00},
+                'warm': {'brightness': 1.15, 'contrast': 1.10, 'warmth': 0.95, 'saturation': 1.05, 'sharpness': 1.20, 'clarity': 1.12, 'gamma': 0.98},
+                'cool': {'brightness': 1.22, 'contrast': 1.15, 'warmth': 1.18, 'saturation': 1.12, 'sharpness': 1.25, 'clarity': 1.18, 'gamma': 1.02}
+            },
+            'yellow_gold': {
+                'natural': {'brightness': 1.20, 'contrast': 1.15, 'warmth': 1.25, 'saturation': 1.20, 'sharpness': 1.18, 'clarity': 1.12, 'gamma': 1.01},
+                'warm': {'brightness': 1.12, 'contrast': 1.08, 'warmth': 1.10, 'saturation': 1.12, 'sharpness': 1.15, 'clarity': 1.08, 'gamma': 0.97},
+                'cool': {'brightness': 1.28, 'contrast': 1.20, 'warmth': 1.40, 'saturation': 1.28, 'sharpness': 1.25, 'clarity': 1.18, 'gamma': 1.03}
+            }
         }
     
     def detect_ring_type(self, image):
@@ -154,10 +156,75 @@ class SegmentedWeddingRingEnhancer:
         # 강력한 금속 보정 적용
         enhanced = self._apply_ring_enhancement(ring_region, params)
         
-        return enhanced
+    def _apply_basic_ring_enhancement(self, image):
+        """웨딩링 기본 보정 (노이즈 제거 + 선명도 + 유무광 재질 확인)"""
+        params = self.ring_basic_params
+        
+        # 1. 노이즈 제거 (가우시안 블러 → 선명화)
+        denoised = cv2.GaussianBlur(image, (3,3), 0.5)
+        
+        # 2. 기본 밝기/대비 조정
+        enhanced = cv2.convertScaleAbs(denoised, 
+                                     alpha=params['contrast'], 
+                                     beta=(params['brightness']-1)*20)
+        
+        # 3. 선명도 향상 (유무광 재질 확인 가능하게)
+        blurred = cv2.GaussianBlur(enhanced, (3,3), 1.0)
+        enhanced = cv2.addWeighted(enhanced, 1 + (params['sharpness']-1), 
+                                 blurred, -(params['sharpness']-1), 0)
+        
+        # 4. 기본 명료도 (CLAHE 약하게)
+        lab = cv2.cvtColor(enhanced, cv2.COLOR_RGB2LAB)
+        clip_limit = 1.0 + (params['clarity'] - 1) * 1.0
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(4, 4))
+        lab[:,:,0] = clahe.apply(lab[:,:,0])
+        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        
+        return np.clip(enhanced, 0, 255).astype(np.uint8)
     
-    def _apply_global_tone_harmony(self, original_image, enhanced_ring, enhanced_background, ring_mask):
-        """글로벌 톤 조화: 배경 색감 변화를 웨딩링에도 일부 적용"""
+    def _apply_full_enhancement(self, image, params):
+        """28쌍 학습 데이터 전체 보정 (완전한 after 결과)"""
+        # 밝기/대비 조정
+        enhanced = cv2.convertScaleAbs(image, 
+                                     alpha=params['contrast'], 
+                                     beta=(params['brightness']-1)*50)
+        
+        # 색온도 조정
+        if params['warmth'] != 1.0:
+            lab = cv2.cvtColor(enhanced, cv2.COLOR_RGB2LAB).astype(np.float32)
+            lab[:,:,2] = lab[:,:,2] * params['warmth']
+            lab[:,:,2] = np.clip(lab[:,:,2], 0, 255)
+            enhanced = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+        
+        # 채도 조정
+        hsv = cv2.cvtColor(enhanced, cv2.COLOR_RGB2HSV).astype(np.float32)
+        hsv[:,:,1] = hsv[:,:,1] * params['saturation']
+        hsv[:,:,1] = np.clip(hsv[:,:,1], 0, 255)
+        enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+        
+        # 선명도 향상
+        blurred = cv2.GaussianBlur(enhanced, (5,5), 1.5)
+        enhanced = cv2.addWeighted(enhanced, 1 + (params['sharpness']-1), 
+                                 blurred, -(params['sharpness']-1), 0)
+        
+        # 명료도 강화
+        if params['clarity'] != 1.0:
+            lab = cv2.cvtColor(enhanced, cv2.COLOR_RGB2LAB)
+            clip_limit = 2.0 + (params['clarity'] - 1) * 2.0
+            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+            lab[:,:,0] = clahe.apply(lab[:,:,0])
+            enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        
+        # 감마 보정
+        if params['gamma'] != 1.0:
+            inv_gamma = 1.0 / params['gamma']
+            table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype(np.uint8)
+            enhanced = cv2.LUT(enhanced, table)
+        
+        return np.clip(enhanced, 0, 255).astype(np.uint8)
+    
+    def _apply_strong_tone_harmony(self, original_image, enhanced_ring, enhanced_background, ring_mask):
+        """강력한 톤 조화: 배경 색감 변화를 웨딩링에 70% 묻어나게"""
         # 배경 마스크
         background_mask = cv2.bitwise_not(ring_mask)
         
@@ -187,15 +254,15 @@ class SegmentedWeddingRingEnhancer:
             enhanced_mean_l = np.mean(enhanced_bg_lab[valid_pixels, 0])
             delta_l = enhanced_mean_l - original_mean_l
             
-            # 웨딩링에 배경 변화량의 30% 적용 (자연스러운 조화)
+            # 웨딩링에 배경 변화량의 70% 적용 (배경색이 묻어나게)
             ring_lab = cv2.cvtColor(enhanced_ring, cv2.COLOR_RGB2LAB).astype(np.float32)
             
-            # 웨딩링 영역에만 톤 조화 적용
+            # 웨딩링 영역에만 강한 톤 조화 적용
             ring_pixels = ring_mask > 0
             if np.sum(ring_pixels) > 0:
-                ring_lab[ring_pixels, 0] += delta_l * 0.2  # 밝기 20% 반영
-                ring_lab[ring_pixels, 1] += delta_a * 0.3  # A 채널 30% 반영  
-                ring_lab[ring_pixels, 2] += delta_b * 0.3  # B 채널 30% 반영
+                ring_lab[ring_pixels, 0] += delta_l * 0.5  # 밝기 50% 반영
+                ring_lab[ring_pixels, 1] += delta_a * 0.7  # A 채널 70% 반영  
+                ring_lab[ring_pixels, 2] += delta_b * 0.7  # B 채널 70% 반영 (배경색 묻어나게)
                 
                 # 범위 제한
                 ring_lab[:,:,0] = np.clip(ring_lab[:,:,0], 0, 100)
@@ -310,21 +377,21 @@ class SegmentedWeddingRingEnhancer:
             # 웨딩링 영역 자동 추출
             ring_mask = self.extract_ring_mask(image_array)
             
-            # 각 영역별 차별 보정
-            enhanced_ring = self.enhance_ring_region(image_array, ring_mask, ring_type, lighting_env)
-            enhanced_background = self.enhance_background_region(image_array, ring_mask, lighting_env)
+            # 각 영역별 보정
+            enhanced_ring_basic = self.enhance_ring_basic(image_array, ring_mask)
+            enhanced_background_after = self.enhance_background_after(image_array, ring_mask, ring_type, lighting_env)
             
-            # 글로벌 톤 조화 (배경 변화량을 웨딩링에 일부 적용)
-            enhanced_ring_harmonized = self._apply_global_tone_harmony(
-                original_image, enhanced_ring, enhanced_background, ring_mask
+            # 웨딩링에 배경 톤 70% 묻어나게 적용
+            enhanced_ring_final = self._apply_strong_tone_harmony(
+                original_image, enhanced_ring_basic, enhanced_background_after, ring_mask
             )
             
             # 두 영역 자연스럽게 합성
             ring_mask_norm = ring_mask.astype(np.float32) / 255.0
             ring_mask_3d = np.dstack([ring_mask_norm] * 3)
             
-            final_result = (enhanced_ring_harmonized.astype(np.float32) * ring_mask_3d + 
-                           enhanced_background.astype(np.float32) * (1 - ring_mask_3d))
+            final_result = (enhanced_ring_final.astype(np.float32) * ring_mask_3d + 
+                           enhanced_background_after.astype(np.float32) * (1 - ring_mask_3d))
             
             # PIL로 변환 및 JPG 저장
             enhanced_pil = Image.fromarray(final_result.astype(np.uint8))
@@ -335,10 +402,10 @@ class SegmentedWeddingRingEnhancer:
             processing_time = time.time() - start_time
             
             # 사용된 파라미터
-            ring_params = self.ring_focused_params[ring_type][lighting_env]
-            bg_params = self.background_focused_params[lighting_env]
+            ring_params = self.ring_basic_params
+            bg_params = self.background_after_params[ring_type][lighting_env]
             
-            logging.info(f"Segmented enhancement with tone harmony: {ring_type} ring under {lighting_env} lighting in {processing_time:.2f}s")
+            logging.info(f"Basic ring enhancement with strong tone harmony: {ring_type} ring under {lighting_env} lighting in {processing_time:.2f}s")
             
             return enhanced_buffer, ring_type, lighting_env, ring_params, bg_params, processing_time
             
