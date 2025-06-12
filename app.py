@@ -56,8 +56,8 @@ class CombinedABEnhancer:
             # A 채널: 베이지 톤 제거 (분석된 패턴)
             a = cv2.add(a, -4)  # 그린 쪽으로 4만큼
             
-            # B 채널: 따뜻함 감소 (분석된 패턴)  
-            b = cv2.add(b, -6)  # 블루 쪽으로 6만큼
+            # B 채널: 따뜻함 감소 (푸른 느낌 방지를 위해 약하게)  
+            b = cv2.add(b, -3)  # 블루 쪽으로 3만큼 (6→3으로 감소)
             
             lab_image = cv2.merge([l, a, b])
             cv_image = cv2.cvtColor(lab_image, cv2.COLOR_LAB2BGR)
@@ -65,20 +65,20 @@ class CombinedABEnhancer:
             
             # === A 아이디어: "하얀색 살짝 입힌 느낌" 구현 ===
             
-            # 5. A+B 결합: 스마트 화이트 오버레이
-            # A의 "하얀색 살짝" 아이디어를 B의 분석으로 정확히 구현
+            # 5. A+B 결합: 강화된 화이트 오버레이
+            # 푸른 느낌 제거를 위해 더 순수한 화이트 + 강도 증가
             
-            # 5-6번에서 관찰된 정확한 화이트 톤 적용
-            smart_white = Image.new('RGB', image.size, (248, 246, 244))  # 분석된 화이트 톤
-            image = Image.blend(image, smart_white, 0.07)  # 7% 블렌딩 (분석된 강도)
+            # 더 순수한 화이트 톤으로 변경 + 강도 증가
+            pure_white = Image.new('RGB', image.size, (252, 252, 252))  # 거의 순수 화이트
+            image = Image.blend(image, pure_white, 0.10)  # 10% 블렌딩 (7%→10% 증가)
             
             # 6. B 분석: 선명도 패턴 (웨딩링 디테일 보존)
             enhancer = ImageEnhance.Sharpness(image)
             image = enhancer.enhance(1.15)  # 15% 향상 (분석된 값)
             
-            # 7. A+B 최종: 미세 조정
-            # A의 "자연스러운 느낌"을 위한 원본과 블렌딩
-            original_influence = 0.15  # 15% 원본 보존
+            # 7. A+B 최종: 미세 조정 (하얀색 강화를 위해 원본 영향 감소)
+            # A의 "자연스러운 느낌"을 위한 원본과 블렌딩 (15%→10% 감소)
+            original_influence = 0.10  # 10% 원본 보존 (하얀색 더 강화)
             if original_influence > 0:
                 original = Image.open(io.BytesIO(base64.b64decode(image_base64))).convert('RGB')
                 if max(original.size) > 2048:
@@ -108,9 +108,10 @@ def home():
         "version": "Combined v1.0",
         "description": "A (user idea: white overlay feeling) + B (data analysis: 3-4→5-6 pattern)",
         "analysis": {
-            "user_idea_A": "하얀색 살짝 입힌 느낌",
+            "user_idea_A": "하얀색 살짝 입힌 느낌 (강화버전)",
             "data_pattern_B": "3-4번 원본 → 5-6번 목표 변화 분석",
-            "implementation": "A의 직감을 B의 과학적 분석으로 정확히 구현"
+            "implementation": "A의 직감을 B의 과학적 분석으로 정확히 구현",
+            "adjustments": "푸른 느낌 제거, 하얀색 더 강화 (10% 블렌딩)"
         },
         "endpoints": [
             "/health",
