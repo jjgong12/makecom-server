@@ -4,7 +4,6 @@ import numpy as np
 from PIL import Image, ImageEnhance
 import base64
 import io
-from sklearn.cluster import KMeans
 
 # v13.3 파라미터 (28쌍 학습 데이터 기반) - 모든 금속 × 조명 조합
 WEDDING_RING_PARAMS = {
@@ -78,24 +77,20 @@ WEDDING_RING_PARAMS = {
     }
 }
 
-class WeddingRingAIv14_3:
+class WeddingRingAIv14_4:
     def __init__(self):
         self.params = WEDDING_RING_PARAMS
         self.black_line_coords = None
-        self.background_profile = None
+        self.background_color = None
         
     def detect_and_remember_black_lines(self, image):
-        """정밀한 검은색 선 테두리 감지 및 좌표 기억"""
+        """정밀한 검은색 선 테두리 감지 및 좌표 기억 (25번 성공 방식)"""
         print("🔍 Step 1: 정밀한 검은색 선 감지 시작")
         
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
-        # 다중 threshold로 정확한 감지
-        _, binary1 = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY_INV)
-        _, binary2 = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY_INV)
-        
-        # 두 결과 결합
-        binary = cv2.bitwise_and(binary1, binary2)
+        # 25번에서 성공했던 threshold=15 방식
+        _, binary = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY_INV)
         
         # 노이즈 제거
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
@@ -151,9 +146,9 @@ class WeddingRingAIv14_3:
         print(f"✅ 검은색 선 감지 완료: {best_bbox}")
         return mask, ring_mask, best_bbox
     
-    def analyze_background_characteristics(self, image, exclude_mask):
-        """v14.3: 배경 특성 완전 분석"""
-        print("🎨 Step 2: 배경 특성 분석 시작")
+    def analyze_simple_background(self, image, exclude_mask):
+        """v14.4: 간단한 배경 색상 분석 (sklearn 없이)"""
+        print("🎨 Step 2: 간단한 배경 분석 시작")
         
         # 배경 영역만 추출
         background_mask = 255 - exclude_mask
@@ -161,62 +156,20 @@ class WeddingRingAIv14_3:
         
         if len(background_pixels) == 0:
             print("⚠️ 배경 영역이 너무 작습니다. 기본값 사용")
-            return {
-                'dominant_color': [240, 240, 240],
-                'gradient_type': 'uniform',
-                'texture_type': 'smooth'
-            }
+            self.background_color = [240, 240, 240]
+            return [240, 240, 240]
         
-        # K-means로 dominant color 추출
-        kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
-        kmeans.fit(background_pixels)
+        # 간단한 평균 색상 계산
+        avg_color = np.mean(background_pixels, axis=0).astype(int)
         
-        # 가장 많이 나타나는 색상
-        labels = kmeans.labels_
-        label_counts = np.bincount(labels)
-        dominant_label = np.argmax(label_counts)
-        dominant_color = kmeans.cluster_centers_[dominant_label].astype(int)
+        # 배경 균일성 체크
+        std_color = np.std(background_pixels, axis=0)
+        is_uniform = np.all(std_color < 20)  # 표준편차가 20 이하면 균일
         
-        # 그라디언트 분석
-        gray_bg = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        gray_bg_masked = cv2.bitwise_and(gray_bg, gray_bg, mask=background_mask)
+        self.background_color = avg_color.tolist()
         
-        # Sobel 그라디언트 계산
-        sobelx = cv2.Sobel(gray_bg_masked, cv2.CV_64F, 1, 0, ksize=3)
-        sobely = cv2.Sobel(gray_bg_masked, cv2.CV_64F, 0, 1, ksize=3)
-        gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
-        
-        # 그라디언트 강도 분석
-        avg_gradient = np.mean(gradient_magnitude[background_mask > 0])
-        
-        if avg_gradient < 10:
-            gradient_type = 'uniform'
-        elif avg_gradient < 30:
-            gradient_type = 'gentle'
-        else:
-            gradient_type = 'complex'
-        
-        # 텍스처 분석 (표준편차 기반)
-        bg_std = np.std(gray_bg_masked[background_mask > 0])
-        
-        if bg_std < 15:
-            texture_type = 'smooth'
-        elif bg_std < 40:
-            texture_type = 'textured'
-        else:
-            texture_type = 'complex'
-        
-        profile = {
-            'dominant_color': dominant_color.tolist(),
-            'gradient_type': gradient_type,
-            'texture_type': texture_type,
-            'avg_gradient': float(avg_gradient),
-            'bg_std': float(bg_std)
-        }
-        
-        self.background_profile = profile
-        print(f"✅ 배경 분석 완료: {profile}")
-        return profile
+        print(f"✅ 배경 분석 완료: {avg_color}, 균일함: {is_uniform}")
+        return avg_color
     
     def detect_metal_type(self, image, mask=None):
         """HSV 색공간 분석으로 금속 타입 감지 (기존 유지)"""
@@ -319,115 +272,45 @@ class WeddingRingAIv14_3:
         table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
         return cv2.LUT(image, table)
     
-    def seamless_background_removal_v14_3(self, image, line_mask, ring_bbox):
-        """v14.3: Seamless Cloning 기반 배경 제거"""
-        print("🎨 Step 3: Seamless Background Removal 시작")
-        
-        # 배경 특성에 맞는 색상 생성
-        bg_color = self.background_profile['dominant_color']
-        
-        # 배경과 유사한 색상의 canvas 생성
-        height, width = image.shape[:2]
-        background_canvas = np.full((height, width, 3), bg_color, dtype=np.uint8)
-        
-        # 배경 타입에 따른 처리
-        if self.background_profile['gradient_type'] != 'uniform':
-            # 그라디언트 배경 생성
-            if self.background_profile['gradient_type'] == 'gentle':
-                # 부드러운 그라디언트
-                for i in range(height):
-                    factor = i / height
-                    gradient_color = [int(c * (0.9 + 0.2 * factor)) for c in bg_color]
-                    background_canvas[i, :] = gradient_color
-        
-        # 웨딩링 영역 보호를 위한 마스크 생성
-        x, y, w, h = ring_bbox
-        protection_mask = np.zeros((height, width), dtype=np.uint8)
-        
-        # 웨딩링 영역 확장 (10픽셀 마진)
-        x1 = max(0, x - 10)
-        y1 = max(0, y - 10)
-        x2 = min(width, x + w + 10)
-        y2 = min(height, y + h + 10)
-        protection_mask[y1:y2, x1:x2] = 255
-        
-        # 검은색 선 마스크 dilate (seamless cloning용)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        dilated_line_mask = cv2.dilate(line_mask, kernel, iterations=2)
-        
-        # 웨딩링 보호 영역 제외
-        cloning_mask = cv2.bitwise_and(dilated_line_mask, 255 - protection_mask)
-        
-        # Seamless Cloning 적용
-        if np.any(cloning_mask > 0):
-            # 중심점 계산
-            moments = cv2.moments(cloning_mask)
-            if moments['m00'] != 0:
-                center_x = int(moments['m10'] / moments['m00'])
-                center_y = int(moments['m01'] / moments['m00'])
-                center = (center_x, center_y)
-                
-                try:
-                    # NORMAL_CLONE 모드로 seamless cloning
-                    result = cv2.seamlessClone(
-                        background_canvas.astype(np.uint8), 
-                        image.astype(np.uint8), 
-                        cloning_mask, 
-                        center, 
-                        cv2.NORMAL_CLONE
-                    )
-                    print("✅ Seamless Cloning 완료")
-                    return result
-                except Exception as e:
-                    print(f"⚠️ Seamless Cloning 실패: {e}")
-                    # 폴백: 기존 방식
-                    return self.fallback_inpainting(image, line_mask, ring_bbox)
-        
-        return self.fallback_inpainting(image, line_mask, ring_bbox)
-    
-    def fallback_inpainting(self, image, line_mask, ring_bbox):
-        """폴백: 기존 inpainting 방식"""
-        print("🔄 Fallback: 기존 inpainting 방식 사용")
+    def improved_background_removal_v14_4(self, image, line_mask, ring_bbox):
+        """v14.4: 25번 성공 방식 기반 개선된 배경 제거"""
+        print("🎨 Step 3: 개선된 배경 제거 시작 (25번 성공 방식)")
         
         x, y, w, h = ring_bbox
         
-        # 웨딩링 보호 마스크
-        protection_mask = np.zeros_like(line_mask)
-        protection_mask[y+3:y+h-3, x+3:x+w-3] = 255
+        # 웨딩링 완전 보호 마스크 (25번 성공 방식)
+        ring_protection_mask = np.zeros_like(line_mask)
+        ring_protection_mask[y+3:y+h-3, x+3:x+w-3] = 255
         
-        # 실제 제거할 마스크 (웨딩링 영역 제외)
-        removal_mask = cv2.bitwise_and(line_mask, 255 - protection_mask)
+        # 실제 제거할 마스크 (웨딩링 영역 완전 제외)
+        removal_mask = cv2.bitwise_and(line_mask, 255 - ring_protection_mask)
         
-        # 고급 inpainting
+        # 고급 inpainting으로 검은색 선 제거
         inpainted = cv2.inpaint(image, removal_mask, 5, cv2.INPAINT_NS)
         
-        # 웨딩링 영역 원본 복원
+        # 웨딩링 영역 원본 완전 복원
         result = inpainted.copy()
-        result[protection_mask > 0] = image[protection_mask > 0]
+        result[ring_protection_mask > 0] = image[ring_protection_mask > 0]
         
-        # 부드러운 블렌딩
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-        blend_mask = cv2.dilate(protection_mask, kernel, iterations=1) - protection_mask
+        # 25번 성공했던 자연스러운 블렌딩 (31×31 가우시안 블러)
+        blend_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+        ring_protection_mask_float = ring_protection_mask.astype(np.float32) / 255.0
         
-        if np.any(blend_mask > 0):
-            blend_mask_norm = blend_mask.astype(np.float32) / 255.0
-            for c in range(3):
-                result[:,:,c] = (
-                    result[:,:,c].astype(np.float32) * (1 - blend_mask_norm * 0.3) +
-                    image[:,:,c].astype(np.float32) * (blend_mask_norm * 0.3)
-                )
+        # 31×31 가우시안 블러로 부드러운 블렌딩 (25번 성공 방식)
+        ring_protection_mask_float = cv2.GaussianBlur(ring_protection_mask_float, (31, 31), 10)
         
+        # RGB 채널별로 자연스러운 블렌딩
+        for c in range(3):
+            result[:,:,c] = (
+                image[:,:,c].astype(np.float32) * ring_protection_mask_float +
+                inpainted[:,:,c].astype(np.float32) * (1 - ring_protection_mask_float)
+            )
+        
+        print("✅ 25번 방식 배경 제거 완료")
         return result.astype(np.uint8)
     
-    def basic_upscale(self, image, scale=2):
-        """기본 업스케일링 (기존 유지)"""
-        height, width = image.shape[:2]
-        new_width = int(width * scale)
-        new_height = int(height * scale)
-        return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-    
-    def create_seamless_thumbnail_v14_3(self, image, ring_bbox, target_size=(1000, 1300)):
-        """v14.3: 배경 연속성을 고려한 썸네일 생성"""
+    def create_background_seamless_thumbnail_v14_4(self, image, ring_bbox, target_size=(1000, 1300)):
+        """v14.4: 배경 색상 기반 자연스러운 썸네일 생성"""
         print("🖼️ Step 4: 배경 연속성 썸네일 생성")
         
         x, y, w, h = ring_bbox
@@ -449,19 +332,19 @@ class WeddingRingAIv14_3:
         actual_w = crop_x2 - crop_x1
         actual_h = crop_y2 - crop_y1
         
-        # 배경 특성 기반 캔버스 생성
-        bg_color = self.background_profile['dominant_color']
+        # 배경 색상 기반 캔버스 생성
+        if self.background_color is not None:
+            bg_color = self.background_color
+        else:
+            bg_color = [240, 240, 240]  # 기본 밝은 회색
+        
         canvas = np.full((target_h, target_w, 3), bg_color, dtype=np.uint8)
         
-        # 배경 타입별 처리
-        if self.background_profile['gradient_type'] != 'uniform':
-            # 그라디언트 배경
-            for i in range(target_h):
-                factor = i / target_h
-                if self.background_profile['gradient_type'] == 'gentle':
-                    # 부드러운 그라디언트 (위에서 아래로)
-                    gradient_color = [int(c * (0.95 + 0.1 * factor)) for c in bg_color]
-                    canvas[i, :] = gradient_color
+        # 부드러운 그라디언트 추가 (자연스러운 배경)
+        for i in range(target_h):
+            factor = i / target_h
+            gradient_color = [int(c * (0.98 + 0.04 * factor)) for c in bg_color]
+            canvas[i, :] = gradient_color
         
         # 크롭된 이미지를 캔버스 중앙에 배치
         paste_x = (target_w - actual_w) // 2
@@ -471,43 +354,42 @@ class WeddingRingAIv14_3:
         cropped = image[crop_y1:crop_y2, crop_x1:crop_x2]
         canvas[paste_y:paste_y+actual_h, paste_x:paste_x+actual_w] = cropped
         
-        # 가장자리 부드럽게 블렌딩
+        # 가장자리 자연스럽게 블렌딩
         if actual_w < target_w or actual_h < target_h:
-            # 블렌딩 마스크 생성
-            blend_margin = 20
+            # 부드러운 블렌딩 마스크
+            blend_margin = 30
             blend_mask = np.zeros((target_h, target_w), dtype=np.float32)
             
-            # 중앙 영역은 1.0, 가장자리로 갈수록 0.0
-            center_mask = np.ones((actual_h - 2*blend_margin, actual_w - 2*blend_margin))
-            
-            if center_mask.shape[0] > 0 and center_mask.shape[1] > 0:
+            # 중앙은 1.0, 가장자리는 0.0
+            if actual_h > 2*blend_margin and actual_w > 2*blend_margin:
                 blend_mask[
                     paste_y + blend_margin:paste_y + actual_h - blend_margin,
                     paste_x + blend_margin:paste_x + actual_w - blend_margin
-                ] = center_mask
+                ] = 1.0
                 
                 # 가우시안 블러로 부드러운 전환
-                blend_mask = cv2.GaussianBlur(blend_mask, (41, 41), 15)
+                blend_mask = cv2.GaussianBlur(blend_mask, (61, 61), 20)
                 
-                # 3채널로 확장
+                # 3채널로 확장하여 블렌딩
                 blend_mask_3d = np.stack([blend_mask] * 3, axis=2)
                 
-                # 최종 블렌딩
-                final_canvas = canvas.astype(np.float32)
-                canvas_content = canvas.astype(np.float32)
-                
-                final_canvas = (
-                    canvas_content * (1 - blend_mask_3d) +
+                canvas = (
+                    canvas.astype(np.float32) * (1 - blend_mask_3d) +
                     canvas.astype(np.float32) * blend_mask_3d
-                )
-                
-                canvas = final_canvas.astype(np.uint8)
+                ).astype(np.uint8)
         
         print(f"✅ 썸네일 생성 완료: {target_size}")
         return canvas
+    
+    def basic_upscale(self, image, scale=2):
+        """기본 업스케일링 (기존 유지)"""
+        height, width = image.shape[:2]
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+        return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
 
 def handler(event):
-    """RunPod Serverless 메인 핸들러 - v14.3 Ultimate"""
+    """RunPod Serverless 메인 핸들러 - v14.4 Stable"""
     try:
         input_data = event["input"]
         
@@ -515,20 +397,20 @@ def handler(event):
         if "prompt" in input_data:
             return {
                 "success": True,
-                "message": f"웨딩링 AI v14.3 Ultimate 연결 성공: {input_data['prompt']}",
-                "version": "v14.3",
+                "message": f"웨딩링 AI v14.4 Stable 연결 성공: {input_data['prompt']}",
+                "version": "v14.4",
                 "features": [
                     "v13.3 파라미터 (28쌍 학습 데이터)",
-                    "Seamless Cloning 배경 제거",
-                    "배경 특성 분석",
-                    "썸네일 배경 연속성",
-                    "좌표 기억 시스템"
+                    "25번 성공 방식 기반",
+                    "안정된 배경 제거",
+                    "배경 연속성 썸네일",
+                    "sklearn 없는 안정적 처리"
                 ]
             }
         
         # 실제 이미지 처리
         if "image_base64" in input_data:
-            print("🚀 웨딩링 AI v14.3 Ultimate 처리 시작")
+            print("🚀 웨딩링 AI v14.4 Stable 처리 시작")
             
             # Base64 디코딩
             image_data = base64.b64decode(input_data["image_base64"])
@@ -536,16 +418,16 @@ def handler(event):
             image_array = np.array(image.convert('RGB'))
             
             # 프로세서 초기화
-            processor = WeddingRingAIv14_3()
+            processor = WeddingRingAIv14_4()
             
-            # 1. 검은색 선 감지 및 좌표 기억
+            # 1. 검은색 선 감지 및 좌표 기억 (25번 성공 방식)
             line_mask, ring_mask, ring_bbox = processor.detect_and_remember_black_lines(image_array)
             
             if line_mask is None:
                 return {"error": "검은색 선 테두리를 찾을 수 없습니다."}
             
-            # 2. 배경 특성 분석
-            background_profile = processor.analyze_background_characteristics(image_array, line_mask)
+            # 2. 간단한 배경 색상 분석 (sklearn 없이)
+            background_color = processor.analyze_simple_background(image_array, line_mask)
             
             # 3. 웨딩링 영역에서 금속 타입 및 조명 감지
             metal_type = processor.detect_metal_type(image_array, ring_mask)
@@ -573,16 +455,16 @@ def handler(event):
             result_image = image_array.copy()
             result_image[y:y+h, x:x+w] = enhanced_ring
             
-            # 5. v14.3 Seamless Background Removal
-            main_result = processor.seamless_background_removal_v14_3(result_image, line_mask, ring_bbox)
+            # 5. v14.4 개선된 배경 제거 (25번 성공 방식)
+            main_result = processor.improved_background_removal_v14_4(result_image, line_mask, ring_bbox)
             
             # 6. 2x 업스케일링
             upscaled = processor.basic_upscale(main_result, scale=2)
             
-            # 7. v14.3 배경 연속성 썸네일 생성
+            # 7. v14.4 배경 연속성 썸네일 생성
             # 원본 bbox를 업스케일링 비율에 맞게 조정
             scaled_bbox = (ring_bbox[0]*2, ring_bbox[1]*2, ring_bbox[2]*2, ring_bbox[3]*2)
-            thumbnail = processor.create_seamless_thumbnail_v14_3(upscaled, scaled_bbox)
+            thumbnail = processor.create_background_seamless_thumbnail_v14_4(upscaled, scaled_bbox)
             
             # 8. 결과 인코딩
             # 메인 이미지
@@ -598,10 +480,10 @@ def handler(event):
             thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode()
             
             processing_info = {
-                "version": "v14.3 Ultimate",
+                "version": "v14.4 Stable",
                 "metal_type": metal_type,
                 "lighting": lighting,
-                "background_profile": background_profile,
+                "background_color": background_color.tolist() if hasattr(background_color, 'tolist') else background_color,
                 "ring_bbox": ring_bbox,
                 "scale_factor": 2,
                 "original_size": f"{image_array.shape[1]}x{image_array.shape[0]}",
@@ -609,13 +491,13 @@ def handler(event):
                 "thumbnail_size": "1000x1300",
                 "features_used": [
                     "v13.3 파라미터",
-                    "배경 특성 분석",
-                    "Seamless Cloning",
+                    "25번 성공 방식",
+                    "안정적 배경 제거",
                     "배경 연속성 썸네일"
                 ]
             }
             
-            print("✅ v14.3 Ultimate 처리 완료")
+            print("✅ v14.4 Stable 처리 완료")
             
             return {
                 "enhanced_image": main_base64,
