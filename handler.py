@@ -1,7 +1,7 @@
 import runpod
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 import base64
 import io
 import logging
@@ -159,103 +159,78 @@ class WeddingRingProcessor:
         logger.info("WeddingRingProcessor 초기화 완료")
         
     def detect_black_masking(self, image):
-        """검은색 마스킹 감지 (기존 작동하던 방식 유지)"""
+        """검은색 마스킹 감지 (원래 잘 작동하던 방식)"""
         logger.info("검은색 마스킹 감지 시작")
         
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
-        # 검은색 영역 감지 (threshold < 20)
-        _, binary = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY_INV)
+        # 검은색 영역 감지 (threshold < 25)
+        _, binary = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY_INV)
         
         # 형태학적 연산으로 마스킹 영역 정제
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 8))
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
         
-        # 컨투어 찾기
+        # 컨투어 찾기 및 바운딩 박스 추출
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
-            # 가장 큰 영역을 마스킹으로 판단
             largest_contour = max(contours, key=cv2.contourArea)
-            
-            # 마스크 생성
             mask = np.zeros_like(gray)
             cv2.fillPoly(mask, [largest_contour], 255)
-            
-            # 웨딩링 영역 바운딩 박스
             x, y, w, h = cv2.boundingRect(largest_contour)
             logger.info(f"검은색 마스킹 감지 완료: ({x}, {y}, {w}, {h})")
-            
-            return mask, largest_contour, (x, y, w, h)
+            return mask, (x, y, w, h)
         
-        return None, None, None
+        return None, None
     
     def detect_metal_type(self, image, mask=None):
-        """HSV 색공간 분석으로 금속 타입 감지 (기존 방식 유지)"""
+        """HSV 색공간 분석으로 금속 타입 자동 감지"""
         logger.info("금속 타입 감지 시작")
         
         if mask is not None:
             # 마스킹 영역 내에서만 분석
-            masked_image = cv2.bitwise_and(image, image, mask=mask)
-            hsv = cv2.cvtColor(masked_image, cv2.COLOR_RGB2HSV)
+            mask_indices = np.where(mask > 0)
+            if len(mask_indices[0]) == 0:
+                return 'white_gold'
+            rgb_values = image[mask_indices[0], mask_indices[1], :]
+            hsv_values = cv2.cvtColor(rgb_values.reshape(-1, 1, 3), cv2.COLOR_RGB2HSV).reshape(-1, 3)
+            avg_hue = np.mean(hsv_values[:, 0])
+            avg_sat = np.mean(hsv_values[:, 1])
         else:
             hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        
-        # 마스킹된 영역의 평균 색상 계산
-        if mask is not None:
-            mask_indices = np.where(mask > 0)
-            if len(mask_indices[0]) > 0:
-                avg_hue = np.mean(hsv[mask_indices[0], mask_indices[1], 0])
-                avg_sat = np.mean(hsv[mask_indices[0], mask_indices[1], 1])
-            else:
-                return 'white_gold'
-        else:
             avg_hue = np.mean(hsv[:, :, 0])
             avg_sat = np.mean(hsv[:, :, 1])
         
-        logger.info(f"평균 Hue: {avg_hue}, 평균 Saturation: {avg_sat}")
-        
-        # 금속 타입 분류 (기존 방식)
-        if avg_hue < 15 or avg_hue > 165:
-            if avg_sat > 50:
-                metal_type = 'rose_gold'
-            else:
-                metal_type = 'white_gold'
-        elif 15 <= avg_hue <= 35:
-            if avg_sat > 80:
-                metal_type = 'yellow_gold'
-            else:
-                metal_type = 'champagne_gold'
+        # 금속 타입 분류
+        if avg_sat < 30:
+            return 'white_gold'
+        elif 5 <= avg_hue <= 25:
+            return 'yellow_gold' if avg_sat > 80 else 'champagne_gold'
+        elif avg_hue < 5 or avg_hue > 170:
+            return 'rose_gold'
         else:
-            metal_type = 'white_gold'
-            
-        logger.info(f"감지된 금속 타입: {metal_type}")
-        return metal_type
+            return 'white_gold'
     
     def detect_lighting(self, image):
-        """조명 환경 감지"""
+        """LAB 색공간 B채널로 조명 환경 감지"""
         logger.info("조명 환경 감지 시작")
         
         lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
-        b_channel = lab[:, :, 2]
-        b_mean = np.mean(b_channel)
+        b_mean = np.mean(lab[:, :, 2])
         
         if b_mean < 125:
-            lighting = 'warm'
+            return 'warm'
         elif b_mean > 135:
-            lighting = 'cool'
+            return 'cool'
         else:
-            lighting = 'natural'
-            
-        logger.info(f"감지된 조명 환경: {lighting}")
-        return lighting
+            return 'natural'
     
     def enhance_wedding_ring(self, image, metal_type, lighting):
-        """v13.3 웨딩링 보정 (기존 잘 작동하던 방식 유지)"""
+        """v13.3 웨딩링 보정 (원래 잘 작동하던 방식)"""
         logger.info("v13.3 웨딩링 보정 시작")
         
-        params = WEDDING_RING_PARAMS.get(metal_type, {}).get(lighting, 
+        params = WEDDING_RING_PARAMS.get(metal_type, {}).get(lighting,
                                                            WEDDING_RING_PARAMS['white_gold']['natural'])
         
         # 1. 노이즈 제거
@@ -282,7 +257,7 @@ class WeddingRingProcessor:
         
         enhanced_array = np.array(enhanced)
         
-        # 3. 하얀색 오버레이 ("하얀색 살짝 입힌 느낌")
+        # 3. 하얀색 오버레이 적용 ("하얀색 살짝 입힌 느낌")
         white_overlay = np.full_like(enhanced_array, 255)
         enhanced_array = cv2.addWeighted(
             enhanced_array, 1 - params['white_overlay'],
@@ -297,7 +272,7 @@ class WeddingRingProcessor:
         
         # 5. CLAHE 적용 (명료도 향상)
         lab = cv2.cvtColor(enhanced_array, cv2.COLOR_RGB2LAB)
-        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=1.3, tileGridSize=(8, 8))
         lab[:, :, 0] = clahe.apply(lab[:, :, 0])
         enhanced_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
         
@@ -317,61 +292,68 @@ class WeddingRingProcessor:
         logger.info("v13.3 웨딩링 보정 완료")
         return final.astype(np.uint8)
     
-    def remove_black_border_simple(self, image, mask):
-        """검은색 테두리 간단한 제거 (새로 추가)"""
-        logger.info("검은색 테두리 제거 시작")
+    def basic_upscale(self, image, scale=2):
+        """기본 업스케일링 (2x)"""
+        height, width = image.shape[:2]
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+        return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+    
+    def inpaint_masking(self, image, mask):
+        """검은색 마스킹 영역 인페인팅으로 제거"""
+        logger.info("검은색 마스킹 제거 시작")
         
-        # 마스크 약간 확장
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        # 마스크를 약간 확장해서 완전히 제거
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         expanded_mask = cv2.dilate(mask, kernel, iterations=1)
         
         # Telea 인페인팅으로 제거
         inpainted = cv2.inpaint(image, expanded_mask, 3, cv2.INPAINT_TELEA)
         
-        logger.info("검은색 테두리 제거 완료")
-        return inpainted.astype(np.uint8)
+        # 가장자리 부드럽게 처리
+        edge_mask = expanded_mask - mask
+        if np.any(edge_mask):
+            blurred = cv2.GaussianBlur(inpainted, (5, 5), 0)
+            result = np.where(edge_mask[..., None] > 0, blurred, inpainted)
+        else:
+            result = inpainted
+        
+        logger.info("검은색 마스킹 제거 완료")
+        return result.astype(np.uint8)
     
-    def create_thumbnail_1000x1300_fixed(self, image, bbox):
-        """검은색 영역 기준 정확한 1000x1300 썸네일 생성 (수정됨)"""
+    def create_thumbnail(self, image, bbox, target_size=(1000, 1300)):
+        """검은색 마스킹 기준으로 1000x1300 썸네일 생성"""
         logger.info("1000x1300 썸네일 생성 시작")
         
         x, y, w, h = bbox
         
-        # 웨딩링 중심 영역만 크롭 (마진 최소화)
-        margin = 20  # 20픽셀만 마진
+        # 웨딩링 중심으로 크롭 (최소 마진)
+        margin = 30
         x1 = max(0, x - margin)
         y1 = max(0, y - margin)
         x2 = min(image.shape[1], x + w + margin)
         y2 = min(image.shape[0], y + h + margin)
         
-        # 웨딩링 영역 크롭
+        # 크롭 및 1000x1300 리사이즈
         cropped = image[y1:y2, x1:x2]
-        
-        # 정확한 1000x1300 리사이즈
-        resized = cv2.resize(cropped, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
+        resized = cv2.resize(cropped, target_size, interpolation=cv2.INTER_LANCZOS4)
         
         # 썸네일 전용 보정
-        thumbnail_enhanced = self.enhance_thumbnail_simple(resized)
+        pil_thumbnail = Image.fromarray(resized)
         
-        logger.info("1000x1300 썸네일 생성 완료")
-        return thumbnail_enhanced
-    
-    def enhance_thumbnail_simple(self, image):
-        """썸네일 간단한 보정 (새로 추가)"""
-        pil_image = Image.fromarray(image)
-        
-        # 밝기 향상 (15%)
-        enhancer = ImageEnhance.Brightness(pil_image)
-        enhanced = enhancer.enhance(1.15)
-        
-        # 대비 향상 (10%)
-        enhancer = ImageEnhance.Contrast(enhanced)
-        enhanced = enhancer.enhance(1.10)
-        
-        # 선명도 향상 (20%)
-        enhancer = ImageEnhance.Sharpness(enhanced)
+        # 밝기 향상 (20%)
+        enhancer = ImageEnhance.Brightness(pil_thumbnail)
         enhanced = enhancer.enhance(1.20)
         
+        # 대비 향상 (15%)
+        enhancer = ImageEnhance.Contrast(enhanced)
+        enhanced = enhancer.enhance(1.15)
+        
+        # 선명도 향상 (25%)
+        enhancer = ImageEnhance.Sharpness(enhanced)
+        enhanced = enhancer.enhance(1.25)
+        
+        logger.info("1000x1300 썸네일 생성 완료")
         return np.array(enhanced)
 
 def handler(event):
@@ -385,12 +367,13 @@ def handler(event):
                 "success": True,
                 "message": f"웨딩링 AI 연결 성공: {input_data['prompt']}",
                 "status": "ready_for_processing",
-                "version": "v13.3_fixed_minimal",
+                "version": "v13.3_original_working",
                 "capabilities": [
-                    "검은색 마스킹 감지 (기존 방식)",
+                    "검은색 마스킹 감지",
                     "v13.3 웨딩링 보정 (28쌍 데이터)",
-                    "검은색 선 간단 제거 (새로 추가)",
-                    "1000x1300 썸네일 (수정됨)"
+                    "검은색 마스킹 제거",
+                    "2x 업스케일링",
+                    "1000x1300 썸네일"
                 ]
             }
         
@@ -407,29 +390,32 @@ def handler(event):
         
         processor = WeddingRingProcessor()
         
-        # 1. 검은색 마스킹 감지 (기존 방식)
-        mask, contour, bbox = processor.detect_black_masking(image_array)
+        # 1. 검은색 마스킹 감지
+        mask, bbox = processor.detect_black_masking(image_array)
         
         if mask is None:
-            return {
-                "error": "검은색 마스킹을 찾을 수 없습니다",
-                "suggestion": "검은색 영역이 명확한지 확인해주세요"
-            }
+            return {"error": "검은색 마스킹을 찾을 수 없습니다."}
         
-        # 2. 웨딩링 금속 타입 및 조명 감지 (기존 방식)
+        # 2. 금속 타입 및 조명 감지
         metal_type = processor.detect_metal_type(image_array, mask)
         lighting = processor.detect_lighting(image_array)
         
-        # 3. v13.3 웨딩링 보정 (기존 방식, 잘 작동하던 것)
-        enhanced_image = processor.enhance_wedding_ring(image_array, metal_type, lighting)
+        # 3. v13.3 웨딩링 보정 (원래 잘 작동하던 방식)
+        enhanced = processor.enhance_wedding_ring(image_array, metal_type, lighting)
         
-        # 4. 검은색 선 제거 (새로 추가)
-        final_image = processor.remove_black_border_simple(enhanced_image, mask)
+        # 4. 2x 업스케일링
+        upscaled = processor.basic_upscale(enhanced, scale=2)
+        upscaled_mask = processor.basic_upscale(mask, scale=2)
+        upscaled_mask = np.where(upscaled_mask > 127, 255, 0).astype(np.uint8)
         
-        # 5. 1000x1300 썸네일 생성 (수정됨)
-        thumbnail = processor.create_thumbnail_1000x1300_fixed(final_image, bbox)
+        # 5. 인페인팅으로 검은색 마스킹 제거
+        final_image = processor.inpaint_masking(upscaled, upscaled_mask)
         
-        # 6. 결과 인코딩
+        # 6. 1000x1300 썸네일 생성
+        scaled_bbox = (bbox[0]*2, bbox[1]*2, bbox[2]*2, bbox[3]*2)
+        thumbnail = processor.create_thumbnail(final_image, scaled_bbox)
+        
+        # 7. 결과 인코딩
         # 메인 이미지
         main_pil = Image.fromarray(final_image)
         main_buffer = io.BytesIO()
@@ -448,22 +434,17 @@ def handler(event):
             "processing_info": {
                 "metal_type": metal_type,
                 "lighting": lighting,
-                "masking_detected": True,
-                "border_removed": True,
                 "bbox": bbox,
+                "scale_factor": 2,
                 "original_size": f"{image_array.shape[1]}x{image_array.shape[0]}",
-                "thumbnail_size": "1000x1300",
-                "version": "v13.3_fixed_minimal"
-            },
-            "success": True
+                "final_size": f"{final_image.shape[1]}x{final_image.shape[0]}",
+                "thumbnail_size": "1000x1300"
+            }
         }
         
     except Exception as e:
         logger.error(f"처리 중 오류 발생: {str(e)}")
-        return {
-            "error": f"처리 중 오류 발생: {str(e)}",
-            "success": False
-        }
+        return {"error": f"처리 중 오류 발생: {str(e)}"}
 
 # RunPod 서버리스 시작
 runpod.serverless.start({"handler": handler})
