@@ -126,7 +126,7 @@ WEDDING_RING_PARAMS = {
     }
 }
 
-class WeddingRingProcessorV14:
+class WeddingRingProcessorV141:
     def __init__(self):
         self.debug_info = []
         
@@ -137,10 +137,10 @@ class WeddingRingProcessorV14:
     
     def detect_black_border_lines(self, image):
         """
-        v14.0 핵심: 검은색 선(테두리)만 정확히 감지
+        v14.1 핵심: 검은색 직사각형 테두리만 정확히 감지
         웨딩링은 절대 건드리지 않음
         """
-        self.log_debug("검은색 선 테두리 감지 시작")
+        self.log_debug("검은색 직사각형 테두리 감지 시작")
         
         # 1. 그레이스케일 변환
         if len(image.shape) == 3:
@@ -148,48 +148,59 @@ class WeddingRingProcessorV14:
         else:
             gray = image.copy()
         
-        # 2. 다중 threshold로 검은색 선만 정확히 감지
-        # 매우 어두운 픽셀만 선택 (threshold < 30)
-        _, black_lines = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY_INV)
+        # 2. 매우 어두운 픽셀만 선택 (threshold < 15로 낮춤)
+        _, black_pixels = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY_INV)
         
-        # 3. 선 형태만 추출 (morphological operations)
-        # 수직선 감지
-        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
-        vertical_lines = cv2.morphologyEx(black_lines, cv2.MORPH_OPEN, vertical_kernel)
+        # 3. 컨투어로 직사각형 찾기
+        contours, _ = cv2.findContours(black_pixels, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # 수평선 감지
-        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
-        horizontal_lines = cv2.morphologyEx(black_lines, cv2.MORPH_OPEN, horizontal_kernel)
-        
-        # 4. 선들 결합
-        border_lines = cv2.add(vertical_lines, horizontal_lines)
-        
-        # 5. 선을 두껍게 만들어 제거 효과 향상 (3픽셀)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        border_lines = cv2.dilate(border_lines, kernel, iterations=1)
-        
-        # 6. 테두리 사각형 영역 찾기
-        contours, _ = cv2.findContours(border_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        border_mask = None
+        outer_bbox = None
+        inner_bbox = None
         
         if contours:
-            # 가장 큰 컨투어를 테두리로 판단
-            largest_contour = max(contours, key=cv2.contourArea)
-            x, y, w, h = cv2.boundingRect(largest_contour)
+            # 면적 기준으로 정렬 (큰 것부터)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
             
-            # 내부 영역 계산 (여백 5픽셀)
-            inner_x = max(0, x + 5)
-            inner_y = max(0, y + 5)
-            inner_w = max(1, w - 10)
-            inner_h = max(1, h - 10)
-            inner_bbox = (inner_x, inner_y, inner_w, inner_h)
-            
-            self.log_debug(f"검은색 선 테두리 발견: ({x}, {y}, {w}, {h})")
-            self.log_debug(f"내부 웨딩링 영역: ({inner_x}, {inner_y}, {inner_w}, {inner_h})")
-            
-            return border_lines, (x, y, w, h), inner_bbox
+            for contour in contours:
+                # 컨투어를 사각형으로 근사화
+                epsilon = 0.02 * cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, epsilon, True)
+                
+                # 사각형 모양이고 충분히 큰 경우
+                if len(approx) == 4 and cv2.contourArea(contour) > 1000:
+                    # 바운딩 박스 계산
+                    x, y, w, h = cv2.boundingRect(contour)
+                    
+                    # 비율 체크 (너무 가늘거나 너무 넓지 않은 사각형)
+                    aspect_ratio = float(w) / h
+                    if 0.5 < aspect_ratio < 2.0:
+                        # 검은색 테두리 마스크 생성 (선만)
+                        border_mask = np.zeros_like(gray)
+                        
+                        # 테두리 선만 그리기 (두께 2-3픽셀)
+                        cv2.rectangle(border_mask, (x, y), (x+w, y+h), 255, 3)
+                        
+                        # 내부 영역 계산 (여백 15픽셀로 충분히)
+                        margin = 15
+                        inner_x = max(0, x + margin)
+                        inner_y = max(0, y + margin)
+                        inner_w = max(1, w - 2*margin)
+                        inner_h = max(1, h - 2*margin)
+                        
+                        outer_bbox = (x, y, w, h)
+                        inner_bbox = (inner_x, inner_y, inner_w, inner_h)
+                        
+                        self.log_debug(f"직사각형 테두리 발견: ({x}, {y}, {w}, {h})")
+                        self.log_debug(f"내부 웨딩링 영역: ({inner_x}, {inner_y}, {inner_w}, {inner_h})")
+                        self.log_debug(f"종횡비: {aspect_ratio:.2f}")
+                        
+                        break
         
-        self.log_debug("검은색 선 테두리를 찾을 수 없음")
-        return None, None, None
+        if border_mask is None:
+            self.log_debug("검은색 직사각형 테두리를 찾을 수 없음")
+            
+        return border_mask, outer_bbox, inner_bbox
     
     def detect_metal_type(self, image, inner_bbox=None):
         """HSV 색공간 분석으로 금속 타입 감지 (웨딩링 영역만)"""
@@ -312,29 +323,47 @@ class WeddingRingProcessorV14:
         self.log_debug("v13.3 보정 완료")
         return final.astype(np.uint8)
     
-    def remove_black_lines_only(self, image, black_lines_mask):
+    def remove_black_lines_only(self, image, black_lines_mask, inner_bbox=None):
         """
-        v14.0 핵심: 검은색 선만 제거, 웨딩링은 절대 건드리지 않음
+        v14.1 핵심: 검은색 선만 정밀 제거, 웨딩링은 절대 건드리지 않음
         """
-        self.log_debug("검은색 선 제거 시작 (웨딩링 보존)")
+        self.log_debug("검은색 선 정밀 제거 시작 (웨딩링 완전 보존)")
         
-        # 1. 검은색 선 영역만 inpainting으로 제거
-        # TELEA 방식 (더 자연스러운 결과)
-        inpainted = cv2.inpaint(image, black_lines_mask, 3, cv2.INPAINT_TELEA)
+        if black_lines_mask is None:
+            self.log_debug("제거할 검은색 선이 없음")
+            return image
         
-        # 2. 가장자리 부드럽게 처리
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        dilated_mask = cv2.dilate(black_lines_mask, kernel, iterations=1)
-        edge_mask = dilated_mask - black_lines_mask
+        # 1. 웨딩링 영역을 완전히 보호
+        protected_mask = black_lines_mask.copy()
+        if inner_bbox:
+            x, y, w, h = inner_bbox
+            # 웨딩링 영역의 마스크를 완전히 제거
+            protected_mask[y:y+h, x:x+w] = 0
+            self.log_debug(f"웨딩링 영역 보호: ({x}, {y}, {w}, {h})")
         
-        # 3. 가장자리만 블러 처리
+        # 2. 더 정밀한 inpainting (NS 방식)
+        inpainted = cv2.inpaint(image, protected_mask, 5, cv2.INPAINT_NS)
+        
+        # 3. 웨딩링 영역은 원본 그대로 유지
+        if inner_bbox:
+            x, y, w, h = inner_bbox
+            inpainted[y:y+h, x:x+w] = image[y:y+h, x:x+w]
+            self.log_debug("웨딩링 영역 원본 복원 완료")
+        
+        # 4. 경계 부드럽게 처리
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        dilated_mask = cv2.dilate(protected_mask, kernel, iterations=1)
+        edge_mask = dilated_mask - protected_mask
+        
         if np.any(edge_mask):
-            blurred = cv2.GaussianBlur(inpainted, (5, 5), 0)
-            result = np.where(edge_mask[..., None] > 0, blurred, inpainted)
+            blurred = cv2.GaussianBlur(inpainted, (3, 3), 0)
+            result = np.where(edge_mask[..., None] > 0, 
+                            cv2.addWeighted(inpainted, 0.7, blurred, 0.3, 0), 
+                            inpainted)
         else:
             result = inpainted
         
-        self.log_debug("검은색 선 제거 완료")
+        self.log_debug("검은색 선 제거 완료 (웨딩링 보존)")
         return result.astype(np.uint8)
     
     def upscale_image(self, image, scale=2):
@@ -404,9 +433,9 @@ class WeddingRingProcessorV14:
         self.log_debug(f"썸네일 완성: {new_w}x{new_h} → 1000x1300")
         return canvas
     
-    def process_wedding_ring_v14(self, image_array):
-        """v14.0 메인 처리 함수"""
-        self.log_debug("=== v14.0 웨딩링 처리 시작 ===")
+    def process_wedding_ring_v141(self, image_array):
+        """v14.1 메인 처리 함수"""
+        self.log_debug("=== v14.1 웨딩링 처리 시작 ===")
         
         # 1. 검은색 선 테두리 감지 (웨딩링은 건드리지 않음)
         black_lines_mask, outer_bbox, inner_bbox = self.detect_black_border_lines(image_array)
@@ -451,7 +480,7 @@ class WeddingRingProcessorV14:
             enhanced_full = self.enhance_wedding_ring_v13_3(image_array, metal_type, lighting)
         
         # 4. 검은색 선만 제거 (웨딩링은 보존)
-        lines_removed = self.remove_black_lines_only(enhanced_full, black_lines_mask)
+        lines_removed = self.remove_black_lines_only(enhanced_full, black_lines_mask, inner_bbox)
         
         # 5. 2x 업스케일링
         upscaled = self.upscale_image(lines_removed, scale=2)
@@ -466,7 +495,7 @@ class WeddingRingProcessorV14:
         
         thumbnail = self.create_thumbnail_1000x1300(upscaled, scaled_inner_bbox)
         
-        self.log_debug("=== v14.0 웨딩링 처리 완료 ===")
+        self.log_debug("=== v14.1 웨딩링 처리 완료 ===")
         
         return {
             'success': True,
@@ -491,16 +520,16 @@ def handler(event):
         if "prompt" in input_data:
             return {
                 "success": True,
-                "message": f"웨딩링 AI v14.0 연결 성공: {input_data['prompt']}",
+                "message": f"웨딩링 AI v14.1 연결 성공: {input_data['prompt']}",
                 "status": "ready_for_image_processing",
                 "capabilities": [
-                    "검은색 선 테두리 정확 감지",
+                    "검은색 직사각형 테두리 정밀 감지",
                     "웨딩링 v13.3 보정 (28쌍 데이터)",
-                    "검은색 선만 제거 (웨딩링 보존)",
+                    "검은색 선만 제거 (웨딩링 완전 보존)",
                     "2x 업스케일링",
                     "1000x1300 썸네일 생성"
                 ],
-                "version": "14.0"
+                "version": "14.1"
             }
         
         # 실제 이미지 처리
@@ -510,11 +539,11 @@ def handler(event):
             image = Image.open(io.BytesIO(image_data))
             image_array = np.array(image.convert('RGB'))
             
-            # v14.0 프로세서 생성
-            processor = WeddingRingProcessorV14()
+            # v14.1 프로세서 생성
+            processor = WeddingRingProcessorV141()
             
             # 메인 처리
-            result = processor.process_wedding_ring_v14(image_array)
+            result = processor.process_wedding_ring_v141(image_array)
             
             if not result['success']:
                 return {"error": "처리 중 오류 발생"}
