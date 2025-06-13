@@ -257,7 +257,7 @@ class WeddingRingProcessor:
         return canvas
 
 def handler(event):
-    """RunPod Serverless 메인 핸들러 - 바이너리 직접 반환"""
+    """RunPod Serverless 메인 핸들러 - base64 반환"""
     try:
         input_data = event["input"]
         
@@ -311,22 +311,22 @@ def handler(event):
             # 7. 썸네일 생성 (원본 bbox 기준)
             thumbnail = processor.create_thumbnail(final_image, bbox)
             
-            # 8. 바이너리 직접 반환 (base64 변환 없음!)
+            # 8. base64 인코딩 (JSON 직렬화 가능)
             # 메인 이미지
             main_pil = Image.fromarray(final_image)
             main_buffer = io.BytesIO()
             main_pil.save(main_buffer, format='JPEG', quality=95, progressive=True)
-            main_binary = main_buffer.getvalue()
+            main_base64 = base64.b64encode(main_buffer.getvalue()).decode()
             
             # 썸네일
             thumb_pil = Image.fromarray(thumbnail)
             thumb_buffer = io.BytesIO()
             thumb_pil.save(thumb_buffer, format='JPEG', quality=95, progressive=True)
-            thumb_binary = thumb_buffer.getvalue()
+            thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode()
             
             return {
-                "enhanced_image": main_binary,  # 바이너리 직접 반환!
-                "thumbnail": thumb_binary,      # 바이너리 직접 반환!
+                "enhanced_image": main_base64,  # base64 문자열 반환!
+                "thumbnail": thumb_base64,      # base64 문자열 반환!
                 "processing_info": {
                     "metal_type": metal_type,
                     "lighting": lighting,
