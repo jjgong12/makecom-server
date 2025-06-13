@@ -4,8 +4,6 @@ import numpy as np
 from PIL import Image, ImageEnhance
 import base64
 import io
-from basicsr.archs.rrdbnet_arch import RRDBNet
-from realesrgan import RealESRGANer
 
 # v13.3 파라미터 (28쌍 학습 데이터 기반)
 WEDDING_RING_PARAMS = {
@@ -129,21 +127,8 @@ WEDDING_RING_PARAMS = {
 
 class WeddingRingProcessor:
     def __init__(self):
-        # Real-ESRGAN 모델 초기화
-        try:
-            self.model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32)
-            self.upsampler = RealESRGANer(
-                scale=4,
-                model_path='RealESRGAN_x4plus.pth',
-                model=self.model,
-                tile=0,
-                tile_pad=10,
-                pre_pad=0,
-                half=True
-            )
-        except Exception as e:
-            print(f"Real-ESRGAN 초기화 실패: {e}")
-            self.upsampler = None
+        # 기본 OpenCV 기반 처리기로 초기화
+        pass
 
     def detect_black_masking(self, image):
         """정밀한 검은색 마스킹 감지 및 웨딩링 영역 추출"""
@@ -266,15 +251,7 @@ class WeddingRingProcessor:
         return final.astype(np.uint8)
 
     def ai_upscale(self, image):
-        """Real-ESRGAN 4x 업스케일링"""
-        if self.upsampler is not None:
-            try:
-                output, _ = self.upsampler.enhance(image, outscale=4)
-                return output
-            except Exception as e:
-                print(f"업스케일링 실패, 기본 리사이즈 사용: {e}")
-        
-        # 기본 업스케일링 (2x)
+        """기본 2x 업스케일링 (LANCZOS 보간)"""
         height, width = image.shape[:2]
         return cv2.resize(image, (width*2, height*2), interpolation=cv2.INTER_LANCZOS4)
 
@@ -374,7 +351,7 @@ def handler(event):
             # 4. v13.3 웨딩링 보정
             enhanced_ring = processor.enhance_wedding_ring(ring_region, metal_type, lighting)
             
-            # 5. AI 업스케일링 (2x 또는 4x)
+            # 5. 기본 업스케일링 (2x)
             upscaled = processor.ai_upscale(enhanced_ring)
             
             # 마스크도 같은 비율로 확대
