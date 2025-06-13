@@ -70,28 +70,28 @@ WEDDING_RING_PARAMS = {
         'natural': {
             'brightness': 1.17,
             'contrast': 1.11,
-            'white_overlay': 0.08,
+            'white_overlay': 0.12,  # 0.08 → 0.12 (더 하얗게)
             'sharpness': 1.16,
-            'color_temp_a': -1,
-            'color_temp_b': -1,
+            'color_temp_a': -4,     # -1 → -4 (화이트골드 쪽으로)
+            'color_temp_b': -4,     # -1 → -4 (베이지→화이트)
             'original_blend': 0.15
         },
         'warm': {
             'brightness': 1.14,
             'contrast': 1.08,
-            'white_overlay': 0.10,
+            'white_overlay': 0.14,  # 더 하얗게
             'sharpness': 1.14,
-            'color_temp_a': -3,
-            'color_temp_b': -3,
+            'color_temp_a': -6,     # 따뜻한 조명에서 더 차갑게
+            'color_temp_b': -6,
             'original_blend': 0.17
         },
         'cool': {
             'brightness': 1.20,
             'contrast': 1.14,
-            'white_overlay': 0.06,
+            'white_overlay': 0.10,  # 적당히
             'sharpness': 1.18,
-            'color_temp_a': 1,
-            'color_temp_b': 1,
+            'color_temp_a': -2,     # 차가운 조명에서는 살짝만
+            'color_temp_b': -2,
             'original_blend': 0.13
         }
     },
@@ -126,7 +126,7 @@ WEDDING_RING_PARAMS = {
     }
 }
 
-class WeddingRingProcessorV141:
+class WeddingRingProcessorV142:
     def __init__(self):
         self.debug_info = []
         
@@ -137,7 +137,7 @@ class WeddingRingProcessorV141:
     
     def detect_black_border_lines(self, image):
         """
-        v14.1 핵심: 검은색 직사각형 테두리만 정확히 감지
+        v14.2 핵심: 검은색 직사각형 테두리만 정확히 감지
         웨딩링은 절대 건드리지 않음
         """
         self.log_debug("검은색 직사각형 테두리 감지 시작")
@@ -325,46 +325,71 @@ class WeddingRingProcessorV141:
     
     def remove_black_lines_only(self, image, black_lines_mask, inner_bbox=None):
         """
-        v14.1 핵심: 검은색 선만 정밀 제거, 웨딩링은 절대 건드리지 않음
+        v14.2 핵심: 검은색 선만 정밀 제거, 웨딩링은 절대 건드리지 않음
+        배경과 자연스러운 블렌딩 (경계선 제거)
         """
-        self.log_debug("검은색 선 정밀 제거 시작 (웨딩링 완전 보존)")
+        self.log_debug("검은색 선 정밀 제거 시작 (웨딩링 완전 보존 + 자연스러운 블렌딩)")
         
         if black_lines_mask is None:
             self.log_debug("제거할 검은색 선이 없음")
             return image
         
-        # 1. 웨딩링 영역을 완전히 보호
+        # 1. 웨딩링 영역을 완전히 보호하는 마스크 생성
         protected_mask = black_lines_mask.copy()
+        ring_protection_mask = None
+        
         if inner_bbox:
             x, y, w, h = inner_bbox
             # 웨딩링 영역의 마스크를 완전히 제거
             protected_mask[y:y+h, x:x+w] = 0
-            self.log_debug(f"웨딩링 영역 보호: ({x}, {y}, {w}, {h})")
+            
+            # 웨딩링 보호용 부드러운 마스크 생성
+            ring_protection_mask = np.zeros_like(image[:,:,0])
+            ring_protection_mask[y:y+h, x:x+w] = 255
+            
+            # 가장자리를 부드럽게 처리 (15픽셀 그라데이션)
+            ring_protection_mask = cv2.GaussianBlur(ring_protection_mask, (31, 31), 10)
+            ring_protection_mask = ring_protection_mask.astype(np.float32) / 255.0
+            
+            self.log_debug(f"웨딩링 영역 부드러운 보호: ({x}, {y}, {w}, {h})")
         
-        # 2. 더 정밀한 inpainting (NS 방식)
+        # 2. 정밀한 inpainting (NS 방식)
         inpainted = cv2.inpaint(image, protected_mask, 5, cv2.INPAINT_NS)
         
-        # 3. 웨딩링 영역은 원본 그대로 유지
-        if inner_bbox:
-            x, y, w, h = inner_bbox
-            inpainted[y:y+h, x:x+w] = image[y:y+h, x:x+w]
-            self.log_debug("웨딩링 영역 원본 복원 완료")
-        
-        # 4. 경계 부드럽게 처리
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        dilated_mask = cv2.dilate(protected_mask, kernel, iterations=1)
-        edge_mask = dilated_mask - protected_mask
-        
-        if np.any(edge_mask):
-            blurred = cv2.GaussianBlur(inpainted, (3, 3), 0)
-            result = np.where(edge_mask[..., None] > 0, 
-                            cv2.addWeighted(inpainted, 0.7, blurred, 0.3, 0), 
-                            inpainted)
+        # 3. 웨딩링 영역을 원본과 자연스럽게 블렌딩
+        if inner_bbox and ring_protection_mask is not None:
+            # 부드러운 블렌딩: 원본 * 마스크 + inpainted * (1-마스크)
+            result = np.zeros_like(image, dtype=np.float32)
+            for c in range(3):  # RGB 채널별로
+                result[:,:,c] = (image[:,:,c].astype(np.float32) * ring_protection_mask + 
+                               inpainted[:,:,c].astype(np.float32) * (1 - ring_protection_mask))
+            
+            result = np.clip(result, 0, 255).astype(np.uint8)
+            self.log_debug("웨딩링 영역 부드러운 블렌딩 완료")
         else:
             result = inpainted
         
-        self.log_debug("검은색 선 제거 완료 (웨딩링 보존)")
-        return result.astype(np.uint8)
+        # 4. 검은색 선 제거 부분의 경계도 부드럽게 처리
+        if np.any(protected_mask):
+            # 제거된 선 영역의 가장자리 블렌딩
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            dilated_mask = cv2.dilate(protected_mask, kernel, iterations=1)
+            edge_mask = dilated_mask - protected_mask
+            
+            if np.any(edge_mask):
+                # 가장자리 영역을 부드럽게 블러
+                blurred = cv2.GaussianBlur(result, (5, 5), 1)
+                edge_blend = edge_mask.astype(np.float32) / 255.0
+                
+                for c in range(3):
+                    result[:,:,c] = (result[:,:,c].astype(np.float32) * (1 - edge_blend * 0.3) + 
+                                   blurred[:,:,c].astype(np.float32) * (edge_blend * 0.3))
+                
+                result = np.clip(result, 0, 255).astype(np.uint8)
+                self.log_debug("검은색 선 제거 경계 부드러운 처리 완료")
+        
+        self.log_debug("검은색 선 제거 완료 (웨딩링 보존 + 자연스러운 블렌딩)")
+        return result
     
     def upscale_image(self, image, scale=2):
         """LANCZOS 2x 업스케일링"""
@@ -433,9 +458,9 @@ class WeddingRingProcessorV141:
         self.log_debug(f"썸네일 완성: {new_w}x{new_h} → 1000x1300")
         return canvas
     
-    def process_wedding_ring_v141(self, image_array):
-        """v14.1 메인 처리 함수"""
-        self.log_debug("=== v14.1 웨딩링 처리 시작 ===")
+    def process_wedding_ring_v142(self, image_array):
+        """v14.2 메인 처리 함수"""
+        self.log_debug("=== v14.2 웨딩링 처리 시작 ===")
         
         # 1. 검은색 선 테두리 감지 (웨딩링은 건드리지 않음)
         black_lines_mask, outer_bbox, inner_bbox = self.detect_black_border_lines(image_array)
@@ -495,7 +520,7 @@ class WeddingRingProcessorV141:
         
         thumbnail = self.create_thumbnail_1000x1300(upscaled, scaled_inner_bbox)
         
-        self.log_debug("=== v14.1 웨딩링 처리 완료 ===")
+        self.log_debug("=== v14.2 웨딩링 처리 완료 ===")
         
         return {
             'success': True,
@@ -520,16 +545,18 @@ def handler(event):
         if "prompt" in input_data:
             return {
                 "success": True,
-                "message": f"웨딩링 AI v14.1 연결 성공: {input_data['prompt']}",
+                "message": f"웨딩링 AI v14.2 연결 성공: {input_data['prompt']}",
                 "status": "ready_for_image_processing",
                 "capabilities": [
                     "검은색 직사각형 테두리 정밀 감지",
                     "웨딩링 v13.3 보정 (28쌍 데이터)",
                     "검은색 선만 제거 (웨딩링 완전 보존)",
+                    "자연스러운 배경 블렌딩 (경계선 제거)",
+                    "샴페인골드 화이트골드 방향 조정",
                     "2x 업스케일링",
                     "1000x1300 썸네일 생성"
                 ],
-                "version": "14.1"
+                "version": "14.2"
             }
         
         # 실제 이미지 처리
@@ -539,11 +566,11 @@ def handler(event):
             image = Image.open(io.BytesIO(image_data))
             image_array = np.array(image.convert('RGB'))
             
-            # v14.1 프로세서 생성
-            processor = WeddingRingProcessorV141()
+            # v14.2 프로세서 생성
+            processor = WeddingRingProcessorV142()
             
             # 메인 처리
-            result = processor.process_wedding_ring_v141(image_array)
+            result = processor.process_wedding_ring_v142(image_array)
             
             if not result['success']:
                 return {"error": "처리 중 오류 발생"}
