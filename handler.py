@@ -484,11 +484,11 @@ def handler(event):
                 "success": True,
                 "message": f"웨딩링 AI 연결 성공: {input_data['prompt']}",
                 "status": "ready_for_processing",
-                "version": "v13.3_conversation_23_working",
+                "version": "v14.0_new_approach",
                 "capabilities": [
                     "검은색 선 테두리 정밀 감지",
-                    "웨딩링 확대 보정 후 복귀",
-                    "v13.3 완전 보정 (28쌍 데이터)",
+                    "웨딩링 확대 보정 후 복귀", 
+                    "v14.0 새로운 보정 시스템",
                     "검은색 선 완전 제거",
                     "전체 색감 조화",
                     "1000x1300 썸네일 생성"
@@ -563,7 +563,7 @@ def handler(event):
                 "bbox": bbox,
                 "original_size": f"{image_array.shape[1]}x{image_array.shape[0]}",
                 "thumbnail_size": "1000x1300",
-                "version": "v13.3_conversation_23_working"
+                "version": "v14.0_new_approach"
             },
             "success": True
         }
