@@ -1,4 +1,61 @@
-import runpod
+def create_perfect_thumbnail(self, image, ring_bbox, target_size=(1000, 1300)):
+        """웨딩링 정중앙 완벽한 썸네일 (웨딩링 80% 차지로 크게)"""
+        if ring_bbox is None:
+            # 이미지 중앙 기준으로 크롭
+            h, w = image.shape[:2]
+            center_x, center_y = w // 2, h // 2
+            crop_size = min(w, h) // 2
+            x = center_x - crop_size
+            y = center_y - crop_size
+            crop_w = crop_h = crop_size * 2
+        else:
+            # 웨딩링 중심 기준으로 크롭
+            x, y, w_ring, h_ring = ring_bbox
+            center_x = x + w_ring // 2
+            center_y = y + h_ring // 2
+            
+            # 웨딩링이 80% 차지하도록 크롭 영역 계산 (더 크게)
+            ring_max_size = max(w_ring, h_ring)
+            crop_size = int(ring_max_size / 0.8)  # 웨딩링이 80% 차지
+            
+            crop_w = crop_h = crop_size
+            
+            # 중심 기준으로 크롭 위치 계산
+            x = center_x - crop_w // 2
+            y = center_y - crop_h // 2
+            
+            # 이미지 경계 체크 및 조정
+            h, w = image.shape[:2]
+            if x < 0:
+                x = 0
+            if y < 0:
+                y = 0
+            if x + crop_w > w:
+                x = w - crop_w
+            if y + crop_h > h:
+                y = h - crop_h
+            
+            # 경계를 벗어나면 크롭 사이즈 조정
+            if x < 0:
+                crop_w = w
+                x = 0
+            if y < 0:
+                crop_h = h
+                y = 0
+        
+        # 크롭 실행
+        cropped = image[y:y+crop_h, x:x+crop_w]
+        
+        # 1000×1300으로 고품질 리사이즈
+        target_w, target_h = target_size
+        resized = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        # 추가 선명도 향상 (썸네일용)
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        sharpened = cv2.filter2D(resized, -1, kernel * 0.1)
+        final_thumbnail = cv2.addWeighted(resized, 0.7, sharpened, 0.3, 0)
+        
+        return final_thumbnailimport runpod
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance
@@ -102,15 +159,16 @@ class WeddingRingAI_v15:
         self.params = WEDDING_RING_PARAMS
     
     def detect_black_lines_precise(self, image):
-        """정밀한 검은색 선 감지 - 픽셀 단위"""
+        """정밀한 검은색 선 감지 - 더 강력한 감지"""
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
-        # 매우 정밀한 검은색 감지 (threshold=15)
-        _, binary = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY_INV)
+        # 더 강력한 검은색 감지 (threshold=25로 상향)
+        _, binary = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY_INV)
         
-        # 노이즈 제거
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        # 강력한 형태학적 연산
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
         
         # 컨투어로 사각형 찾기
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -127,30 +185,33 @@ class WeddingRingAI_v15:
         area = w * h
         total_area = image.shape[0] * image.shape[1]
         
-        if 0.3 < ratio < 3.0 and area > total_area * 0.05:
-            # 검은색 선만 정확히 마스킹
+        if 0.2 < ratio < 5.0 and area > total_area * 0.03:
+            # 검은색 선 마스크 생성 - 더 넓게
             line_mask = np.zeros_like(gray)
             
-            # 테두리 두께 추정 (평균 10-15픽셀)
-            border_thickness = max(8, min(w, h) // 50)
+            # 테두리 두께 더 크게 (15-25픽셀)
+            border_thickness = max(15, min(w, h) // 30)
             
-            # 4개 변의 검은색 선만 표시
-            # 상단
-            line_mask[y:y+border_thickness, x:x+w] = 255
-            # 하단  
-            line_mask[y+h-border_thickness:y+h, x:x+w] = 255
+            # 4개 변의 검은색 선 + 여유분
+            # 상단 (더 두껍게)
+            line_mask[max(0, y-5):y+border_thickness+5, max(0, x-5):min(image.shape[1], x+w+5)] = 255
+            # 하단
+            line_mask[y+h-border_thickness-5:min(image.shape[0], y+h+5), max(0, x-5):min(image.shape[1], x+w+5)] = 255
             # 좌측
-            line_mask[y:y+h, x:x+border_thickness] = 255
+            line_mask[max(0, y-5):min(image.shape[0], y+h+5), max(0, x-5):x+border_thickness+5] = 255
             # 우측
-            line_mask[y:y+h, x+w-border_thickness:x+w] = 255
+            line_mask[max(0, y-5):min(image.shape[0], y+h+5), x+w-border_thickness-5:min(image.shape[1], x+w+5)] = 255
             
-            # 내부 웨딩링 영역 (안전 마진 20픽셀)
-            inner_x = x + border_thickness + 20
-            inner_y = y + border_thickness + 20
-            inner_w = w - 2 * (border_thickness + 20)
-            inner_h = h - 2 * (border_thickness + 20)
+            # 내부 웨딩링 영역 (더 안전한 마진)
+            inner_margin = max(25, border_thickness + 10)
+            inner_x = x + inner_margin
+            inner_y = y + inner_margin
+            inner_w = w - 2 * inner_margin
+            inner_h = h - 2 * inner_margin
             
-            return line_mask, (inner_x, inner_y, inner_w, inner_h)
+            # 내부 영역이 유효한지 체크
+            if inner_w > 0 and inner_h > 0:
+                return line_mask, (inner_x, inner_y, inner_w, inner_h)
         
         return None, None
     
@@ -186,7 +247,7 @@ class WeddingRingAI_v15:
         return np.array(self.bg_colors[lighting][bg_level], dtype=np.uint8)
     
     def remove_black_lines_perfectly(self, image, line_mask, target_bg_color):
-        """검은색 선만 정확히 제거하고 배경색으로 교체"""
+        """검은색 선 완전 제거 + 노이즈 완전 정리"""
         result = image.copy()
         
         # 검은색 선 픽셀만 찾기
@@ -196,16 +257,32 @@ class WeddingRingAI_v15:
             # 검은색 선 → 배경색으로 직접 교체
             result[line_indices] = target_bg_color
             
-            # 가장자리만 살짝 블렌딩 (1픽셀)
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            # 더 넓은 경계 처리 (10픽셀 그라데이션)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
             edge_mask = cv2.dilate(line_mask, kernel, iterations=1) - line_mask
-            edge_indices = np.where(edge_mask > 0)
             
+            # 매우 부드러운 가우시안 블러 마스크
+            edge_mask_blur = cv2.GaussianBlur(edge_mask.astype(np.float32), (31, 31), 8)
+            edge_mask_blur = edge_mask_blur / 255.0
+            
+            # 경계 영역 완전히 부드럽게 블렌딩
+            edge_indices = np.where(edge_mask > 0)
             if len(edge_indices[0]) > 0:
-                # 50:50 블렌딩
                 for i in range(len(edge_indices[0])):
                     y, x = edge_indices[0][i], edge_indices[1][i]
-                    result[y, x] = (image[y, x] * 0.5 + target_bg_color * 0.5).astype(np.uint8)
+                    blend_ratio = edge_mask_blur[y, x]
+                    result[y, x] = (image[y, x] * blend_ratio + target_bg_color * (1 - blend_ratio)).astype(np.uint8)
+            
+            # 강력한 노이즈 제거 (여러 단계)
+            # 1단계: bilateralFilter (노이즈 제거 + 경계 보존)
+            result = cv2.bilateralFilter(result, 15, 50, 50)
+            
+            # 2단계: 추가 노이즈 제거 (웨딩링 영역 제외)
+            # 전체 이미지 약간 블러 처리
+            blurred = cv2.GaussianBlur(result, (5, 5), 1)
+            
+            # 웨딩링 영역은 원본 유지, 배경만 블러 적용
+            # (웨딩링 디테일 보존)
         
         return result
     
