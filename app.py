@@ -206,37 +206,52 @@ class WeddingRingProcessor:
         print(f"Created precise border mask, ring bbox: {ring_bbox}")
         return mask, best_rect, ring_bbox
     
-    def advanced_inpainting_v145(self, image, mask):
-        """v14.5 강화된 inpainting"""
-        print("Starting v14.5 advanced inpainting...")
+    def advanced_inpainting_v146(self, image, mask, ring_bbox):
+        """v14.6 - 25번 성공 방식 완전 재현"""
+        print("Starting v14.6 inpainting - 25번 성공 방식 재현...")
         
-        # 1. 마스크 확장 (더 완전한 제거를 위해)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        expanded_mask = cv2.dilate(mask, kernel, iterations=2)
+        # 1. 웨딩링 완전 보호 마스크 생성 (25번 방식)
+        ring_protection_mask = np.zeros_like(mask)
+        if ring_bbox:
+            x, y, w, h = ring_bbox
+            # 웨딩링 영역을 255로 설정 (보호)
+            ring_protection_mask[y:y+h, x:x+w] = 255
+            print(f"Ring protection area: {ring_bbox}")
         
-        # 2. 다중 inpainting 방법 조합
-        # Method 1: TELEA (빠르고 자연스러움)
-        result1 = cv2.inpaint(image, expanded_mask, 5, cv2.INPAINT_TELEA)
+        # 2. 검은색 선만 제거할 마스크 (웨딩링 영역 제외)
+        line_only_mask = mask.copy()
+        line_only_mask[ring_protection_mask > 0] = 0  # 웨딩링 영역은 inpainting 금지
         
-        # Method 2: NS (더 정밀함)
-        result2 = cv2.inpaint(image, expanded_mask, 8, cv2.INPAINT_NS)
+        # 3. 강력한 inpainting으로 검은색 선 완전 제거
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        expanded_line_mask = cv2.dilate(line_only_mask, kernel, iterations=3)
         
-        # 3. 두 결과 블렌딩
-        final_result = cv2.addWeighted(result1, 0.6, result2, 0.4, 0)
+        # NS 방식으로 더 강력한 inpainting
+        inpainted = cv2.inpaint(image, expanded_line_mask, 15, cv2.INPAINT_NS)
         
-        # 4. 추가 부드러움 처리
-        blurred_mask = cv2.GaussianBlur(expanded_mask.astype(np.float32), (15, 15), 5)
-        blurred_mask = blurred_mask / 255.0
+        # 4. 25번 성공 방식: 부드러운 그라데이션 블렌딩
+        # 31x31 가우시간 블러로 15픽셀 자연스러운 그라데이션
+        smooth_mask = cv2.GaussianBlur(expanded_line_mask.astype(np.float32), (31, 31), 10)
+        smooth_mask = smooth_mask / 255.0
         
-        # 5. 원본과 자연스럽게 블렌딩
+        # 5. 웨딩링 절대 보호 + 자연스러운 블렌딩
+        result = image.copy().astype(np.float32)
+        
+        # RGB 채널별로 부드러운 블렌딩
         for c in range(3):
-            final_result[:,:,c] = (
-                image[:,:,c].astype(np.float32) * (1 - blurred_mask) +
-                final_result[:,:,c].astype(np.float32) * blurred_mask
+            result[:,:,c] = (
+                image[:,:,c].astype(np.float32) * (1 - smooth_mask) +
+                inpainted[:,:,c].astype(np.float32) * smooth_mask
             )
-            
-        print("Advanced inpainting completed")
-        return final_result.astype(np.uint8)
+        
+        # 6. 웨딩링 영역 강제 복원 (절대 보호)
+        if ring_bbox:
+            x, y, w, h = ring_bbox
+            result[y:y+h, x:x+w] = image[y:y+h, x:x+w].astype(np.float32)
+            print("Ring area forcibly protected")
+        
+        print("v14.6 inpainting completed - 25번 방식 재현")
+        return result.astype(np.uint8)
     
     def detect_metal_type(self, image, ring_bbox=None):
         """금속 타입 자동 감지"""
@@ -429,7 +444,7 @@ class WeddingRingProcessor:
 def handler(event):
     """RunPod Serverless 메인 핸들러 - v14.5 Ultimate"""
     try:
-        print("=== Wedding Ring AI v14.5 Ultimate Starting ===")
+                print("=== Wedding Ring AI v14.6 Ultimate Starting ===")        
         
         input_data = event["input"]
         
@@ -437,8 +452,8 @@ def handler(event):
         if "prompt" in input_data:
             return {
                 "success": True,
-                "message": f"v14.5 Ultimate 연결 성공: {input_data['prompt']}",
-                "version": "v14.5",
+                "message": f"v14.6 Ultimate 연결 성공: {input_data['prompt']}",
+                "version": "v14.6",
                 "status": "ready_for_image_processing",
                 "capabilities": [
                     "정밀 검은색 선 감지 및 완전 제거",
@@ -481,8 +496,8 @@ def handler(event):
             image_array, metal_type, lighting, ring_bbox
         )
         
-        # 4. v14.5 강화된 inpainting으로 검은색 선 완전 제거
-        inpainted_image = processor.advanced_inpainting_v145(enhanced_image, border_mask)
+        # 4. v14.6 강화된 inpainting으로 검은색 선 완전 제거 (25번 성공 방식)
+        inpainted_image = processor.advanced_inpainting_v146(enhanced_image, border_mask, ring_bbox)
         
         # 5. 2x 업스케일링
         upscaled_image = processor.lanczos_upscale(inpainted_image, scale=2)
@@ -517,7 +532,7 @@ def handler(event):
             "enhanced_image": main_base64,
             "thumbnail": thumb_base64,
             "processing_info": {
-                "version": "v14.5 Ultimate",
+                "version": "v14.6 Ultimate",
                 "metal_type": metal_type,
                 "lighting": lighting,
                 "border_detected": True,
@@ -528,7 +543,8 @@ def handler(event):
                 "thumbnail_size": "1000x1300",
                 "enhancements_applied": [
                     "다중 threshold 검은색 선 감지",
-                    "강화된 inpainting (TELEA + NS 조합)",
+                    "25번 성공 방식 재현 inpainting",
+                    "웨딩링 완전 보호 + 자연스러운 블렌딩",
                     "v13.3 웨딩링 보정 (28쌍 데이터 기반)",
                     "LANCZOS 2x 업스케일링",
                     "웨딩링 중심 1000x1300 썸네일"
@@ -542,7 +558,7 @@ def handler(event):
         traceback.print_exc()
         return {
             "error": f"처리 중 오류 발생: {str(e)}",
-            "version": "v14.5",
+            "version": "v14.6",
             "timestamp": "error_occurred"
         }
 
