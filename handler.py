@@ -159,7 +159,7 @@ class WeddingRingAI_v15:
         self.params = WEDDING_RING_PARAMS
     
     def detect_black_lines_precise(self, image):
-        """완전히 새로운 검은색 선 감지 - 다중 threshold 방식"""
+        """완전히 새로운 검은색 선 감지 - 실제 100픽셀 두께 대응"""
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
         # 다중 threshold로 검은색 감지 강화
@@ -192,20 +192,37 @@ class WeddingRingAI_v15:
         total_area = image.shape[0] * image.shape[1]
         
         if 0.1 < ratio < 10.0 and area > total_area * 0.01:
-            # 검은색 영역 전체를 마스크로 사용 (가장 포괄적)
-            line_mask = combined_mask.copy()
+            # 실제 100픽셀 두께에 맞는 처리
+            # 고해상도 이미지 (6720x4480) 기준으로 계산
+            image_diagonal = (image.shape[0]**2 + image.shape[1]**2)**0.5
             
-            # 웨딩링 영역 추정 (더 보수적)
-            border_thickness = max(20, min(w, h) // 25)
-            inner_margin = max(30, border_thickness + 15)
+            if image_diagonal > 5000:  # 고해상도 이미지
+                border_thickness = 120  # 100픽셀 + 여유분 20픽셀
+            else:  # 일반 해상도
+                border_thickness = max(60, min(w, h) // 20)
             
+            # 검은색 영역 전체를 마스크로 사용하되, 테두리 영역만 정확히 추출
+            line_mask = np.zeros_like(gray)
+            
+            # 4개 변의 검은색 선 (100픽셀 두께 + 여유분)
+            # 상단
+            line_mask[max(0, y-10):y+border_thickness+10, max(0, x-10):min(image.shape[1], x+w+10)] = 255
+            # 하단  
+            line_mask[y+h-border_thickness-10:min(image.shape[0], y+h+10), max(0, x-10):min(image.shape[1], x+w+10)] = 255
+            # 좌측
+            line_mask[max(0, y-10):min(image.shape[0], y+h+10), max(0, x-10):x+border_thickness+10] = 255
+            # 우측
+            line_mask[max(0, y-10):min(image.shape[0], y+h+10), x+w-border_thickness-10:min(image.shape[1], x+w+10)] = 255
+            
+            # 웨딩링 영역 (100픽셀 + 안전마진 50픽셀)
+            inner_margin = border_thickness + 50  # 120 + 50 = 170픽셀 마진
             inner_x = x + inner_margin
             inner_y = y + inner_margin
             inner_w = w - 2 * inner_margin
             inner_h = h - 2 * inner_margin
             
             # 내부 영역이 유효한지 체크
-            if inner_w > 50 and inner_h > 50:
+            if inner_w > 100 and inner_h > 100:
                 return line_mask, (inner_x, inner_y, inner_w, inner_h)
         
         return None, None
