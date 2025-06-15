@@ -151,21 +151,21 @@ class PerfectWeddingRingProcessor:
             return 70  # Always return safe default
 
     def detect_black_border_safe(self, image):
-        """Detect black border with complete error handling"""
+        """Detect black border with AGGRESSIVE detection"""
         try:
             if image is None or image.size == 0:
                 return None, None, None
             
-            # Multiple threshold detection for comprehensive coverage
+            # Much more aggressive threshold detection
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
             
-            # Try three different thresholds
+            # Try VERY LOW thresholds to catch any dark lines
             masks = []
-            for threshold in [20, 30, 40]:
+            for threshold in [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]:
                 _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
                 masks.append(binary)
             
-            # Combine all masks
+            # Combine all masks - if ANY threshold detects it, include it
             combined_mask = np.zeros_like(gray)
             for mask in masks:
                 combined_mask = cv2.bitwise_or(combined_mask, mask)
@@ -176,7 +176,7 @@ class PerfectWeddingRingProcessor:
             if not contours:
                 return None, None, None
             
-            # Find largest rectangular contour
+            # Find largest rectangular contour (VERY RELAXED criteria)
             best_contour = None
             best_bbox = None
             best_area = 0
@@ -186,10 +186,10 @@ class PerfectWeddingRingProcessor:
                 x, y, w, h = cv2.boundingRect(contour)
                 area = w * h
                 
-                # Check if it's reasonable rectangle
-                if w > 100 and h > 100 and area > best_area:
+                # Much more relaxed criteria - accept almost anything
+                if w > 50 and h > 50 and area > best_area:
                     aspect_ratio = w / h if h > 0 else 1
-                    if 0.5 <= aspect_ratio <= 2.0:  # Reasonable aspect ratio
+                    if 0.2 <= aspect_ratio <= 5.0:  # Very relaxed aspect ratio
                         best_contour = contour
                         best_bbox = (x, y, w, h)
                         best_area = area
