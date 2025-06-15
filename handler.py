@@ -123,68 +123,52 @@ class UltimateWeddingRingProcessor:
             return 'natural'
 
     def detect_black_border_ultimate(self, image):
-        """적응형 검은색 테두리 감지 (29번 대화 100픽셀 두께 대응)"""
+        """웨딩링 절대 보호하는 검은색 테두리 감지"""
         try:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
             height, width = gray.shape
             
-            # 다중 threshold로 정확한 감지
-            masks = []
-            for thresh in [15, 20, 25]:
-                _, binary = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY_INV)
-                masks.append(binary)
+            # 가장자리 테두리만 감지 (중앙 웨딩링 영역 제외)
+            edge_mask = np.zeros_like(gray)
             
-            # 모든 마스크 결합
-            combined_mask = np.zeros_like(gray)
-            for mask in masks:
-                combined_mask = cv2.bitwise_or(combined_mask, mask)
+            # 상하좌우 가장자리 50픽셀만 검사
+            edge_width = 50
+            edge_mask[:edge_width, :] = 255  # 상단
+            edge_mask[-edge_width:, :] = 255  # 하단  
+            edge_mask[:, :edge_width] = 255  # 좌측
+            edge_mask[:, -edge_width:] = 255  # 우측
+            
+            # 검은색 영역 감지 (테두리에서만)
+            _, binary = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY_INV)
+            border_only = cv2.bitwise_and(binary, edge_mask)
             
             # 컨투어 찾기
-            contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(border_only, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if not contours:
                 return None, None
             
-            # 가장 큰 사각형 형태 찾기
-            best_contour = None
-            best_area = 0
+            # 가장 큰 영역 찾기
+            largest_contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest_contour)
             
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area < height * width * 0.1:  # 너무 작으면 제외
-                    continue
-                    
-                # 사각형 근사
-                epsilon = 0.02 * cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, epsilon, True)
-                
-                if len(approx) >= 4 and area > best_area:
-                    best_contour = contour
-                    best_area = area
+            # 웨딩링 영역은 중앙 80% 영역으로 매우 보수적 설정
+            center_margin_w = w * 0.1  # 좌우 10%씩 마진
+            center_margin_h = h * 0.1  # 상하 10%씩 마진
             
-            if best_contour is None:
-                return None, None
+            inner_x = int(x + center_margin_w)
+            inner_y = int(y + center_margin_h)
+            inner_w = int(w - 2 * center_margin_w)
+            inner_h = int(h - 2 * center_margin_h)
             
-            # 바운딩 박스 생성
-            x, y, w, h = cv2.boundingRect(best_contour)
-            
-            # 적응형 두께 감지 (100픽셀 두께 대응)
-            border_thickness = self.measure_border_thickness_safe(combined_mask, x, y, w, h)
-            
-            # 웨딩링 보호 영역 (30픽셀 안전 마진)
-            inner_margin = max(30, border_thickness // 2)
-            inner_x = x + inner_margin
-            inner_y = y + inner_margin  
-            inner_w = w - 2 * inner_margin
-            inner_h = h - 2 * inner_margin
-            
-            # 최소 크기 보장
-            if inner_w < 100 or inner_h < 100:
-                inner_margin = min(20, w//4, h//4)
-                inner_x = x + inner_margin
-                inner_y = y + inner_margin
-                inner_w = w - 2 * inner_margin  
-                inner_h = h - 2 * inner_margin
+            # 웨딩링 영역이 너무 작아지지 않도록 보장
+            min_size = min(width, height) // 3
+            if inner_w < min_size or inner_h < min_size:
+                # 전체 이미지의 중앙 50% 영역을 웨딩링으로 설정
+                inner_x = width // 4
+                inner_y = height // 4
+                inner_w = width // 2
+                inner_h = height // 2
             
             return (x, y, w, h), (inner_x, inner_y, inner_w, inner_h)
             
@@ -315,7 +299,7 @@ class UltimateWeddingRingProcessor:
             return enhanced
 
     def remove_black_border_ultimate(self, image, border_bbox, inner_bbox, lighting):
-        """검은색 테두리 완전 제거 (27번 대화 고급 inpainting + 28번 배경색)"""
+        """웨딩링 절대 보호하는 검은색 테두리 제거"""
         try:
             if border_bbox is None:
                 return image
@@ -323,30 +307,52 @@ class UltimateWeddingRingProcessor:
             x, y, w, h = border_bbox
             inner_x, inner_y, inner_w, inner_h = inner_bbox
             
-            # 마스크 생성 (웨딩링 영역은 보호)
+            # 웨딩링 영역 절대 보호
+            result = image.copy()
+            
+            # 테두리만 제거하는 마스크 생성 (웨딩링 영역 완전 제외)
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
             
-            # 테두리 영역 마킹
+            # 전체 테두리 영역 마킹
             mask[y:y+h, x:x+w] = 255
             
-            # 웨딩링 영역 보호 (절대 건드리지 않음)
-            mask[inner_y:inner_y+inner_h, inner_x:inner_x+inner_w] = 0
+            # 웨딩링 영역 + 추가 안전 마진 완전 보호
+            safety_margin = 20
+            protected_x = max(0, inner_x - safety_margin)
+            protected_y = max(0, inner_y - safety_margin)
+            protected_w = min(image.shape[1] - protected_x, inner_w + 2*safety_margin)
+            protected_h = min(image.shape[0] - protected_y, inner_h + 2*safety_margin)
             
-            # 28쌍 AFTER 배경색 적용
+            mask[protected_y:protected_y+protected_h, protected_x:protected_x+protected_w] = 0
+            
+            # 가장자리만 제거 (중앙 웨딩링은 절대 건드리지 않음)
+            edge_only_mask = np.zeros_like(mask)
+            edge_width = 30
+            
+            # 상하좌우 가장자리만 마킹
+            edge_only_mask[y:y+edge_width, x:x+w] = 255  # 상단
+            edge_only_mask[y+h-edge_width:y+h, x:x+w] = 255  # 하단
+            edge_only_mask[y:y+h, x:x+edge_width] = 255  # 좌측
+            edge_only_mask[y:y+h, x+w-edge_width:x+w] = 255  # 우측
+            
+            # 웨딩링 보호 영역 제외
+            edge_only_mask[protected_y:protected_y+protected_h, protected_x:protected_x+protected_w] = 0
+            
+            # 28쌍 AFTER 배경색으로 가장자리만 교체
             bg_color = AFTER_BACKGROUND_COLORS.get(lighting, [248, 245, 242])
             
-            # TELEA inpainting (27번 대화 고급 방식)
-            inpainted = cv2.inpaint(image, mask, 5, cv2.INPAINT_TELEA)
-            
-            # 배경색으로 추가 보정
-            result = inpainted.copy()
-            mask_indices = np.where(mask > 0)
+            # 가장자리 영역만 배경색으로 교체
+            mask_indices = np.where(edge_only_mask > 0)
             for c in range(3):
                 result[mask_indices[0], mask_indices[1], c] = bg_color[c]
             
-            # 자연스러운 블렌딩 (31×31 가우시안 블러)
-            blur_mask = cv2.GaussianBlur(mask.astype(np.float32), (31, 31), 10) / 255.0
+            # 경계 부드럽게 블렌딩 (웨딩링 영역 제외)
+            blur_mask = cv2.GaussianBlur(edge_only_mask.astype(np.float32), (15, 15), 5) / 255.0
             
+            # 웨딩링 영역에는 블렌딩 적용 안함
+            blur_mask[protected_y:protected_y+protected_h, protected_x:protected_x+protected_w] = 0
+            
+            # 부드러운 블렌딩 (웨딩링 완전 보호)
             final_result = image.copy().astype(np.float32)
             for c in range(3):
                 final_result[:,:,c] = (
@@ -357,7 +363,7 @@ class UltimateWeddingRingProcessor:
             return final_result.astype(np.uint8)
             
         except Exception as e:
-            print(f"테두리 제거 실패: {e}")
+            print(f"테두리 제거 실패, 원본 반환: {e}")
             return image
 
     def upscale_image_2x(self, image):
@@ -371,31 +377,51 @@ class UltimateWeddingRingProcessor:
             return image
 
     def create_perfect_thumbnail_ultimate(self, image, inner_bbox):
-        """완벽한 썸네일 생성 (위아래 여백 완전 제거)"""
+        """완벽한 썸네일 생성 - 웨딩링 중심 (위아래 여백 완전 제거)"""
         try:
             if inner_bbox is None:
-                # 웨딩링 영역 자동 감지
+                # 웨딩링 영역 자동 감지 (더 정교하게)
                 gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                 
-                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    largest = max(contours, key=cv2.contourArea)
-                    x, y, w, h = cv2.boundingRect(largest)
-                    inner_bbox = (x, y, w, h)
+                # 중앙 영역에서 밝은 부분 찾기 (웨딩링은 일반적으로 밝음)
+                height, width = gray.shape
+                center_x, center_y = width//2, height//2
+                search_w, search_h = width//2, height//2
+                
+                center_region = gray[center_y-search_h//2:center_y+search_h//2, 
+                                   center_x-search_w//2:center_x+search_w//2]
+                
+                if center_region.size > 0:
+                    # 밝은 영역 (웨딩링) 감지
+                    threshold = np.mean(center_region) + np.std(center_region)
+                    _, binary = cv2.threshold(center_region, threshold, 255, cv2.THRESH_BINARY)
+                    
+                    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        largest = max(contours, key=cv2.contourArea)
+                        x, y, w, h = cv2.boundingRect(largest)
+                        
+                        # 전체 이미지 좌표로 변환
+                        global_x = (center_x - search_w//2) + x
+                        global_y = (center_y - search_h//2) + y
+                        inner_bbox = (global_x, global_y, w, h)
+                    else:
+                        # 중앙 50% 영역 사용
+                        inner_bbox = (width//4, height//4, width//2, height//2)
                 else:
-                    # 중앙 영역 사용
-                    h, w = image.shape[:2]
-                    inner_bbox = (w//4, h//4, w//2, h//2)
+                    # 중앙 50% 영역 사용
+                    inner_bbox = (width//4, height//4, width//2, height//2)
             
             inner_x, inner_y, inner_w, inner_h = inner_bbox
             
-            # 웨딩링 중심으로 넉넉한 영역 크롭
-            margin = max(inner_w, inner_h) // 4
-            crop_x = max(0, inner_x - margin)
-            crop_y = max(0, inner_y - margin)
-            crop_x2 = min(image.shape[1], inner_x + inner_w + margin)
-            crop_y2 = min(image.shape[0], inner_y + inner_h + margin)
+            # 웨딩링을 중심으로 충분한 영역 크롭 (더 넉넉하게)
+            margin_w = max(inner_w//2, 100)  # 최소 100픽셀 마진
+            margin_h = max(inner_h//2, 100)
+            
+            crop_x = max(0, inner_x - margin_w)
+            crop_y = max(0, inner_y - margin_h)
+            crop_x2 = min(image.shape[1], inner_x + inner_w + margin_w)
+            crop_y2 = min(image.shape[0], inner_y + inner_h + margin_h)
             
             cropped = image[crop_y:crop_y2, crop_x:crop_x2]
             
@@ -403,26 +429,31 @@ class UltimateWeddingRingProcessor:
                 # 전체 이미지 사용
                 cropped = image
             
-            # 1000×1300 비율로 리사이즈 (위아래 여백 최소화)
+            # 1000×1300 비율로 리사이즈 (웨딩링이 화면 가득)
             target_w, target_h = 1000, 1300
             crop_h, crop_w = cropped.shape[:2]
             
-            # 종횡비 계산
-            ratio = min(target_w / crop_w, target_h / crop_h)
+            # 웨딩링이 더 크게 보이도록 스케일 조정
+            ratio = max(target_w / crop_w, target_h / crop_h) * 0.9  # 90% 크기로 (여백 최소화)
             new_w = int(crop_w * ratio)
             new_h = int(crop_h * ratio)
             
-            # 웨딩링이 화면 가득 차도록 크기 조정
+            # 크기가 목표보다 크면 맞춤
+            if new_w > target_w or new_h > target_h:
+                ratio = min(target_w / crop_w, target_h / crop_h)
+                new_w = int(crop_w * ratio)
+                new_h = int(crop_h * ratio)
+            
             resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
             
             # 1000×1300 캔버스에 배치 (위아래 여백 최소화)
             canvas = np.full((target_h, target_w, 3), 248, dtype=np.uint8)
             
-            # 상단에 조금 더 가깝게 배치 (위아래 여백 줄이기)
-            start_y = max(0, (target_h - new_h) // 3)  # 1/3 지점에 배치
+            # 위쪽에 더 가깝게 배치 (위아래 여백 줄이기)
+            start_y = max(0, (target_h - new_h) // 4)  # 1/4 지점에 배치 (위쪽으로)
             start_x = (target_w - new_w) // 2
             
-            # 범위 체크
+            # 범위 체크 후 배치
             end_y = min(target_h, start_y + new_h)
             end_x = min(target_w, start_x + new_w)
             actual_h = end_y - start_y
@@ -436,23 +467,26 @@ class UltimateWeddingRingProcessor:
             print(f"썸네일 생성 실패: {e}")
             # 기본 썸네일 생성
             try:
-                resized = cv2.resize(image, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
+                # 중앙 영역 크롭
+                h, w = image.shape[:2]
+                center_crop = image[h//4:3*h//4, w//4:3*w//4]
+                resized = cv2.resize(center_crop, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
                 return resized
             except:
                 return np.full((1300, 1000, 3), 248, dtype=np.uint8)
 
 def handler(event):
-    """RunPod Serverless 메인 핸들러 - v16.5 Ultimate"""
+    """RunPod Serverless 메인 핸들러 - v16.6 웨딩링 절대 보호"""
     try:
         input_data = event.get("input", {})
         
         # 연결 테스트
         if "prompt" in input_data:
             return {
-                "message": f"v16.5 Ultimate 연결 성공: {input_data['prompt']}",
+                "message": f"v16.6 웨딩링 절대보호 연결 성공: {input_data['prompt']}",
                 "status": "ready",
-                "version": "v16.5_ultimate",
-                "features": ["검은색_선_완전제거", "v13.3_완전보정", "썸네일_여백제거", "샴페인골드_화이트화"]
+                "version": "v16.6_ring_protection",
+                "features": ["웨딩링_절대보호", "가장자리테두리만제거", "v13.3_완전보정", "썸네일_여백제거"]
             }
         
         # 이미지 처리
@@ -479,14 +513,33 @@ def handler(event):
             image_array, metal_type, lighting)
         print("v13.3 보정 완료")
         
-        # 3단계: 검은색 테두리 감지 및 제거 (선택적)
+        # 3단계: 검은색 테두리 감지 및 제거 (웨딩링 절대 보호)
         border_bbox, inner_bbox = processor.detect_black_border_ultimate(enhanced_image)
+        
         if border_bbox is not None:
+            print(f"검은색 테두리 감지: {border_bbox}, 웨딩링 영역: {inner_bbox}")
+            
+            # 웨딩링 영역에서 추가 보정 (검은색 테두리 안쪽 웨딩링 더 선명하게)
+            if inner_bbox is not None:
+                ix, iy, iw, ih = inner_bbox
+                ring_region = enhanced_image[iy:iy+ih, ix:ix+iw].copy()
+                
+                # 웨딩링 영역 추가 보정 (밝기+선명도 강화)
+                ring_enhanced = cv2.convertScaleAbs(ring_region, alpha=1.15, beta=8)
+                ring_enhanced = cv2.filter2D(ring_enhanced, -1, np.array([[-1,-1,-1],[-1,9,-1],[-1,-1,-1]]))
+                
+                enhanced_image[iy:iy+ih, ix:ix+iw] = ring_enhanced
+                print("웨딩링 영역 추가 보정 완료")
+            
+            # 검은색 테두리만 제거 (웨딩링 절대 보호)
             enhanced_image = processor.remove_black_border_ultimate(
                 enhanced_image, border_bbox, inner_bbox, lighting)
-            print("검은색 테두리 제거 완료")
+            print("검은색 테두리 제거 완료 (웨딩링 보호됨)")
         else:
-            print("검은색 테두리 없음 - 전체 이미지 보정 완료")
+            print("검은색 테두리 없음 - 전체 웨딩링 보정 완료")
+            
+            # 테두리가 없어도 웨딩링 전체를 더 선명하게
+            enhanced_image = cv2.convertScaleAbs(enhanced_image, alpha=1.1, beta=5)
         
         # 4단계: 2x 업스케일링 (무조건 실행)
         upscaled_image = processor.upscale_image_2x(enhanced_image)
@@ -525,13 +578,14 @@ def handler(event):
                 "metal_type": metal_type,
                 "lighting": lighting,
                 "border_detected": border_bbox is not None,
-                "version": "v16.5_ultimate",
+                "version": "v16.6_ring_protection",
                 "original_size": f"{image_array.shape[1]}x{image_array.shape[0]}",
                 "final_size": f"{upscaled_image.shape[1]}x{upscaled_image.shape[0]}",
                 "thumbnail_size": "1000x1300",
                 "features_applied": [
+                    "웨딩링_절대보호",
                     "v13.3_완전보정",
-                    "검은색선제거" if border_bbox else "전체보정",
+                    "가장자리테두리제거" if border_bbox else "전체보정",
                     "2x업스케일링", 
                     "썸네일여백제거"
                 ]
@@ -573,13 +627,13 @@ def handler(event):
                 "processing_info": {
                     "status": "basic_processing_fallback",
                     "error": str(e),
-                    "version": "v16.5_fallback"
+                    "version": "v16.6_fallback"
                 }
             }
         except:
             return {
                 "error": f"완전 실패: {str(e)}",
-                "version": "v16.5_ultimate"
+                "version": "v16.6_ring_protection"
             }
 
 # RunPod 서버리스 시작
