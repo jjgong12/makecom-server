@@ -30,110 +30,59 @@ WEDDING_RING_PARAMS = {
 }
 
 def detect_black_border_aggressive(image):
-    """검은색 테두리를 매우 적극적으로 감지 - 여러 방법 조합"""
+    """검은색 테두리를 100% 확실하게 감지"""
     height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     
-    # 방법 1: 색상 기반 감지 (검은색/진회색 모두)
-    black_mask = np.zeros_like(gray)
-    for threshold in [30, 40, 50, 60, 70, 80]:
-        _, temp_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
-        black_mask = cv2.bitwise_or(black_mask, temp_mask)
+    # 각 가장자리에서 안쪽으로 들어가면서 검은색이 아닌 픽셀 찾기
+    # 상단
+    top = 0
+    for y in range(height // 2):  # 최대 절반까지 확인
+        row = gray[y, :]
+        if np.max(row) > 100 or np.mean(row) > 50:  # 밝은 픽셀이 있거나 평균이 50 이상
+            break
+        top = y + 1
     
-    # 방법 2: 가장자리 강조
-    edges = cv2.Canny(gray, 50, 150)
-    kernel = np.ones((5, 5), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=2)
+    # 하단
+    bottom = height
+    for y in range(height - 1, height // 2, -1):
+        row = gray[y, :]
+        if np.max(row) > 100 or np.mean(row) > 50:
+            break
+        bottom = y
     
-    # 방법 3: 컨투어 기반 사각형 찾기
-    contours, _ = cv2.findContours(black_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 좌측
+    left = 0
+    for x in range(width // 2):
+        col = gray[:, x]
+        if np.max(col) > 100 or np.mean(col) > 50:
+            break
+        left = x + 1
     
-    # 가장 큰 사각형 컨투어 찾기
-    max_area = 0
-    best_rect = None
+    # 우측
+    right = width
+    for x in range(width - 1, width // 2, -1):
+        col = gray[:, x]
+        if np.max(col) > 100 or np.mean(col) > 50:
+            break
+        right = x
     
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        area = w * h
-        
-        # 이미지 크기의 50% 이상이고, 중앙을 포함하는 사각형
-        if area > (width * height * 0.5):
-            center_x, center_y = width // 2, height // 2
-            if x < center_x < x + w and y < center_y < y + h:
-                if area > max_area:
-                    max_area = area
-                    best_rect = (x, y, w, h)
-    
-    # 방법 4: 만약 사각형을 못 찾았다면, 가장자리 픽셀 분석
-    if best_rect is None:
-        # 각 가장자리에서 검은색 픽셀이 얼마나 연속되는지 확인
-        edge_size = min(200, width // 4, height // 4)  # 최대 200픽셀까지 확인
-        
-        # 상단 가장자리
-        top_black = 0
-        for i in range(edge_size):
-            if np.mean(gray[i, :]) < 80:  # 평균이 80 미만이면 검은색으로 간주
-                top_black = i + 1
-            else:
-                break
-        
-        # 하단 가장자리
-        bottom_black = 0
-        for i in range(edge_size):
-            if np.mean(gray[height - 1 - i, :]) < 80:
-                bottom_black = i + 1
-            else:
-                break
-        
-        # 좌측 가장자리
-        left_black = 0
-        for i in range(edge_size):
-            if np.mean(gray[:, i]) < 80:
-                left_black = i + 1
-            else:
-                break
-        
-        # 우측 가장자리
-        right_black = 0
-        for i in range(edge_size):
-            if np.mean(gray[:, width - 1 - i]) < 80:
-                right_black = i + 1
-            else:
-                break
-        
-        # 최소 20픽셀 이상의 검은색 테두리가 있다면
-        if max(top_black, bottom_black, left_black, right_black) > 20:
-            border_thickness = max(top_black, bottom_black, left_black, right_black)
-            # 안전하게 10% 더 추가
-            border_thickness = int(border_thickness * 1.1)
-            
-            return {
-                'found': True,
-                'method': 'edge_analysis',
-                'top': top_black,
-                'bottom': bottom_black,
-                'left': left_black,
-                'right': right_black,
-                'thickness': border_thickness,
-                'rect': (left_black, top_black, 
-                        width - left_black - right_black, 
-                        height - top_black - bottom_black)
-            }
-    
-    if best_rect:
-        x, y, w, h = best_rect
-        # 테두리 두께 계산
-        thickness = min(x, y, width - (x + w), height - (y + h))
+    # 검은색 테두리가 있는지 확인
+    if top > 10 or (height - bottom) > 10 or left > 10 or (width - right) > 10:
+        # 추가 여유분
+        margin = 5
+        top = min(top + margin, height // 2)
+        bottom = max(bottom - margin, height // 2)
+        left = min(left + margin, width // 2)
+        right = max(right - margin, width // 2)
         
         return {
             'found': True,
-            'method': 'contour',
-            'rect': best_rect,
-            'thickness': thickness,
-            'top': y,
-            'bottom': height - (y + h),
-            'left': x,
-            'right': width - (x + w)
+            'top': top,
+            'bottom': bottom,
+            'left': left,
+            'right': right,
+            'thickness': max(top, height - bottom, left, width - right)
         }
     
     return {'found': False}
@@ -145,34 +94,19 @@ def remove_black_border_completely(image, border_info):
     
     height, width = image.shape[:2]
     
-    # 크롭 영역 계산 (검은색 테두리 제외)
-    if 'rect' in border_info:
-        x, y, w, h = border_info['rect']
-        # 안전 마진 추가 (테두리 안쪽으로 10픽셀 더 들어감)
-        margin = 10
-        crop_x = x + margin
-        crop_y = y + margin
-        crop_w = w - 2 * margin
-        crop_h = h - 2 * margin
-    else:
-        # edge_analysis 방식
-        crop_x = border_info['left'] + 10
-        crop_y = border_info['top'] + 10
-        crop_w = width - border_info['left'] - border_info['right'] - 20
-        crop_h = height - border_info['top'] - border_info['bottom'] - 20
+    # 검은색 테두리 제외하고 크롭
+    top = border_info['top']
+    bottom = border_info['bottom']
+    left = border_info['left']
+    right = border_info['right']
     
-    # 크롭 영역이 너무 작지 않도록 보장
-    if crop_w > width * 0.3 and crop_h > height * 0.3:
-        # 크롭 실행
-        cropped = image[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w].copy()
-        
-        # 원본 크기로 리사이즈 (선택적)
-        # 크기를 유지하려면 주석 해제
-        # cropped = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LANCZOS4)
-        
-        return cropped
+    # 크롭 실행
+    cropped = image[top:bottom, left:right].copy()
     
-    return image
+    # 원본 크기로 리사이즈 (배경이 늘어나서 자연스럽게)
+    cropped = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LANCZOS4)
+    
+    return cropped
 
 def detect_ring_in_image(image):
     """이미지에서 웨딩링 영역 감지"""
@@ -226,7 +160,7 @@ def detect_ring_in_image(image):
     return (x, y, w, h)
 
 def enhance_wedding_ring_v13_3(image, metal_type='champagne_gold', lighting='natural'):
-    """v13.3 완전한 10단계 보정"""
+    """v13.3 완전한 10단계 보정 - 더 강하게 적용"""
     params = WEDDING_RING_PARAMS.get(metal_type, {}).get(lighting, WEDDING_RING_PARAMS['champagne_gold']['natural'])
     
     # 1. 노이즈 제거
@@ -235,13 +169,13 @@ def enhance_wedding_ring_v13_3(image, metal_type='champagne_gold', lighting='nat
     # PIL 이미지로 변환
     pil_image = Image.fromarray(denoised)
     
-    # 2. 밝기 조정
+    # 2. 밝기 조정 (더 강하게)
     enhancer = ImageEnhance.Brightness(pil_image)
-    enhanced = enhancer.enhance(params['brightness'])
+    enhanced = enhancer.enhance(params['brightness'] * 1.1)  # 10% 더 밝게
     
     # 3. 대비 조정
     enhancer = ImageEnhance.Contrast(enhanced)
-    enhanced = enhancer.enhance(params['contrast'])
+    enhanced = enhancer.enhance(params['contrast'] * 1.05)  # 5% 더 강하게
     
     # 4. 선명도 조정
     enhancer = ImageEnhance.Sharpness(enhanced)
@@ -255,46 +189,54 @@ def enhance_wedding_ring_v13_3(image, metal_type='champagne_gold', lighting='nat
     # numpy 배열로 변환
     enhanced_array = np.array(enhanced)
     
-    # 6. 하얀색 오버레이
+    # 6. 하얀색 오버레이 (더 강하게)
     white_overlay = np.full_like(enhanced_array, 255)
-    overlay_strength = params['white_overlay']
+    overlay_strength = params['white_overlay'] * 1.5  # 50% 더 강하게
     enhanced_array = cv2.addWeighted(enhanced_array, 1 - overlay_strength, white_overlay, overlay_strength, 0)
     
     # 7. 색온도 조정 (LAB)
     lab = cv2.cvtColor(enhanced_array, cv2.COLOR_RGB2LAB).astype(np.float32)
-    lab[:, :, 1] += params['color_temp_a']
-    lab[:, :, 2] += params['color_temp_b']
+    lab[:, :, 1] += params['color_temp_a'] * 1.2
+    lab[:, :, 2] += params['color_temp_b'] * 1.2
     lab = np.clip(lab, 0, 255).astype(np.uint8)
     enhanced_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
     
     # 8. CLAHE (Contrast Limited Adaptive Histogram Equalization)
     lab = cv2.cvtColor(enhanced_array, cv2.COLOR_RGB2LAB)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))  # clipLimit 증가
     lab[:, :, 0] = clahe.apply(lab[:, :, 0])
     enhanced_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
     
     # 9. 감마 보정
-    gamma = params.get('gamma', 1.0)
+    gamma = params.get('gamma', 1.0) * 0.95  # 약간 더 밝게
     inv_gamma = 1.0 / gamma
     table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
     enhanced_array = cv2.LUT(enhanced_array, table)
     
-    # 10. 원본과 블렌딩
-    blend_ratio = params['original_blend']
+    # 10. 원본과 블렌딩 (적게 섞어서 보정 효과 극대화)
+    blend_ratio = params['original_blend'] * 0.5  # 원본을 덜 섞음
     final = cv2.addWeighted(enhanced_array, 1 - blend_ratio, image, blend_ratio, 0)
     
     return final
 
 def create_perfect_thumbnail(image, ring_bbox=None):
-    """완벽한 1000x1300 썸네일 생성"""
+    """완벽한 1000x1300 썸네일 생성 - 웨딩링이 화면 가득"""
     target_w, target_h = 1000, 1300
     
     if ring_bbox and ring_bbox[2] > 50 and ring_bbox[3] > 50:
         x, y, w, h = ring_bbox
+        # 여유분 줄이기 (웨딩링을 더 크게)
+        margin = 0.05  # 5% 여유만
+        margin_w = int(w * margin)
+        margin_h = int(h * margin)
+        x = max(0, x - margin_w)
+        y = max(0, y - margin_h)
+        w = min(image.shape[1] - x, w + 2 * margin_w)
+        h = min(image.shape[0] - y, h + 2 * margin_h)
     else:
-        # 웨딩링 영역을 못 찾으면 중앙 80% 사용
+        # 웨딩링 영역을 못 찾으면 중앙 90% 사용
         height, width = image.shape[:2]
-        margin = 0.1
+        margin = 0.05
         x = int(width * margin)
         y = int(height * margin)
         w = int(width * (1 - 2 * margin))
@@ -303,9 +245,9 @@ def create_perfect_thumbnail(image, ring_bbox=None):
     # 크롭
     cropped = image[y:y+h, x:x+w]
     
-    # 비율 맞추기
+    # 비율 맞추기 (여백 최소화)
     crop_h, crop_w = cropped.shape[:2]
-    scale = min(target_w / crop_w, target_h / crop_h) * 0.95  # 95%로 약간 여유
+    scale = min(target_w / crop_w, target_h / crop_h) * 0.98  # 98%로 거의 꽉 차게
     
     new_w = int(crop_w * scale)
     new_h = int(crop_h * scale)
@@ -314,7 +256,7 @@ def create_perfect_thumbnail(image, ring_bbox=None):
     resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     
     # 캔버스 생성 (밝은 배경)
-    canvas = np.full((target_h, target_w, 3), 245, dtype=np.uint8)
+    canvas = np.full((target_h, target_w, 3), 250, dtype=np.uint8)
     
     # 중앙 배치
     start_x = (target_w - new_w) // 2
@@ -346,27 +288,42 @@ def handler(event):
         image_data = base64.b64decode(image_base64)
         image = Image.open(io.BytesIO(image_data)).convert('RGB')
         image_array = np.array(image)
+        original_height, original_width = image_array.shape[:2]
         
         # 1. 검은색 테두리 적극적 감지
         border_info = detect_black_border_aggressive(image_array)
         
-        # 2. 검은색 테두리 완전 제거 (크롭 방식)
+        # 2. 검은색 테두리 완전 제거 (크롭 + 리사이즈)
         if border_info['found']:
-            print(f"Border detected using {border_info['method']}: thickness={border_info.get('thickness', 'unknown')}")
+            print(f"Black border detected! Top:{border_info['top']}, Bottom:{border_info['bottom']}, Left:{border_info['left']}, Right:{border_info['right']}")
             image_array = remove_black_border_completely(image_array, border_info)
+        else:
+            print("No black border detected")
         
-        # 3. 웨딩링 영역 감지
-        ring_bbox = detect_ring_in_image(image_array)
-        
-        # 4. v13.3 보정 적용
+        # 3. v13.3 보정 적용 (더 강하게)
         enhanced = enhance_wedding_ring_v13_3(image_array)
         
-        # 5. 2x 업스케일링
+        # 추가 밝기 보정 (전체적으로 더 밝게)
+        enhanced = cv2.convertScaleAbs(enhanced, alpha=1.1, beta=10)
+        
+        # 4. 2x 업스케일링
         height, width = enhanced.shape[:2]
         upscaled = cv2.resize(enhanced, (width * 2, height * 2), interpolation=cv2.INTER_LANCZOS4)
         
-        # 6. 썸네일 생성
-        thumbnail = create_perfect_thumbnail(enhanced, ring_bbox)
+        # 5. 썸네일 생성 (검은색 테두리 정보 활용)
+        if border_info['found']:
+            # 원본에서 검은색 테두리 영역 제외하고 웨딩링 영역만 사용
+            ring_region = image_array  # 이미 크롭됨
+        else:
+            ring_region = enhanced
+        
+        # 웨딩링 감지 후 썸네일 생성
+        ring_bbox = detect_ring_in_image(ring_region)
+        thumbnail = create_perfect_thumbnail(ring_region, ring_bbox)
+        
+        # 썸네일도 v13.3 보정 적용
+        thumbnail = enhance_wedding_ring_v13_3(thumbnail)
+        thumbnail = cv2.convertScaleAbs(thumbnail, alpha=1.1, beta=10)
         
         # 결과 인코딩
         # 메인 이미지
@@ -386,9 +343,9 @@ def handler(event):
             "thumbnail": thumb_base64,
             "processing_info": {
                 "border_detected": border_info['found'],
-                "border_method": border_info.get('method', 'none'),
                 "border_thickness": border_info.get('thickness', 0),
-                "original_size": f"{image_array.shape[1]}x{image_array.shape[0]}",
+                "border_removed": border_info['found'],
+                "original_size": f"{original_width}x{original_height}",
                 "final_size": f"{upscaled.shape[1]}x{upscaled.shape[0]}",
                 "thumbnail_size": "1000x1300"
             }
@@ -399,7 +356,7 @@ def handler(event):
         try:
             if 'image_array' in locals():
                 # 최소한 밝게라도 처리
-                brightened = cv2.convertScaleAbs(image_array, alpha=1.3, beta=30)
+                brightened = cv2.convertScaleAbs(image_array, alpha=1.5, beta=50)
                 pil_img = Image.fromarray(brightened)
                 buffer = io.BytesIO()
                 pil_img.save(buffer, format='JPEG', quality=95)
