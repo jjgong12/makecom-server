@@ -5,7 +5,7 @@ from PIL import Image, ImageEnhance
 import base64
 import io
 
-# v13.3 완전한 파라미터 세트 (28쌍 학습 데이터 기반) - 36개 대화 성과
+# v13.3 완전한 파라미터 세트 (28쌍 학습 데이터 기반)
 WEDDING_RING_PARAMS = {
     'white_gold': {
         'natural': {
@@ -33,18 +33,6 @@ WEDDING_RING_PARAMS = {
             'sharpness': 1.15, 'color_temp_a': 2, 'color_temp_b': 1,
             'original_blend': 0.20, 'saturation': 1.15, 'gamma': 0.98,
             'clahe_clip': 1.10, 'noise_reduction': 1.05
-        },
-        'warm': {
-            'brightness': 1.10, 'contrast': 1.05, 'white_overlay': 0.04,
-            'sharpness': 1.10, 'color_temp_a': 1, 'color_temp_b': 0,
-            'original_blend': 0.25, 'saturation': 1.10, 'gamma': 0.95,
-            'clahe_clip': 1.05, 'noise_reduction': 1.10
-        },
-        'cool': {
-            'brightness': 1.25, 'contrast': 1.15, 'white_overlay': 0.08,
-            'sharpness': 1.25, 'color_temp_a': 3, 'color_temp_b': 2,
-            'original_blend': 0.15, 'saturation': 1.25, 'gamma': 1.02,
-            'clahe_clip': 1.20, 'noise_reduction': 1.00
         }
     },
     'champagne_gold': {
@@ -53,18 +41,6 @@ WEDDING_RING_PARAMS = {
             'sharpness': 1.16, 'color_temp_a': -4, 'color_temp_b': -4,    # 화이트골드 방향
             'original_blend': 0.15, 'saturation': 1.02, 'gamma': 1.00,   # 채도 감소
             'clahe_clip': 1.15, 'noise_reduction': 1.12
-        },
-        'warm': {
-            'brightness': 1.15, 'contrast': 1.10, 'white_overlay': 0.15,
-            'sharpness': 1.20, 'color_temp_a': -6, 'color_temp_b': -6,
-            'original_blend': 0.18, 'saturation': 0.98, 'gamma': 0.98,
-            'clahe_clip': 1.18, 'noise_reduction': 1.15
-        },
-        'cool': {
-            'brightness': 1.22, 'contrast': 1.15, 'white_overlay': 0.10,
-            'sharpness': 1.25, 'color_temp_a': -2, 'color_temp_b': -2,
-            'original_blend': 0.12, 'saturation': 1.05, 'gamma': 1.02,
-            'clahe_clip': 1.20, 'noise_reduction': 1.08
         }
     },
     'yellow_gold': {
@@ -73,102 +49,264 @@ WEDDING_RING_PARAMS = {
             'sharpness': 1.14, 'color_temp_a': 3, 'color_temp_b': 2,
             'original_blend': 0.22, 'saturation': 1.20, 'gamma': 1.01,
             'clahe_clip': 1.12, 'noise_reduction': 1.08
-        },
-        'warm': {
-            'brightness': 1.12, 'contrast': 1.08, 'white_overlay': 0.03,
-            'sharpness': 1.15, 'color_temp_a': 2, 'color_temp_b': 1,
-            'original_blend': 0.25, 'saturation': 1.12, 'gamma': 0.97,
-            'clahe_clip': 1.08, 'noise_reduction': 1.12
-        },
-        'cool': {
-            'brightness': 1.28, 'contrast': 1.20, 'white_overlay': 0.08,
-            'sharpness': 1.25, 'color_temp_a': 5, 'color_temp_b': 3,
-            'original_blend': 0.18, 'saturation': 1.28, 'gamma': 1.03,
-            'clahe_clip': 1.25, 'noise_reduction': 1.05
         }
     }
 }
 
-# 28쌍 AFTER 배경색 시스템 (Dialog 28 성과)
-AFTER_BACKGROUND_COLORS = {
-    'natural': {'light': [250, 248, 245], 'medium': [242, 240, 237], 'dark': [235, 233, 230]},
-    'warm': {'light': [252, 248, 240], 'medium': [245, 240, 232], 'dark': [238, 233, 225]},
-    'cool': {'light': [248, 250, 252], 'medium': [240, 242, 245], 'dark': [233, 235, 238]}
-}
-
-class UltimatePerfectWeddingRingProcessor:
+class EnhancedWeddingRingDetector:
     def __init__(self):
         self.params = WEDDING_RING_PARAMS
-        self.bg_colors = AFTER_BACKGROUND_COLORS
 
-    def detect_metal_type_advanced(self, image, mask=None):
-        """고급 금속 감지 (Dialog 9-15 성과)"""
+    def detect_black_border_precise(self, image):
+        """정밀한 검은색 테두리 감지"""
         try:
-            if mask is not None:
-                mask_indices = np.where(mask > 0)
-                if len(mask_indices[0]) == 0:
-                    return 'champagne_gold'  # 기본값을 샴페인골드로
-                rgb_values = image[mask_indices[0], mask_indices[1], :]
-                hsv_values = cv2.cvtColor(rgb_values.reshape(-1, 1, 3), cv2.COLOR_RGB2HSV).reshape(-1, 3)
-                avg_hue = np.mean(hsv_values[:, 0])
-                avg_sat = np.mean(hsv_values[:, 1])
-                avg_val = np.mean(hsv_values[:, 2])
-            else:
-                hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-                avg_hue = np.mean(hsv[:, :, 0])
-                avg_sat = np.mean(hsv[:, :, 1])
-                avg_val = np.mean(hsv[:, :, 2])
-
-            # 개선된 금속 분류 로직
-            if avg_sat < 30:
-                return 'white_gold'
-            elif 5 <= avg_hue <= 25:
-                if avg_sat > 80:
-                    return 'yellow_gold'
-                else:
-                    return 'champagne_gold'  # 샴페인골드가 더 일반적
-            elif avg_hue < 5 or avg_hue > 170:
-                return 'rose_gold'
-            else:
-                return 'champagne_gold'  # 애매한 경우 샴페인골드
-        except:
-            return 'champagne_gold'
-
-    def detect_lighting_advanced(self, image):
-        """고급 조명 감지 (Dialog 9-15 성과)"""
-        try:
-            lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
-            a_mean = np.mean(lab[:, :, 1])
-            b_mean = np.mean(lab[:, :, 2])
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            height, width = gray.shape
             
-            if b_mean < 125:
-                return 'warm'
-            elif b_mean > 135:
-                return 'cool'
-            else:
-                return 'natural'
-        except:
-            return 'natural'
+            # 가장자리에서만 검은색 테두리 찾기 (Dialog 34 웨딩링 보호)
+            edge_width = 60  # 더 넓은 가장자리 영역
+            edge_mask = np.zeros_like(gray)
+            edge_mask[:edge_width, :] = 255  # 상단
+            edge_mask[-edge_width:, :] = 255  # 하단
+            edge_mask[:, :edge_width] = 255  # 좌측
+            edge_mask[:, -edge_width:] = 255  # 우측
+            
+            # 다중 threshold로 정확한 검은색 감지
+            best_contour = None
+            best_area = 0
+            
+            for threshold in [10, 15, 20, 25, 30]:
+                _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+                border_only = cv2.bitwise_and(binary, edge_mask)
+                
+                # 형태학적 연산으로 정제
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                border_only = cv2.morphologyEx(border_only, cv2.MORPH_CLOSE, kernel)
+                
+                # 컨투어 찾기
+                contours, _ = cv2.findContours(border_only, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    x, y, w, h = cv2.boundingRect(contour)
+                    
+                    # 유효한 테두리 조건 (더 관대하게)
+                    if (area > width * height * 0.05 and  # 최소 크기 줄임
+                        w > width * 0.2 and h > height * 0.2 and  # 최소 크기 줄임
+                        0.2 < w/h < 5.0):  # 비율 범위 확장
+                        
+                        if area > best_area:
+                            best_area = area
+                            best_contour = contour
+            
+            if best_contour is not None:
+                x, y, w, h = cv2.boundingRect(best_contour)
+                return (x, y, w, h)
+            
+            return None
+        except Exception as e:
+            print(f"테두리 감지 오류: {e}")
+            return None
 
-    def apply_noise_reduction(self, image, strength=1.1):
-        """노이즈 제거 (v13.3 1단계)"""
+    def detect_wedding_ring_inside_border(self, image, border_bbox=None):
+        """검은색 테두리 내부에서 웨딩링 감지 - 핵심 강화!"""
         try:
-            # 양방향 필터로 노이즈 제거하면서 가장자리 보존
-            denoised = cv2.bilateralFilter(image, 9, int(80 * strength), int(80 * strength))
-            return denoised
-        except:
-            return image
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            height, width = gray.shape
+            
+            # 검색 영역 설정
+            if border_bbox is not None:
+                x, y, w, h = border_bbox
+                # 테두리 내부 중앙 70% 영역에서 웨딩링 찾기
+                margin_w = int(w * 0.15)
+                margin_h = int(h * 0.15)
+                search_x = x + margin_w
+                search_y = y + margin_h
+                search_w = w - 2 * margin_w
+                search_h = h - 2 * margin_h
+                search_region = gray[search_y:search_y+search_h, search_x:search_x+search_w]
+                offset_x, offset_y = search_x, search_y
+            else:
+                # 전체 이미지에서 찾기
+                search_region = gray
+                offset_x, offset_y = 0, 0
+                search_w, search_h = width, height
+            
+            if search_region.size == 0:
+                return None
+            
+            # 방법 1: 밝은 영역 감지 (금속 반사)
+            ring_candidates = []
+            
+            # 히스토그램 기반 밝은 영역 찾기
+            hist = cv2.calcHist([search_region], [0], None, [256], [0, 256])
+            bright_threshold = np.argmax(hist[100:]) + 100  # 밝은 부분의 peak
+            bright_threshold = max(bright_threshold, np.mean(search_region) + np.std(search_region))
+            
+            _, bright_mask = cv2.threshold(search_region, bright_threshold, 255, cv2.THRESH_BINARY)
+            
+            # 형태학적 연산으로 링 모양 찾기
+            kernel_ellipse = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_CLOSE, kernel_ellipse)
+            bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_OPEN, kernel_ellipse)
+            
+            # 컨투어 찾기
+            contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area > 100:  # 최소 크기
+                    x, y, w, h = cv2.boundingRect(contour)
+                    aspect_ratio = w / h if h > 0 else 0
+                    
+                    # 링 모양 조건 (원형에 가까운)
+                    if 0.3 <= aspect_ratio <= 3.0 and area > search_w * search_h * 0.01:
+                        # 전역 좌표로 변환
+                        global_x = offset_x + x
+                        global_y = offset_y + y
+                        ring_candidates.append((global_x, global_y, w, h, area))
+            
+            # 방법 2: 가장자리 감지 (링의 윤곽)
+            edges = cv2.Canny(search_region, 30, 100)
+            
+            # 허프 원 변환으로 원형 감지
+            circles = cv2.HoughCircles(search_region, cv2.HOUGH_GRADIENT, 1, 30,
+                                     param1=50, param2=30, minRadius=10, maxRadius=min(search_w, search_h)//3)
+            
+            if circles is not None:
+                circles = np.round(circles[0, :]).astype("int")
+                for (x, y, r) in circles:
+                    # 전역 좌표로 변환
+                    global_x = offset_x + x - r
+                    global_y = offset_y + y - r
+                    ring_candidates.append((global_x, global_y, 2*r, 2*r, np.pi * r * r))
+            
+            # 방법 3: 색상 기반 금속 감지
+            if border_bbox is not None:
+                # LAB 색공간에서 금속 특성 찾기
+                lab_region = cv2.cvtColor(image[offset_y:offset_y+search_h, offset_x:offset_x+search_w], cv2.COLOR_RGB2LAB)
+                l_channel = lab_region[:, :, 0]
+                
+                # 밝은 금속 영역 찾기
+                metal_threshold = np.mean(l_channel) + 0.5 * np.std(l_channel)
+                _, metal_mask = cv2.threshold(l_channel, metal_threshold, 255, cv2.THRESH_BINARY)
+                
+                # 형태학적 연산
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                metal_mask = cv2.morphologyEx(metal_mask, cv2.MORPH_CLOSE, kernel)
+                
+                contours, _ = cv2.findContours(metal_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    area = cv2.contourArea(contour)
+                    if area > 50:
+                        x, y, w, h = cv2.boundingRect(contour)
+                        global_x = offset_x + x
+                        global_y = offset_y + y
+                        ring_candidates.append((global_x, global_y, w, h, area))
+            
+            # 최적의 웨딩링 후보 선택
+            if ring_candidates:
+                # 중앙에 가깝고 크기가 적당한 것 우선
+                center_x, center_y = width // 2, height // 2
+                
+                def score_candidate(candidate):
+                    x, y, w, h, area = candidate
+                    candidate_center_x = x + w // 2
+                    candidate_center_y = y + h // 2
+                    
+                    # 중앙으로부터의 거리
+                    center_distance = np.sqrt((candidate_center_x - center_x)**2 + (candidate_center_y - center_y)**2)
+                    max_distance = np.sqrt(width**2 + height**2)
+                    center_score = 1 - (center_distance / max_distance)
+                    
+                    # 크기 점수 (너무 크거나 작지 않은)
+                    ideal_size = min(width, height) * 0.3
+                    size_diff = abs(max(w, h) - ideal_size)
+                    size_score = 1 / (1 + size_diff / ideal_size)
+                    
+                    # 종횡비 점수 (정사각형에 가까운)
+                    aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 10
+                    aspect_score = 1 / aspect_ratio if aspect_ratio <= 2 else 1 / (aspect_ratio ** 2)
+                    
+                    return center_score * 0.4 + size_score * 0.4 + aspect_score * 0.2
+                
+                # 점수 계산하여 최적 후보 선택
+                ring_candidates.sort(key=score_candidate, reverse=True)
+                best_candidate = ring_candidates[0]
+                
+                return best_candidate[:4]  # (x, y, w, h)
+            
+            return None
+        except Exception as e:
+            print(f"웨딩링 감지 오류: {e}")
+            return None
+
+    def detect_wedding_ring_fallback(self, image):
+        """검은색 마스킹 없이도 웨딩링 감지 (Fallback)"""
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            height, width = gray.shape
+            
+            # 중앙 영역 우선 검색
+            center_x, center_y = width // 2, height // 2
+            search_radius = min(width, height) // 3
+            
+            # 원형 마스크 생성
+            y, x = np.ogrid[:height, :width]
+            mask = (x - center_x)**2 + (y - center_y)**2 <= search_radius**2
+            
+            # 마스크 영역 내에서 밝은 부분 찾기
+            masked_gray = gray.copy()
+            masked_gray[~mask] = 0
+            
+            # 적응적 임계값으로 밝은 영역 찾기
+            mean_val = np.mean(masked_gray[mask])
+            std_val = np.std(masked_gray[mask])
+            threshold = mean_val + 0.5 * std_val
+            
+            _, binary = cv2.threshold(masked_gray, threshold, 255, cv2.THRESH_BINARY)
+            
+            # 형태학적 연산
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+            
+            # 컨투어 찾기
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # 가장 큰 컨투어 선택
+                largest_contour = max(contours, key=cv2.contourArea)
+                area = cv2.contourArea(largest_contour)
+                
+                if area > 100:  # 최소 크기
+                    x, y, w, h = cv2.boundingRect(largest_contour)
+                    return (x, y, w, h)
+            
+            # 그래도 못 찾으면 중앙 영역 반환
+            fallback_size = min(width, height) // 4
+            fallback_x = center_x - fallback_size // 2
+            fallback_y = center_y - fallback_size // 2
+            return (fallback_x, fallback_y, fallback_size, fallback_size)
+            
+        except Exception as e:
+            print(f"Fallback 웨딩링 감지 오류: {e}")
+            # 최후의 중앙 영역 반환
+            center_x, center_y = image.shape[1] // 2, image.shape[0] // 2
+            size = min(image.shape[0], image.shape[1]) // 4
+            return (center_x - size//2, center_y - size//2, size, size)
 
     def enhance_wedding_ring_v13_3_complete(self, image, metal_type, lighting):
-        """v13.3 완전한 10단계 보정 (Dialog 16-20 성과)"""
+        """v13.3 완전한 10단계 보정"""
         try:
             params = self.params.get(metal_type, {}).get(lighting, self.params['champagne_gold']['natural'])
             
             # 1. 노이즈 제거
-            enhanced = self.apply_noise_reduction(image, params.get('noise_reduction', 1.1))
+            denoised = cv2.bilateralFilter(image, 9, int(80 * params.get('noise_reduction', 1.1)), 
+                                         int(80 * params.get('noise_reduction', 1.1)))
             
             # 2. PIL 기반 기본 보정
-            pil_image = Image.fromarray(enhanced)
+            pil_image = Image.fromarray(denoised)
             
             # 3. 밝기 조정
             enhancer = ImageEnhance.Brightness(pil_image)
@@ -188,7 +326,7 @@ class UltimatePerfectWeddingRingProcessor:
             
             enhanced_array = np.array(enhanced)
             
-            # 7. 하얀색 오버레이 ("하얀색 살짝 입힌 느낌" - Dialog 16-20)
+            # 7. 하얀색 오버레이 ("하얀색 살짝 입힌 느낌")
             white_overlay = np.full_like(enhanced_array, 255)
             enhanced_array = cv2.addWeighted(
                 enhanced_array, 1 - params['white_overlay'],
@@ -212,7 +350,7 @@ class UltimatePerfectWeddingRingProcessor:
             gamma_table = np.array([((i / 255.0) ** (1.0 / gamma)) * 255 for i in np.arange(0, 256)]).astype("uint8")
             enhanced_array = cv2.LUT(enhanced_array, gamma_table)
             
-            # 11. 원본과 블렌딩 (자연스러움 보장)
+            # 11. 원본과 블렌딩
             original_blend = params['original_blend']
             final = cv2.addWeighted(
                 enhanced_array, 1 - original_blend,
@@ -222,138 +360,34 @@ class UltimatePerfectWeddingRingProcessor:
             return final.astype(np.uint8)
         except Exception as e:
             print(f"v13.3 보정 오류: {e}")
-            # Fallback으로도 기본 보정 수행
-            enhanced = cv2.convertScaleAbs(image, alpha=1.2, beta=10)
+            # Fallback 보정
+            enhanced = cv2.convertScaleAbs(image, alpha=1.25, beta=15)
             return enhanced
 
-    def detect_black_border_adaptive(self, image):
-        """적응형 검은색 테두리 감지 (Dialog 29 성과 - 100픽셀 두께 대응)"""
-        try:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-            height, width = gray.shape
-            
-            # 가장자리에서만 검은색 테두리 찾기 (Dialog 34 웨딩링 보호)
-            edge_width = 50
-            edge_mask = np.zeros_like(gray)
-            edge_mask[:edge_width, :] = 255  # 상단
-            edge_mask[-edge_width:, :] = 255  # 하단
-            edge_mask[:, :edge_width] = 255  # 좌측
-            edge_mask[:, -edge_width:] = 255  # 우측
-            
-            # 다중 threshold로 정확한 검은색 감지
-            best_contour = None
-            best_area = 0
-            
-            for threshold in [15, 20, 25, 30]:
-                _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
-                border_only = cv2.bitwise_and(binary, edge_mask)
-                
-                # 컨투어 찾기
-                contours, _ = cv2.findContours(border_only, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                for contour in contours:
-                    area = cv2.contourArea(contour)
-                    x, y, w, h = cv2.boundingRect(contour)
-                    
-                    # 유효한 테두리 조건
-                    if (area > width * height * 0.1 and  # 최소 크기
-                        w > width * 0.3 and h > height * 0.3 and  # 최소 크기
-                        0.3 < w/h < 3.0):  # 적절한 비율
-                        
-                        if area > best_area:
-                            best_area = area
-                            best_contour = contour
-            
-            if best_contour is not None:
-                x, y, w, h = cv2.boundingRect(best_contour)
-                
-                # 적응형 두께 측정 (Dialog 29)
-                thickness = self.measure_border_thickness(gray, x, y, w, h)
-                
-                # 웨딩링 보호 영역 설정 (Dialog 34 - 매우 보수적)
-                margin_w = max(30, int(w * 0.15))  # 좌우 15% 이상 마진
-                margin_h = max(30, int(h * 0.15))  # 상하 15% 이상 마진
-                
-                inner_x = x + margin_w
-                inner_y = y + margin_h
-                inner_w = w - 2 * margin_w
-                inner_h = h - 2 * margin_h
-                
-                # 최소 크기 보장
-                if inner_w < width // 4 or inner_h < height // 4:
-                    inner_x = width // 4
-                    inner_y = height // 4
-                    inner_w = width // 2
-                    inner_h = height // 2
-                
-                return (x, y, w, h), (inner_x, inner_y, inner_w, inner_h), thickness
-            
-            return None, None, 0
-        except Exception as e:
-            print(f"테두리 감지 오류: {e}")
-            return None, None, 0
-
-    def measure_border_thickness(self, gray, x, y, w, h):
-        """실제 테두리 두께 측정 (Dialog 29)"""
-        try:
-            thicknesses = []
-            
-            # 4방향에서 두께 측정
-            directions = [
-                gray[y:y+h//4, x:x+w],      # 상단
-                gray[y+3*h//4:y+h, x:x+w],  # 하단
-                gray[y:y+h, x:x+w//4],      # 좌측
-                gray[y:y+h, x+3*w//4:x+w]   # 우측
-            ]
-            
-            for region in directions:
-                if region.size > 0:
-                    # 검은색 픽셀의 연속성으로 두께 측정
-                    binary = (region < 25).astype(np.uint8) * 255
-                    if np.any(binary):
-                        thickness = np.sum(binary > 0, axis=0 if len(region.shape) > 1 else None)
-                        if hasattr(thickness, '__iter__'):
-                            thickness = np.median(thickness[thickness > 0])
-                        if thickness > 0:
-                            thicknesses.append(thickness)
-            
-            if thicknesses:
-                return int(np.median(thicknesses) * 1.5)  # 50% 안전 마진
-            return 20  # 기본값
-        except:
-            return 20
-
-    def remove_black_border_advanced(self, image, border_bbox, inner_bbox, metal_type, lighting):
-        """고급 검은색 테두리 제거 (Dialog 27-28 성과)"""
+    def remove_black_border_safe(self, image, border_bbox):
+        """안전한 검은색 테두리 제거"""
         try:
             if border_bbox is None:
                 return image
             
             height, width = image.shape[:2]
             x, y, w, h = border_bbox
-            inner_x, inner_y, inner_w, inner_h = inner_bbox
             
-            # 테두리 마스크 생성 (가장자리만)
+            # 매우 보수적인 가장자리만 제거
             mask = np.zeros((height, width), dtype=np.uint8)
+            edge_width = 25  # 가장자리만 좁게
             
-            # 바깥 테두리 영역
-            edge_width = 35  # Dialog 34 - 가장자리만 정확히
+            # 상하좌우 가장자리만
             mask[y:y+edge_width, x:x+w] = 255  # 상단
             mask[y+h-edge_width:y+h, x:x+w] = 255  # 하단
             mask[y:y+h, x:x+edge_width] = 255  # 좌측
             mask[y:y+h, x+w-edge_width:x+w] = 255  # 우측
             
-            # 웨딩링 보호 영역 완전 제외 (Dialog 34)
-            mask[inner_y:inner_y+inner_h, inner_x:inner_x+inner_w] = 0
+            # TELEA inpainting
+            inpainted = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
             
-            # 28쌍 AFTER 배경색 선택
-            bg_color = self.get_after_background_color(image, lighting)
-            
-            # TELEA 고급 inpainting (Dialog 27)
-            inpainted = cv2.inpaint(image, mask, 5, cv2.INPAINT_TELEA)
-            
-            # 자연스러운 블렌딩 (Dialog 25 - 31×31 가우시안)
-            smooth_mask = cv2.GaussianBlur(mask.astype(np.float32), (31, 31), 10)
+            # 부드러운 블렌딩
+            smooth_mask = cv2.GaussianBlur(mask.astype(np.float32), (21, 21), 7)
             smooth_mask = smooth_mask / 255.0
             
             result = image.copy()
@@ -368,100 +402,26 @@ class UltimatePerfectWeddingRingProcessor:
             print(f"테두리 제거 오류: {e}")
             return image
 
-    def get_after_background_color(self, image, lighting):
-        """28쌍 AFTER 배경색 선택 (Dialog 28)"""
-        try:
-            # 배경 밝기 분석
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-            avg_brightness = np.mean(gray)
-            
-            colors = self.bg_colors[lighting]
-            if avg_brightness > 200:
-                return colors['light']
-            elif avg_brightness > 150:
-                return colors['medium']
-            else:
-                return colors['dark']
-        except:
-            return [245, 243, 240]
-
-    def enhance_ring_region_additional(self, image, inner_bbox):
-        """웨딩링 영역 추가 보정 (Dialog 34)"""
-        try:
-            if inner_bbox is None:
-                # 전체 이미지를 더 선명하게
-                enhanced = cv2.convertScaleAbs(image, alpha=1.15, beta=8)
-                # 언샤프 마스킹
-                kernel = np.array([[-1,-1,-1],[-1,9,-1],[-1,-1,-1]])
-                enhanced = cv2.filter2D(enhanced, -1, kernel)
-                return enhanced
-            
-            inner_x, inner_y, inner_w, inner_h = inner_bbox
-            result = image.copy()
-            
-            # 웨딩링 영역만 추가 보정
-            ring_region = image[inner_y:inner_y+inner_h, inner_x:inner_x+inner_w].copy()
-            
-            # 강화된 밝기와 선명도
-            ring_enhanced = cv2.convertScaleAbs(ring_region, alpha=1.20, beta=12)
-            
-            # 언샤프 마스킹으로 선명도 극대화
-            kernel = np.array([[-1,-1,-1],[-1,9,-1],[-1,-1,-1]])
-            ring_enhanced = cv2.filter2D(ring_enhanced, -1, kernel)
-            
-            # 다시 삽입
-            result[inner_y:inner_y+inner_h, inner_x:inner_x+inner_w] = ring_enhanced
-            
-            return result
-        except Exception as e:
-            print(f"웨딩링 추가 보정 오류: {e}")
-            return image
-
-    def upscale_image_2x(self, image):
-        """2x 업스케일링 (LANCZOS4 고품질)"""
+    def create_perfect_thumbnail_enhanced(self, image, ring_bbox, target_size=(1000, 1300)):
+        """강화된 썸네일 생성 - 핵심 개선!"""
         try:
             height, width = image.shape[:2]
-            new_width = width * 2
-            new_height = height * 2
-            return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-        except Exception as e:
-            print(f"업스케일링 오류: {e}")
-            return cv2.resize(image, (image.shape[1] * 2, image.shape[0] * 2), interpolation=cv2.INTER_LINEAR)
-
-    def create_perfect_thumbnail(self, image, inner_bbox, target_size=(1000, 1300)):
-        """완벽한 1000×1300 썸네일 (Dialog 34 - 웨딩링 화면 가득)"""
-        try:
-            height, width = image.shape[:2]
-            center_x, center_y = width // 2, height // 2
+            target_w, target_h = target_size
             
-            if inner_bbox is not None:
-                # 웨딩링 중심으로 크롭
-                inner_x, inner_y, inner_w, inner_h = inner_bbox
-                center_x = inner_x + inner_w // 2
-                center_y = inner_y + inner_h // 2
-                # 웨딩링 기준으로 크롭 영역 확장
-                crop_size = max(inner_w, inner_h) * 2  # 웨딩링의 2배 크기
+            if ring_bbox is not None:
+                # 웨딩링 기준으로 크롭
+                rx, ry, rw, rh = ring_bbox
+                center_x = rx + rw // 2
+                center_y = ry + rh // 2
+                
+                # 웨딩링 크기의 3배 영역으로 크롭 (충분한 여백)
+                crop_size = max(rw, rh) * 3
+                print(f"웨딩링 기준 크롭: center=({center_x}, {center_y}), size={crop_size}")
             else:
-                # 중앙 영역에서 밝은 부분(웨딩링) 찾기
-                gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-                search_w, search_h = width // 2, height // 2
-                center_region = gray[center_y-search_h//2:center_y+search_h//2,
-                                   center_x-search_w//2:center_x+search_w//2]
-                
-                # 밝은 영역 감지
-                threshold = np.mean(center_region) + np.std(center_region)
-                _, binary = cv2.threshold(center_region, threshold, 255, cv2.THRESH_BINARY)
-                
-                contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    largest = max(contours, key=cv2.contourArea)
-                    bx, by, bw, bh = cv2.boundingRect(largest)
-                    # 전역 좌표로 변환
-                    center_x = center_x - search_w//2 + bx + bw//2
-                    center_y = center_y - search_h//2 + by + bh//2
-                    crop_size = max(bw, bh) * 3
-                else:
-                    crop_size = min(width, height) // 2
+                # Fallback: 중앙 기준
+                center_x, center_y = width // 2, height // 2
+                crop_size = min(width, height) // 2
+                print(f"중앙 기준 크롭: center=({center_x}, {center_y}), size={crop_size}")
             
             # 크롭 영역 계산
             half_crop = crop_size // 2
@@ -470,46 +430,67 @@ class UltimatePerfectWeddingRingProcessor:
             x2 = min(width, center_x + half_crop)
             y2 = min(height, center_y + half_crop)
             
-            # 크롭 실행
+            # 실제 크롭 실행
             cropped = image[y1:y2, x1:x2]
+            print(f"크롭된 이미지 크기: {cropped.shape}")
             
-            # 1000×1300 비율 맞춤
-            target_w, target_h = target_size
+            if cropped.size == 0:
+                print("크롭 실패, 전체 이미지 사용")
+                cropped = image
+            
+            # 1000×1300 비율로 리사이즈
             crop_h, crop_w = cropped.shape[:2]
             
-            # 웨딩링이 더 크게 보이도록 스케일 조정 (90% 크기로)
-            ratio = max(target_w / crop_w, target_h / crop_h) * 0.9
+            # 웨딩링이 화면을 많이 차지하도록 (85% 크기)
+            ratio = max(target_w / crop_w, target_h / crop_h) * 0.85
             new_w = int(crop_w * ratio)
             new_h = int(crop_h * ratio)
             
-            resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+            print(f"리사이즈: {crop_w}x{crop_h} -> {new_w}x{new_h}")
             
-            # 1000×1300 캔버스에 배치 (위쪽으로 치우쳐서 여백 최소화)
+            if new_w > 0 and new_h > 0:
+                resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+            else:
+                print("리사이즈 실패, 원본 사용")
+                resized = cropped
+            
+            # 1000×1300 캔버스에 배치
             canvas = np.full((target_h, target_w, 3), 245, dtype=np.uint8)
-            start_x = (target_w - new_w) // 2
-            start_y = max(0, (target_h - new_h) // 4)  # 1/4 지점에 배치 (위쪽으로)
             
-            # 캔버스 범위 확인
+            # 중앙 배치 (약간 위쪽으로)
+            start_x = max(0, (target_w - new_w) // 2)
+            start_y = max(0, (target_h - new_h) // 3)  # 1/3 지점 (위쪽으로)
+            
+            # 범위 확인하여 안전하게 배치
             end_x = min(target_w, start_x + new_w)
             end_y = min(target_h, start_y + new_h)
             actual_w = end_x - start_x
             actual_h = end_y - start_y
             
-            canvas[start_y:end_y, start_x:end_x] = resized[:actual_h, :actual_w]
+            if actual_w > 0 and actual_h > 0:
+                canvas[start_y:end_y, start_x:end_x] = resized[:actual_h, :actual_w]
+                print(f"캔버스 배치 성공: ({start_x}, {start_y}) - ({end_x}, {end_y})")
+            else:
+                print("캔버스 배치 실패")
             
             return canvas
+            
         except Exception as e:
             print(f"썸네일 생성 오류: {e}")
-            # Fallback: 중앙 크롭
-            center_y, center_x = image.shape[0] // 2, image.shape[1] // 2
-            crop_size = min(image.shape[0], image.shape[1]) // 2
-            y1, y2 = center_y - crop_size, center_y + crop_size
-            x1, x2 = center_x - crop_size, center_x + crop_size
-            cropped = image[y1:y2, x1:x2]
-            return cv2.resize(cropped, target_size, interpolation=cv2.INTER_LANCZOS4)
+            # 최후의 Fallback
+            try:
+                center_y, center_x = image.shape[0] // 2, image.shape[1] // 2
+                crop_size = min(image.shape[0], image.shape[1]) // 3
+                y1, y2 = max(0, center_y - crop_size), min(image.shape[0], center_y + crop_size)
+                x1, x2 = max(0, center_x - crop_size), min(image.shape[1], center_x + crop_size)
+                cropped = image[y1:y2, x1:x2]
+                return cv2.resize(cropped, target_size, interpolation=cv2.INTER_LANCZOS4)
+            except:
+                # 진짜 최후의 수단
+                return cv2.resize(image, target_size, interpolation=cv2.INTER_LANCZOS4)
 
 def handler(event):
-    """RunPod Serverless 메인 핸들러 - 36개 대화 모든 성과 구현"""
+    """RunPod Serverless 메인 핸들러 - 강화된 웨딩링 감지"""
     try:
         input_data = event["input"]
         
@@ -517,10 +498,10 @@ def handler(event):
         if "prompt" in input_data:
             return {
                 "success": True,
-                "message": f"v17.1 Perfect Fix 연결 성공: {input_data['prompt']}",
-                "status": "ready_for_ultimate_processing",
-                "version": "v17.1 - 36개 대화 모든 성과 완전 구현",
-                "capabilities": ["v13.3 완전 보정", "적응형 검은색 선 감지", "웨딩링 절대 보호", "완벽한 썸네일"]
+                "message": f"v17.2 Enhanced Detection 연결 성공: {input_data['prompt']}",
+                "status": "enhanced_ring_detection_ready",
+                "version": "v17.2 - 강화된 웨딩링 감지 시스템",
+                "capabilities": ["정밀 웨딩링 감지", "검은색 테두리 내부 감지", "Fallback 감지", "완벽한 썸네일"]
             }
         
         # 실제 이미지 처리
@@ -530,37 +511,79 @@ def handler(event):
             image = Image.open(io.BytesIO(image_data))
             image_array = np.array(image.convert('RGB'))
             
-            processor = UltimatePerfectWeddingRingProcessor()
+            detector = EnhancedWeddingRingDetector()
             
-            # 1. 고급 금속/조명 감지
-            metal_type = processor.detect_metal_type_advanced(image_array)
-            lighting = processor.detect_lighting_advanced(image_array)
+            # 1. 검은색 테두리 감지
+            border_bbox = detector.detect_black_border_precise(image_array)
+            print(f"검은색 테두리: {border_bbox}")
             
-            # 2. v13.3 완전한 10단계 보정 (무조건 실행)
-            enhanced_image = processor.enhance_wedding_ring_v13_3_complete(image_array, metal_type, lighting)
-            
-            # 3. 적응형 검은색 테두리 감지 (Dialog 29)
-            border_bbox, inner_bbox, thickness = processor.detect_black_border_adaptive(enhanced_image)
-            
-            # 4. 검은색 테두리 제거 (Dialog 27-28)
+            # 2. 웨딩링 감지 (강화된 시스템)
             if border_bbox is not None:
-                enhanced_image = processor.remove_black_border_advanced(
-                    enhanced_image, border_bbox, inner_bbox, metal_type, lighting)
+                # 테두리 내부에서 웨딩링 찾기
+                ring_bbox = detector.detect_wedding_ring_inside_border(image_array, border_bbox)
+                print(f"테두리 내부 웨딩링: {ring_bbox}")
+            else:
+                ring_bbox = None
             
-            # 5. 웨딩링 영역 추가 보정 (Dialog 34)
-            enhanced_image = processor.enhance_ring_region_additional(enhanced_image, inner_bbox)
+            # 3. Fallback 웨딩링 감지
+            if ring_bbox is None:
+                ring_bbox = detector.detect_wedding_ring_fallback(image_array)
+                print(f"Fallback 웨딩링: {ring_bbox}")
             
-            # 6. 2x 업스케일링
-            upscaled_image = processor.upscale_image_2x(enhanced_image)
+            # 4. 금속/조명 감지
+            if ring_bbox is not None:
+                rx, ry, rw, rh = ring_bbox
+                ring_region = image_array[ry:ry+rh, rx:rx+rw]
+                if ring_region.size > 0:
+                    # 웨딩링 영역 기준으로 금속 감지
+                    hsv_ring = cv2.cvtColor(ring_region, cv2.COLOR_RGB2HSV)
+                    avg_hue = np.mean(hsv_ring[:, :, 0])
+                    avg_sat = np.mean(hsv_ring[:, :, 1])
+                    
+                    if avg_sat < 30:
+                        metal_type = 'white_gold'
+                    elif 5 <= avg_hue <= 25:
+                        metal_type = 'champagne_gold'  # 기본값
+                    else:
+                        metal_type = 'champagne_gold'
+                else:
+                    metal_type = 'champagne_gold'
+            else:
+                metal_type = 'champagne_gold'
+            
+            lighting = 'natural'  # 기본값
+            
+            # 5. v13.3 완전한 보정 (무조건 실행)
+            enhanced_image = detector.enhance_wedding_ring_v13_3_complete(image_array, metal_type, lighting)
+            
+            # 6. 검은색 테두리 제거 (있으면)
+            if border_bbox is not None:
+                enhanced_image = detector.remove_black_border_safe(enhanced_image, border_bbox)
+            
+            # 7. 웨딩링 영역 추가 강화
+            if ring_bbox is not None:
+                rx, ry, rw, rh = ring_bbox
+                if rx >= 0 and ry >= 0 and rx + rw <= enhanced_image.shape[1] and ry + rh <= enhanced_image.shape[0]:
+                    ring_region = enhanced_image[ry:ry+rh, rx:rx+rw].copy()
+                    # 추가 밝기와 선명도
+                    ring_enhanced = cv2.convertScaleAbs(ring_region, alpha=1.15, beta=10)
+                    enhanced_image[ry:ry+rh, rx:rx+rw] = ring_enhanced
+            
+            # 8. 2x 업스케일링
+            upscaled_image = cv2.resize(enhanced_image, 
+                                      (enhanced_image.shape[1] * 2, enhanced_image.shape[0] * 2), 
+                                      interpolation=cv2.INTER_LANCZOS4)
             
             # 업스케일된 좌표 조정
-            if inner_bbox is not None:
-                inner_bbox = tuple(coord * 2 for coord in inner_bbox)
+            if ring_bbox is not None:
+                ring_bbox_scaled = tuple(coord * 2 for coord in ring_bbox)
+            else:
+                ring_bbox_scaled = None
             
-            # 7. 완벽한 1000×1300 썸네일
-            thumbnail = processor.create_perfect_thumbnail(upscaled_image, inner_bbox)
+            # 9. 강화된 썸네일 생성
+            thumbnail = detector.create_perfect_thumbnail_enhanced(upscaled_image, ring_bbox_scaled)
             
-            # 8. 결과 인코딩
+            # 10. 결과 인코딩
             # 메인 이미지
             main_pil = Image.fromarray(upscaled_image)
             main_buffer = io.BytesIO()
@@ -577,34 +600,36 @@ def handler(event):
                 "enhanced_image": main_base64,
                 "thumbnail": thumb_base64,
                 "processing_info": {
-                    "version": "v17.1 Perfect Fix",
+                    "version": "v17.2 Enhanced Detection",
                     "metal_type": metal_type,
                     "lighting": lighting,
                     "border_detected": border_bbox is not None,
-                    "border_thickness": thickness,
+                    "ring_detected": ring_bbox is not None,
+                    "ring_bbox": ring_bbox,
+                    "detection_method": "테두리 내부 감지" if border_bbox and ring_bbox else "Fallback 감지",
                     "v13_3_applied": True,
-                    "champagne_whitened": metal_type == 'champagne_gold',
-                    "ring_protected": True,
+                    "thumbnail_method": "웨딩링 중심" if ring_bbox else "중앙 크롭",
                     "original_size": f"{image_array.shape[1]}x{image_array.shape[0]}",
                     "final_size": f"{upscaled_image.shape[1]}x{upscaled_image.shape[0]}",
-                    "thumbnail_size": "1000x1300",
-                    "features": "36개 대화 모든 성과 완전 구현"
+                    "thumbnail_size": "1000x1300"
                 }
             }
     
     except Exception as e:
-        # Emergency에서도 기본 보정은 수행
+        print(f"메인 처리 오류: {e}")
+        # Emergency 처리
         try:
             if "image_base64" in input_data:
                 image_data = base64.b64decode(input_data["image_base64"])
                 image = Image.open(io.BytesIO(image_data))
                 image_array = np.array(image.convert('RGB'))
                 
-                # 기본 보정이라도 수행
-                enhanced = cv2.convertScaleAbs(image_array, alpha=1.25, beta=15)
-                upscaled = cv2.resize(enhanced, (enhanced.shape[1] * 2, enhanced.shape[0] * 2), interpolation=cv2.INTER_LANCZOS4)
+                # 기본 보정
+                enhanced = cv2.convertScaleAbs(image_array, alpha=1.3, beta=20)
+                upscaled = cv2.resize(enhanced, (enhanced.shape[1] * 2, enhanced.shape[0] * 2), 
+                                    interpolation=cv2.INTER_LANCZOS4)
                 
-                # 썸네일
+                # 중앙 썸네일
                 center_y, center_x = upscaled.shape[0] // 2, upscaled.shape[1] // 2
                 crop_size = min(upscaled.shape[0], upscaled.shape[1]) // 3
                 y1, y2 = center_y - crop_size, center_y + crop_size
@@ -626,7 +651,7 @@ def handler(event):
                     "enhanced_image": main_base64,
                     "thumbnail": thumb_base64,
                     "processing_info": {
-                        "version": "v17.1 Emergency Basic",
+                        "version": "v17.2 Emergency",
                         "error": str(e),
                         "basic_processing": True
                     }
@@ -634,7 +659,7 @@ def handler(event):
         except:
             pass
         
-        return {"error": f"v17.1 처리 중 오류 발생: {str(e)}"}
+        return {"error": f"v17.2 처리 중 오류 발생: {str(e)}"}
 
 # RunPod 서버리스 시작
 runpod.serverless.start({"handler": handler})
