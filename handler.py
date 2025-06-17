@@ -1,713 +1,746 @@
-import cv2
-import numpy as np
 import os
-from typing import Dict, Tuple, Optional, List
-import base64
+import sys
+import json
+import requests
+import torch
+import numpy as np
+from PIL import Image, ImageFilter, ImageEnhance, ImageOps
+import cv2
+from datetime import datetime
+import time
+import traceback
+import logging
 from io import BytesIO
-from PIL import Image
+import runpod
+from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, StableDiffusionInpaintPipeline
+from diffusers.utils import load_image
+from controlnet_aux import CannyDetector, MidasDetector
+from transformers import pipeline, BlipProcessor, BlipForConditionalGeneration
+from compel import Compel
+import warnings
+warnings.filterwarnings('ignore')
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class WeddingRingEnhancer:
     def __init__(self):
-        """Wedding Ring AI Enhancement System v16.0 - Perfect Frame Removal"""
-        self.version = "16.0"
+        """Wedding Ring AI Enhancement System v16.1 - Debug Version"""
+        self.version = "16.1"
+        logger.info(f"Initializing Wedding Ring Enhancer v{self.version}")
         
-        # v13.3 Enhancement parameters - COMPLETE SET
-        self.enhancement_params = {
-            'gold': {
-                'studio': {
-                    'brightness': 1.15, 'contrast': 1.25, 'saturation': 1.30,
-                    'highlights': 0.92, 'shadows': 1.08, 'clarity': 0.75,
-                    'vibrance': 0.85, 'warmth': 1.10, 'exposure': 0.15,
-                    'sharpness': 0.70, 'noise_reduction': 0.30,
-                    'metal_enhancement': {'shine': 0.80, 'reflection': 0.75, 'polish': 0.85}
-                },
-                'natural': {
-                    'brightness': 1.08, 'contrast': 1.15, 'saturation': 1.20,
-                    'highlights': 0.95, 'shadows': 1.12, 'clarity': 0.65,
-                    'vibrance': 0.80, 'warmth': 1.05, 'exposure': 0.10,
-                    'sharpness': 0.60, 'noise_reduction': 0.25,
-                    'metal_enhancement': {'shine': 0.70, 'reflection': 0.65, 'polish': 0.75}
-                },
-                'warm': {
-                    'brightness': 1.20, 'contrast': 1.30, 'saturation': 1.35,
-                    'highlights': 0.88, 'shadows': 1.05, 'clarity': 0.80,
-                    'vibrance': 0.90, 'warmth': 1.20, 'exposure': 0.20,
-                    'sharpness': 0.75, 'noise_reduction': 0.35,
-                    'metal_enhancement': {'shine': 0.85, 'reflection': 0.80, 'polish': 0.90}
-                }
-            },
-            'silver': {
-                'studio': {
-                    'brightness': 1.10, 'contrast': 1.20, 'saturation': 0.95,
-                    'highlights': 0.90, 'shadows': 1.10, 'clarity': 0.80,
-                    'vibrance': 0.70, 'warmth': 0.95, 'exposure': 0.12,
-                    'sharpness': 0.75, 'noise_reduction': 0.30,
-                    'metal_enhancement': {'shine': 0.85, 'reflection': 0.82, 'polish': 0.88}
-                },
-                'natural': {
-                    'brightness': 1.05, 'contrast': 1.12, 'saturation': 0.90,
-                    'highlights': 0.93, 'shadows': 1.15, 'clarity': 0.70,
-                    'vibrance': 0.65, 'warmth': 0.90, 'exposure': 0.08,
-                    'sharpness': 0.65, 'noise_reduction': 0.25,
-                    'metal_enhancement': {'shine': 0.75, 'reflection': 0.72, 'polish': 0.78}
-                },
-                'warm': {
-                    'brightness': 1.12, 'contrast': 1.25, 'saturation': 1.00,
-                    'highlights': 0.87, 'shadows': 1.08, 'clarity': 0.85,
-                    'vibrance': 0.75, 'warmth': 1.05, 'exposure': 0.15,
-                    'sharpness': 0.80, 'noise_reduction': 0.35,
-                    'metal_enhancement': {'shine': 0.90, 'reflection': 0.85, 'polish': 0.92}
-                }
-            },
-            'rose_gold': {
-                'studio': {
-                    'brightness': 1.12, 'contrast': 1.22, 'saturation': 1.25,
-                    'highlights': 0.91, 'shadows': 1.09, 'clarity': 0.72,
-                    'vibrance': 0.82, 'warmth': 1.15, 'exposure': 0.13,
-                    'sharpness': 0.68, 'noise_reduction': 0.28,
-                    'metal_enhancement': {'shine': 0.78, 'reflection': 0.73, 'polish': 0.83}
-                },
-                'natural': {
-                    'brightness': 1.06, 'contrast': 1.13, 'saturation': 1.15,
-                    'highlights': 0.94, 'shadows': 1.13, 'clarity': 0.62,
-                    'vibrance': 0.78, 'warmth': 1.08, 'exposure': 0.09,
-                    'sharpness': 0.58, 'noise_reduction': 0.23,
-                    'metal_enhancement': {'shine': 0.68, 'reflection': 0.63, 'polish': 0.73}
-                },
-                'warm': {
-                    'brightness': 1.18, 'contrast': 1.28, 'saturation': 1.32,
-                    'highlights': 0.86, 'shadows': 1.06, 'clarity': 0.78,
-                    'vibrance': 0.88, 'warmth': 1.25, 'exposure': 0.18,
-                    'sharpness': 0.73, 'noise_reduction': 0.33,
-                    'metal_enhancement': {'shine': 0.83, 'reflection': 0.78, 'polish': 0.88}
-                }
-            },
-            'platinum': {
-                'studio': {
-                    'brightness': 1.08, 'contrast': 1.18, 'saturation': 0.92,
-                    'highlights': 0.89, 'shadows': 1.11, 'clarity': 0.82,
-                    'vibrance': 0.68, 'warmth': 0.92, 'exposure': 0.11,
-                    'sharpness': 0.77, 'noise_reduction': 0.32,
-                    'metal_enhancement': {'shine': 0.87, 'reflection': 0.85, 'polish': 0.90}
-                },
-                'natural': {
-                    'brightness': 1.03, 'contrast': 1.10, 'saturation': 0.88,
-                    'highlights': 0.92, 'shadows': 1.16, 'clarity': 0.72,
-                    'vibrance': 0.63, 'warmth': 0.88, 'exposure': 0.07,
-                    'sharpness': 0.67, 'noise_reduction': 0.27,
-                    'metal_enhancement': {'shine': 0.77, 'reflection': 0.75, 'polish': 0.80}
-                },
-                'warm': {
-                    'brightness': 1.10, 'contrast': 1.23, 'saturation': 0.98,
-                    'highlights': 0.85, 'shadows': 1.09, 'clarity': 0.87,
-                    'vibrance': 0.73, 'warmth': 1.02, 'exposure': 0.14,
-                    'sharpness': 0.82, 'noise_reduction': 0.37,
-                    'metal_enhancement': {'shine': 0.92, 'reflection': 0.88, 'polish': 0.95}
-                }
-            }
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Using device: {self.device}")
+        
+        self.models_loaded = False
+        self.base_model = "SG161222/Realistic_Vision_V5.1_noVAE"
+        
+        # Controlnet models
+        self.controlnet_models = {
+            'canny': "lllyasviel/control_v11p_sd15_canny",
+            'depth': "lllyasviel/control_v11f1p_sd15_depth"
         }
         
-        # Bright and clean background colors like image 5
-        self.after_bg_colors = {
-            'gold': {'studio': (250, 248, 245), 'natural': (252, 250, 248), 'warm': (254, 252, 250)},
-            'silver': {'studio': (248, 249, 250), 'natural': (250, 251, 252), 'warm': (252, 250, 248)},
-            'rose_gold': {'studio': (251, 249, 247), 'natural': (253, 251, 249), 'warm': (255, 253, 251)},
-            'platinum': {'studio': (247, 248, 249), 'natural': (249, 250, 251), 'warm': (251, 249, 247)}
-        }
+        # Initialize processing history
+        self.processing_history = []
+        
+        logger.info("WeddingRingEnhancer initialized successfully")
+    
+    def load_models(self):
+        """Load all required models"""
+        if self.models_loaded:
+            logger.info("Models already loaded")
+            return
+            
+        try:
+            logger.info("Starting model loading...")
+            
+            # Load Canny ControlNet
+            logger.info("Loading Canny ControlNet...")
+            canny_controlnet = ControlNetModel.from_pretrained(
+                self.controlnet_models['canny'],
+                torch_dtype=torch.float16
+            )
+            
+            self.canny_pipe = StableDiffusionControlNetPipeline.from_pretrained(
+                self.base_model,
+                controlnet=canny_controlnet,
+                torch_dtype=torch.float16,
+                safety_checker=None,
+                requires_safety_checker=False
+            ).to(self.device)
+            
+            # Load Depth ControlNet
+            logger.info("Loading Depth ControlNet...")
+            depth_controlnet = ControlNetModel.from_pretrained(
+                self.controlnet_models['depth'],
+                torch_dtype=torch.float16
+            )
+            
+            self.depth_pipe = StableDiffusionControlNetPipeline.from_pretrained(
+                self.base_model,
+                controlnet=depth_controlnet,
+                torch_dtype=torch.float16,
+                safety_checker=None,
+                requires_safety_checker=False
+            ).to(self.device)
+            
+            # Load Inpainting Pipeline
+            logger.info("Loading Inpainting Pipeline...")
+            self.inpaint_pipe = StableDiffusionInpaintPipeline.from_pretrained(
+                "stabilityai/stable-diffusion-2-inpainting",
+                torch_dtype=torch.float16,
+                safety_checker=None,
+                requires_safety_checker=False
+            ).to(self.device)
+            
+            # Load BLIP for image captioning
+            logger.info("Loading BLIP model...")
+            self.blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+            self.blip_model = BlipForConditionalGeneration.from_pretrained(
+                "Salesforce/blip-image-captioning-base",
+                torch_dtype=torch.float16
+            ).to(self.device)
+            
+            # Initialize detectors
+            logger.info("Initializing detectors...")
+            self.canny_detector = CannyDetector()
+            self.midas_detector = MidasDetector.from_pretrained("lllyasviel/Annotators")
+            
+            # Initialize Compel for all pipelines
+            logger.info("Initializing Compel...")
+            self.canny_compel = Compel(tokenizer=self.canny_pipe.tokenizer, text_encoder=self.canny_pipe.text_encoder)
+            self.depth_compel = Compel(tokenizer=self.depth_pipe.tokenizer, text_encoder=self.depth_pipe.text_encoder)
+            self.inpaint_compel = Compel(tokenizer=self.inpaint_pipe.tokenizer, text_encoder=self.inpaint_pipe.text_encoder)
+            
+            # Enable optimizations
+            for pipe in [self.canny_pipe, self.depth_pipe, self.inpaint_pipe]:
+                pipe.enable_xformers_memory_efficient_attention()
+                pipe.enable_vae_slicing()
+                pipe.enable_vae_tiling()
+            
+            self.models_loaded = True
+            logger.info("All models loaded successfully!")
+            
+        except Exception as e:
+            logger.error(f"Error loading models: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
-    def detect_black_frame_advanced(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    def detect_black_frame_advanced(self, image):
         """Advanced black frame detection with multiple methods"""
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
+        logger.info("Starting advanced black frame detection")
         
-        # Method 1: Multiple threshold detection
-        frame_coords = None
-        for threshold in [20, 30, 40, 50, 60, 70, 80]:
-            _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+        try:
+            # Convert to numpy array
+            img_array = np.array(image)
+            height, width = img_array.shape[:2]
+            logger.info(f"Image dimensions: {width}x{height}")
             
-            # Find largest contour
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not contours:
-                continue
-                
-            largest = max(contours, key=cv2.contourArea)
-            x, y, rect_w, rect_h = cv2.boundingRect(largest)
+            # Multiple detection methods
+            detection_results = {
+                'has_black_frame': False,
+                'frame_regions': {'top': 0, 'bottom': 0, 'left': 0, 'right': 0},
+                'confidence': 0
+            }
             
-            # Check if it's a frame
-            if (x < 100 and y < 100 and 
-                (x + rect_w) > w - 100 and (y + rect_h) > h - 100 and
-                rect_w > w * 0.6 and rect_h > h * 0.6):
-                frame_coords = self._find_exact_black_edges(gray, (x, y, x + rect_w, y + rect_h), threshold)
-                if frame_coords:
+            # Method 1: Check pure black pixels at edges
+            logger.info("Method 1: Checking pure black pixels at edges")
+            edge_threshold = 10
+            
+            # Check each edge
+            top_black = 0
+            for y in range(min(height//4, 100)):
+                row = img_array[y, :, :]
+                if np.all(row < edge_threshold):
+                    top_black = y + 1
+                else:
                     break
-        
-        # Method 2: Edge-based detection if method 1 fails
-        if not frame_coords:
-            edges = cv2.Canny(gray, 50, 150)
-            lines = cv2.HoughLinesP(edges, 1, np.pi/180, 100, minLineLength=100, maxLineGap=10)
+            logger.info(f"Top black rows: {top_black}")
             
-            if lines is not None:
-                # Find rectangular frame from lines
-                frame_coords = self._find_frame_from_lines(lines, w, h)
-        
-        # Method 3: Gradient-based detection
-        if not frame_coords:
-            # Find strong gradients indicating frame edges
-            sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-            sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-            gradient = np.sqrt(sobelx**2 + sobely**2)
+            bottom_black = 0
+            for y in range(min(height//4, 100)):
+                row = img_array[height-1-y, :, :]
+                if np.all(row < edge_threshold):
+                    bottom_black = y + 1
+                else:
+                    break
+            logger.info(f"Bottom black rows: {bottom_black}")
             
-            # Find frame from gradient
-            frame_coords = self._find_frame_from_gradient(gradient, w, h)
-        
-        return frame_coords
-
-    def _find_exact_black_edges(self, gray: np.ndarray, rough_coords: Tuple[int, int, int, int], 
-                               threshold: int) -> Optional[Tuple[int, int, int, int]]:
-        """Find exact edges of black frame"""
-        x1, y1, x2, y2 = rough_coords
-        h, w = gray.shape
-        
-        # Scan inward to find exact edges
-        # Top edge
-        for y in range(y1, min(y1 + 200, h)):
-            if np.mean(gray[y, x1:x2]) > threshold + 30:
-                y1 = y
-                break
-        
-        # Bottom edge
-        for y in range(y2 - 1, max(y2 - 200, 0), -1):
-            if np.mean(gray[y, x1:x2]) > threshold + 30:
-                y2 = y + 1
-                break
-        
-        # Left edge
-        for x in range(x1, min(x1 + 200, w)):
-            if np.mean(gray[y1:y2, x]) > threshold + 30:
-                x1 = x
-                break
-        
-        # Right edge
-        for x in range(x2 - 1, max(x2 - 200, 0), -1):
-            if np.mean(gray[y1:y2, x]) > threshold + 30:
-                x2 = x + 1
-                break
-        
-        # Validate frame
-        if x2 - x1 > w * 0.5 and y2 - y1 > h * 0.5:
-            return (x1, y1, x2, y2)
-        return None
-
-    def _find_frame_from_lines(self, lines: np.ndarray, w: int, h: int) -> Optional[Tuple[int, int, int, int]]:
-        """Find frame from detected lines"""
-        # Group lines by orientation and position
-        h_lines = []
-        v_lines = []
-        
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            if abs(y2 - y1) < abs(x2 - x1) * 0.1:  # Horizontal
-                h_lines.append((y1 + y2) // 2)
-            elif abs(x2 - x1) < abs(y2 - y1) * 0.1:  # Vertical
-                v_lines.append((x1 + x2) // 2)
-        
-        if len(h_lines) >= 2 and len(v_lines) >= 2:
-            h_lines.sort()
-            v_lines.sort()
+            left_black = 0
+            for x in range(min(width//4, 100)):
+                col = img_array[:, x, :]
+                if np.all(col < edge_threshold):
+                    left_black = x + 1
+                else:
+                    break
+            logger.info(f"Left black columns: {left_black}")
             
-            # Find frame edges
-            top = min([y for y in h_lines if y < h * 0.3])
-            bottom = max([y for y in h_lines if y > h * 0.7])
-            left = min([x for x in v_lines if x < w * 0.3])
-            right = max([x for x in v_lines if x > w * 0.7])
+            right_black = 0
+            for x in range(min(width//4, 100)):
+                col = img_array[:, width-1-x, :]
+                if np.all(col < edge_threshold):
+                    right_black = x + 1
+                else:
+                    break
+            logger.info(f"Right black columns: {right_black}")
             
-            return (left, top, right, bottom)
-        return None
+            # Method 2: Gradient-based detection
+            logger.info("Method 2: Gradient-based detection")
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            
+            # Detect horizontal gradients (top/bottom borders)
+            grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+            grad_y_abs = np.abs(grad_y)
+            
+            # Find strong horizontal edges
+            for y in range(min(height//3, 150)):
+                if np.mean(grad_y_abs[y, :]) > 30:
+                    top_black = max(top_black, y)
+                    break
+            
+            for y in range(min(height//3, 150)):
+                if np.mean(grad_y_abs[height-1-y, :]) > 30:
+                    bottom_black = max(bottom_black, y)
+                    break
+            
+            # Detect vertical gradients (left/right borders)
+            grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+            grad_x_abs = np.abs(grad_x)
+            
+            for x in range(min(width//3, 150)):
+                if np.mean(grad_x_abs[:, x]) > 30:
+                    left_black = max(left_black, x)
+                    break
+            
+            for x in range(min(width//3, 150)):
+                if np.mean(grad_x_abs[:, width-1-x]) > 30:
+                    right_black = max(right_black, x)
+                    break
+            
+            # Method 3: Statistical analysis
+            logger.info("Method 3: Statistical analysis")
+            border_size = 20
+            
+            # Analyze borders
+            if top_black == 0:
+                top_border = gray[:border_size, :]
+                if np.mean(top_border) < 15 and np.std(top_border) < 10:
+                    top_black = border_size
+            
+            if bottom_black == 0:
+                bottom_border = gray[-border_size:, :]
+                if np.mean(bottom_border) < 15 and np.std(bottom_border) < 10:
+                    bottom_black = border_size
+            
+            if left_black == 0:
+                left_border = gray[:, :border_size]
+                if np.mean(left_border) < 15 and np.std(left_border) < 10:
+                    left_black = border_size
+            
+            if right_black == 0:
+                right_border = gray[:, -border_size:]
+                if np.mean(right_border) < 15 and np.std(right_border) < 10:
+                    right_black = border_size
+            
+            # Update detection results
+            detection_results['frame_regions'] = {
+                'top': int(top_black),
+                'bottom': int(bottom_black),
+                'left': int(left_black),
+                'right': int(right_black)
+            }
+            
+            # Calculate confidence
+            total_border = top_black + bottom_black + left_black + right_black
+            if total_border > 0:
+                detection_results['has_black_frame'] = True
+                detection_results['confidence'] = min(total_border / (width + height) * 100, 100)
+            
+            logger.info(f"Black frame detection results: {detection_results}")
+            return detection_results
+            
+        except Exception as e:
+            logger.error(f"Error in black frame detection: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'has_black_frame': False, 'frame_regions': {'top': 0, 'bottom': 0, 'left': 0, 'right': 0}, 'confidence': 0}
 
-    def _find_frame_from_gradient(self, gradient: np.ndarray, w: int, h: int) -> Optional[Tuple[int, int, int, int]]:
-        """Find frame from gradient magnitude"""
-        # Find strong gradient lines
-        _, binary = cv2.threshold(gradient.astype(np.uint8), 50, 255, cv2.THRESH_BINARY)
+    def remove_black_frame_completely(self, image, detection_result):
+        """Remove black frame and resize to original dimensions"""
+        logger.info("Starting black frame removal")
         
-        # Project to find edges
-        h_proj = np.sum(binary, axis=1)
-        v_proj = np.sum(binary, axis=0)
-        
-        # Find peaks in projections
-        h_peaks = np.where(h_proj > w * 0.3)[0]
-        v_peaks = np.where(v_proj > h * 0.3)[0]
-        
-        if len(h_peaks) >= 2 and len(v_peaks) >= 2:
-            return (v_peaks[0], h_peaks[0], v_peaks[-1], h_peaks[-1])
-        return None
+        try:
+            if not detection_result['has_black_frame']:
+                logger.info("No black frame detected, returning original image")
+                return image
+            
+            regions = detection_result['frame_regions']
+            logger.info(f"Removing frame regions: {regions}")
+            
+            # Add safety margins
+            margin = 5
+            crop_box = (
+                max(0, regions['left'] + margin),
+                max(0, regions['top'] + margin),
+                image.width - regions['right'] - margin,
+                image.height - regions['bottom'] - margin
+            )
+            
+            logger.info(f"Crop box: {crop_box}")
+            
+            # Ensure valid crop dimensions
+            if crop_box[2] <= crop_box[0] or crop_box[3] <= crop_box[1]:
+                logger.warning("Invalid crop dimensions, returning original")
+                return image
+            
+            # Crop the image
+            cropped = image.crop(crop_box)
+            logger.info(f"Cropped size: {cropped.size}")
+            
+            # Resize back to original dimensions with high quality
+            original_size = (image.width, image.height)
+            resized = cropped.resize(original_size, Image.Resampling.LANCZOS)
+            logger.info(f"Resized back to: {resized.size}")
+            
+            # Apply slight sharpening to compensate for resize
+            enhancer = ImageEnhance.Sharpness(resized)
+            final = enhancer.enhance(1.1)
+            
+            return final
+            
+        except Exception as e:
+            logger.error(f"Error removing black frame: {str(e)}")
+            logger.error(traceback.format_exc())
+            return image
 
-    def remove_black_frame_completely(self, image: np.ndarray, frame_coords: Tuple[int, int, int, int], 
-                                    metal_type: str, lighting: str) -> np.ndarray:
-        """Remove black frame completely with bright background"""
-        x1, y1, x2, y2 = frame_coords
-        result = image.copy()
-        h, w = image.shape[:2]
+    def generate_caption(self, image):
+        """Generate detailed caption for the image"""
+        logger.info("Generating image caption")
         
-        # Get bright background color
-        bg_color = self.after_bg_colors.get(metal_type, {}).get(lighting, (252, 250, 248))
-        
-        # Create comprehensive mask for all black pixels
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Multiple masks for thorough detection
-        masks = []
-        for threshold in [30, 40, 50, 60, 70, 80]:
-            mask = gray < threshold
-            masks.append(mask)
-        
-        # Combine all masks
-        combined_mask = np.logical_or.reduce(masks)
-        
-        # Only apply to frame area (not inside)
-        frame_mask = np.zeros_like(combined_mask)
-        frame_mask[:y1, :] = combined_mask[:y1, :]  # Top
-        frame_mask[y2:, :] = combined_mask[y2:, :]  # Bottom  
-        frame_mask[:, :x1] = combined_mask[:, :x1]  # Left
-        frame_mask[:, x2:] = combined_mask[:, x2:]  # Right
-        
-        # Add border detection for remaining black pixels
-        # Top border
-        for y in range(max(0, y1-10), min(y1+10, h)):
-            for x in range(w):
-                if gray[y, x] < 80:
-                    frame_mask[y, x] = True
-        
-        # Bottom border
-        for y in range(max(0, y2-10), min(y2+10, h)):
-            for x in range(w):
-                if gray[y, x] < 80:
-                    frame_mask[y, x] = True
-        
-        # Left border
-        for x in range(max(0, x1-10), min(x1+10, w)):
-            for y in range(h):
-                if gray[y, x] < 80:
-                    frame_mask[y, x] = True
-        
-        # Right border
-        for x in range(max(0, x2-10), min(x2+10, w)):
-            for y in range(h):
-                if gray[y, x] < 80:
-                    frame_mask[y, x] = True
-        
-        # Apply bright background color
-        result[frame_mask] = bg_color
-        
-        # Smooth transition
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        frame_mask_dilated = cv2.dilate(frame_mask.astype(np.uint8), kernel, iterations=1)
-        
-        # Gaussian blur for smooth edges
-        transition_area = frame_mask_dilated - frame_mask.astype(np.uint8)
-        if np.any(transition_area):
-            for c in range(3):
-                channel = result[:, :, c].astype(np.float32)
-                channel[transition_area > 0] = (
-                    channel[transition_area > 0] * 0.3 + 
-                    bg_color[c] * 0.7
-                )
-                result[:, :, c] = channel.astype(np.uint8)
-        
-        return result
+        try:
+            inputs = self.blip_processor(image, return_tensors="pt").to(self.device)
+            out = self.blip_model.generate(**inputs, max_new_tokens=50)
+            caption = self.blip_processor.decode(out[0], skip_special_tokens=True)
+            logger.info(f"Generated caption: {caption}")
+            return caption
+        except Exception as e:
+            logger.error(f"Error generating caption: {str(e)}")
+            return "a wedding ring"
 
-    def detect_ring(self, image: np.ndarray, roi: Optional[Tuple[int, int, int, int]] = None) -> Optional[Tuple[int, int, int, int]]:
-        """Detect wedding ring in image or specific ROI"""
-        if roi:
-            x1, y1, x2, y2 = roi
-            roi_img = image[y1:y2, x1:x2]
-            search_img = roi_img
-            offset_x, offset_y = x1, y1
-        else:
-            search_img = image
-            offset_x, offset_y = 0, 0
+    def create_enhanced_mask(self, image, mask_image):
+        """Create enhanced mask with better edge handling"""
+        logger.info("Creating enhanced mask")
         
-        # Convert to grayscale
-        gray = cv2.cvtColor(search_img, cv2.COLOR_BGR2GRAY)
+        try:
+            # Convert mask to numpy
+            mask_np = np.array(mask_image.convert('L'))
+            
+            # Apply multiple dilations for better coverage
+            kernel = np.ones((5,5), np.uint8)
+            dilated = cv2.dilate(mask_np, kernel, iterations=3)
+            
+            # Gaussian blur for smooth edges
+            blurred = cv2.GaussianBlur(dilated, (9,9), 0)
+            
+            # Create gradient mask
+            gradient = np.zeros_like(blurred)
+            center = 128
+            for i in range(blurred.shape[0]):
+                for j in range(blurred.shape[1]):
+                    if blurred[i,j] > 0:
+                        dist_to_edge = min(i, j, blurred.shape[0]-i-1, blurred.shape[1]-j-1)
+                        gradient[i,j] = min(255, blurred[i,j] + dist_to_edge)
+            
+            # Convert back to PIL
+            enhanced_mask = Image.fromarray(gradient).convert('L')
+            
+            # Apply slight blur to final mask
+            enhanced_mask = enhanced_mask.filter(ImageFilter.GaussianBlur(radius=2))
+            
+            return enhanced_mask
+            
+        except Exception as e:
+            logger.error(f"Error creating enhanced mask: {str(e)}")
+            return mask_image
+
+    def create_composite_image(self, original, generated, mask, blend_mode='overlay'):
+        """Advanced compositing with multiple blend modes"""
+        logger.info(f"Creating composite with blend mode: {blend_mode}")
         
-        # Apply CLAHE for better contrast
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        enhanced = clahe.apply(gray)
-        
-        # Multiple edge detection methods
-        edges1 = cv2.Canny(enhanced, 30, 100)
-        edges2 = cv2.Canny(enhanced, 50, 150)
-        edges = cv2.bitwise_or(edges1, edges2)
-        
-        # Morphological operations to connect edges
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours:
-            return None
-        
-        # Filter contours for ring-like shapes
-        valid_contours = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < 500:  # Too small
-                continue
+        try:
+            # Ensure same size
+            if original.size != generated.size:
+                generated = generated.resize(original.size, Image.Resampling.LANCZOS)
+            
+            # Convert to numpy arrays
+            orig_array = np.array(original).astype(float) / 255.0
+            gen_array = np.array(generated).astype(float) / 255.0
+            mask_array = np.array(mask.convert('L')).astype(float) / 255.0
+            
+            # Expand mask to 3 channels
+            mask_3ch = np.stack([mask_array] * 3, axis=-1)
+            
+            if blend_mode == 'overlay':
+                # Overlay blend mode
+                def overlay_blend(base, blend):
+                    return np.where(base < 0.5, 
+                                   2 * base * blend, 
+                                   1 - 2 * (1 - base) * (1 - blend))
                 
-            # Check shape characteristics
-            perimeter = cv2.arcLength(contour, True)
-            if perimeter == 0:
-                continue
+                blended = overlay_blend(orig_array, gen_array)
+                result = orig_array * (1 - mask_3ch) + blended * mask_3ch
                 
-            # Fit ellipse if possible
-            if len(contour) >= 5:
-                try:
-                    ellipse = cv2.fitEllipse(contour)
-                    (center, (width, height), angle) = ellipse
-                    
-                    # Check if ellipse-like
-                    aspect_ratio = min(width, height) / max(width, height)
-                    if aspect_ratio > 0.3:  # Not too elongated
-                        valid_contours.append(contour)
-                except:
-                    pass
-        
-        if not valid_contours:
-            # Fallback: use largest contour
-            largest_contour = max(contours, key=cv2.contourArea)
-            valid_contours = [largest_contour]
-        
-        # Get bounding box of all valid contours
-        all_points = np.vstack(valid_contours)
-        x, y, w, h = cv2.boundingRect(all_points)
-        
-        # Add padding
-        padding = 30
-        x = max(0, x - padding)
-        y = max(0, y - padding)
-        w = min(search_img.shape[1] - x, w + 2 * padding)
-        h = min(search_img.shape[0] - y, h + 2 * padding)
-        
-        return (x + offset_x, y + offset_y, x + offset_x + w, y + offset_y + h)
+            elif blend_mode == 'soft_light':
+                # Soft light blend mode
+                def soft_light_blend(base, blend):
+                    return np.where(blend < 0.5,
+                                   2 * base * blend + base * base * (1 - 2 * blend),
+                                   2 * base * (1 - blend) + np.sqrt(base) * (2 * blend - 1))
+                
+                blended = soft_light_blend(orig_array, gen_array)
+                result = orig_array * (1 - mask_3ch) + blended * mask_3ch
+                
+            else:  # normal
+                result = orig_array * (1 - mask_3ch) + gen_array * mask_3ch
+            
+            # Convert back to PIL Image
+            result = (result * 255).clip(0, 255).astype(np.uint8)
+            return Image.fromarray(result)
+            
+        except Exception as e:
+            logger.error(f"Error creating composite: {str(e)}")
+            return Image.composite(generated, original, mask)
 
-    def apply_enhancement(self, image: np.ndarray, params: Dict) -> np.ndarray:
-        """Apply v13.3 enhancement parameters with brightness adjustment"""
-        result = image.copy().astype(np.float32)
+    def process_single_image(self, image, settings):
+        """Process a single image with ring enhancement"""
+        logger.info("Starting single image processing")
         
-        # Apply brightness (increased for brighter result)
-        result = result * params.get('brightness', 1.0) * 1.1  # Extra 10% brightness
-        
-        # Apply contrast
-        mean = np.mean(result, axis=(0, 1), keepdims=True)
-        result = mean + params.get('contrast', 1.0) * (result - mean)
-        
-        # Apply saturation
-        gray = cv2.cvtColor(result.astype(np.uint8), cv2.COLOR_BGR2GRAY)
-        gray = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR).astype(np.float32)
-        result = gray + params.get('saturation', 1.0) * (result - gray)
-        
-        # Apply highlights and shadows
-        highlights_mask = (gray[:,:,0] > 180).astype(np.float32)
-        shadows_mask = (gray[:,:,0] < 75).astype(np.float32)
-        
-        result = result * (1 + (params.get('highlights', 1.0) - 1) * highlights_mask[:,:,np.newaxis])
-        result = result * (1 + (params.get('shadows', 1.0) - 1) * shadows_mask[:,:,np.newaxis])
-        
-        # Apply warmth
-        warmth = params.get('warmth', 1.0)
-        if warmth != 1.0:
-            result[:,:,2] *= warmth  # Red channel
-            result[:,:,0] *= (2 - warmth)  # Blue channel
-        
-        # Apply exposure
-        exposure = params.get('exposure', 0.0)
-        if exposure != 0:
-            result = result * (2 ** exposure)
-        
-        # Apply vibrance
-        vibrance = params.get('vibrance', 0.0)
-        if vibrance != 0:
-            sat = np.sqrt(np.sum((result - gray) ** 2, axis=2))
-            sat_mask = 1 - sat / (np.max(sat) + 1e-6)
-            result = result + vibrance * sat_mask[:,:,np.newaxis] * (result - gray) * 0.5
-        
-        # Apply clarity (local contrast)
-        clarity = params.get('clarity', 0.0)
-        if clarity != 0:
-            blurred = cv2.GaussianBlur(result, (15, 15), 0)
-            detail = result - blurred
-            result = result + clarity * detail * 0.5
-        
-        # Apply sharpness
-        sharpness = params.get('sharpness', 0.0)
-        if sharpness > 0:
-            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]]) * sharpness * 0.1
-            kernel[1,1] = 1 + kernel[1,1]
-            sharpened = cv2.filter2D(result, -1, kernel)
-            result = result * (1 - sharpness) + sharpened * sharpness
-        
-        # Apply metal enhancement
-        metal_params = params.get('metal_enhancement', {})
-        if metal_params:
-            # Enhance metallic shine
-            shine = metal_params.get('shine', 0.0)
-            if shine > 0:
-                highlights = np.maximum(result - 200, 0) * shine * 2
-                result = result + highlights
+        try:
+            # Check and remove black frame first
+            logger.info("Checking for black frame...")
+            black_frame_result = self.detect_black_frame_advanced(image)
             
-            # Enhance reflections
-            reflection = metal_params.get('reflection', 0.0)
-            if reflection > 0:
-                lab = cv2.cvtColor(result.astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
-                lab[:,:,0] = lab[:,:,0] * (1 + reflection * 0.1)
-                result = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR).astype(np.float32)
-        
-        # Ensure values are in valid range
-        result = np.clip(result, 0, 255)
-        
-        return result.astype(np.uint8)
-
-    def create_perfect_thumbnail(self, image: np.ndarray, frame_coords: Optional[Tuple[int, int, int, int]]) -> np.ndarray:
-        """Create perfect 1000x1300 thumbnail with ring centered"""
-        if frame_coords:
-            x1, y1, x2, y2 = frame_coords
-            # Use inner area only
-            inner_image = image[y1:y2, x1:x2]
-        else:
-            inner_image = image
-        
-        # Detect ring in inner area for better centering
-        ring_bbox = self.detect_ring(inner_image)
-        
-        if ring_bbox:
-            rx1, ry1, rx2, ry2 = ring_bbox
-            ring_center_x = (rx1 + rx2) // 2
-            ring_center_y = (ry1 + ry2) // 2
-            ring_width = rx2 - rx1
-            ring_height = ry2 - ry1
-            
-            # Calculate crop area to center the ring
-            # Make crop area larger than ring to include some background
-            crop_size = max(ring_width, ring_height) * 1.8
-            
-            # Adjust for 1000:1300 aspect ratio
-            crop_width = int(crop_size)
-            crop_height = int(crop_size * 1.3)
-            
-            # Calculate crop coordinates
-            crop_x1 = max(0, int(ring_center_x - crop_width // 2))
-            crop_y1 = max(0, int(ring_center_y - crop_height // 2))
-            crop_x2 = min(inner_image.shape[1], crop_x1 + crop_width)
-            crop_y2 = min(inner_image.shape[0], crop_y1 + crop_height)
-            
-            # Adjust if crop goes out of bounds
-            if crop_x2 > inner_image.shape[1]:
-                crop_x1 = inner_image.shape[1] - crop_width
-                crop_x2 = inner_image.shape[1]
-            if crop_y2 > inner_image.shape[0]:
-                crop_y1 = inner_image.shape[0] - crop_height
-                crop_y2 = inner_image.shape[0]
-            
-            cropped = inner_image[crop_y1:crop_y2, crop_x1:crop_x2]
-        else:
-            # Fallback: center crop
-            h, w = inner_image.shape[:2]
-            target_ratio = 1000 / 1300
-            current_ratio = w / h
-            
-            if current_ratio > target_ratio:
-                new_w = int(h * target_ratio)
-                x_offset = (w - new_w) // 2
-                cropped = inner_image[:, x_offset:x_offset + new_w]
+            if black_frame_result['has_black_frame']:
+                logger.info(f"Black frame detected with confidence: {black_frame_result['confidence']}%")
+                image = self.remove_black_frame_completely(image, black_frame_result)
+                logger.info("Black frame removed successfully")
             else:
-                new_h = int(w / target_ratio)
-                y_offset = (h - new_h) // 2
-                cropped = inner_image[y_offset:y_offset + new_h, :]
-        
-        # Resize to exact 1000x1300 with high quality
-        thumbnail = cv2.resize(cropped, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
-        
-        # Apply slight brightness boost to match reference
-        thumbnail = cv2.convertScaleAbs(thumbnail, alpha=1.05, beta=5)
-        
-        return thumbnail
-
-    def detect_metal_type(self, image: np.ndarray) -> str:
-        """Detect metal type from ring color"""
-        # Get center region
-        h, w = image.shape[:2]
-        center_region = image[h//3:2*h//3, w//3:2*w//3]
-        
-        # Calculate average color in LAB space for better color detection
-        lab = cv2.cvtColor(center_region, cv2.COLOR_BGR2LAB)
-        avg_lab = np.mean(lab, axis=(0, 1))
-        l, a, b = avg_lab
-        
-        # Determine metal type based on LAB values
-        if a > 5 and b > 15:  # Warm tones
-            if a > 10:
-                return 'rose_gold'
-            else:
-                return 'gold'
-        elif abs(a) < 3 and abs(b) < 10:  # Neutral tones
-            if l > 180:
-                return 'platinum'
-            else:
-                return 'silver'
-        else:
-            return 'gold'  # Default
-
-    def detect_lighting(self, image: np.ndarray) -> str:
-        """Detect lighting condition"""
-        # Convert to LAB color space
-        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-        l_channel = lab[:, :, 0]
-        
-        # Calculate statistics
-        mean_l = np.mean(l_channel)
-        std_l = np.std(l_channel)
-        
-        # Check color temperature
-        avg_b = np.mean(lab[:, :, 2])
-        avg_a = np.mean(lab[:, :, 1])
-        
-        # Determine lighting
-        if mean_l > 200 and std_l < 30:
-            return 'studio'
-        elif avg_b > 135:  # Warm tone
-            return 'warm'
-        else:
-            return 'natural'
-
-    def process_image(self, image_path: str) -> Dict[str, str]:
-        """Main processing function with perfect black frame removal"""
-        # Read image
-        image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError(f"Cannot read image: {image_path}")
-        
-        # Detect black frame with advanced method
-        frame_coords = self.detect_black_frame_advanced(image)
-        
-        # Default metal and lighting
-        metal_type = 'gold'
-        lighting = 'natural'
-        
-        if frame_coords:
-            # Detect ring within frame
-            ring_bbox = self.detect_ring(image, frame_coords)
+                logger.info("No black frame detected")
             
-            if ring_bbox:
-                # Extract ring region
-                rx1, ry1, rx2, ry2 = ring_bbox
-                ring_region = image[ry1:ry2, rx1:rx2].copy()
-                
-                # Detect metal and lighting
-                metal_type = self.detect_metal_type(ring_region)
-                lighting = self.detect_lighting(ring_region)
-                
-                # Get enhancement parameters
-                params = self.enhancement_params.get(metal_type, {}).get(lighting, 
-                                                    self.enhancement_params['gold']['natural'])
-                
-                # Apply enhancement to ring
-                enhanced_ring = self.apply_enhancement(ring_region, params)
-                
-                # Put enhanced ring back
-                image[ry1:ry2, rx1:rx2] = enhanced_ring
+            original_size = image.size
+            logger.info(f"Processing image of size: {original_size}")
             
-            # Remove black frame completely with bright background
-            image = self.remove_black_frame_completely(image, frame_coords, metal_type, lighting)
-        else:
-            # No frame detected, process entire image
-            ring_bbox = self.detect_ring(image)
+            # Generate caption
+            caption = self.generate_caption(image)
             
-            if ring_bbox:
-                rx1, ry1, rx2, ry2 = ring_bbox
-                ring_region = image[ry1:ry2, rx1:rx2].copy()
-                
-                metal_type = self.detect_metal_type(ring_region)
-                lighting = self.detect_lighting(ring_region)
-                
-                params = self.enhancement_params.get(metal_type, {}).get(lighting,
-                                                    self.enhancement_params['gold']['natural'])
-                enhanced_ring = self.apply_enhancement(ring_region, params)
-                
-                image[ry1:ry2, rx1:rx2] = enhanced_ring
-        
-        # Create perfect thumbnail
-        thumbnail = self.create_perfect_thumbnail(image, frame_coords)
-        
-        # Save outputs
-        output_path = image_path.replace('.', '_enhanced.')
-        thumbnail_path = image_path.replace('.', '_thumbnail.')
-        
-        cv2.imwrite(output_path, image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        cv2.imwrite(thumbnail_path, thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        
-        # Convert to base64
-        _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        enhanced_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        _, buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        thumbnail_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        return {
-            'enhanced_image': enhanced_base64,
-            'thumbnail': thumbnail_base64,
-            'metal_type': metal_type,
-            'lighting': lighting,
-            'version': self.version
-        }
+            # Prepare prompts
+            positive_prompt = f"{settings['prompt']}, {caption}, professional product photography, luxury jewelry, perfect lighting, sharp focus, high detail"
+            negative_prompt = f"{settings['negative_prompt']}, blurry, low quality, artifacts, distorted"
+            
+            # Create control images
+            logger.info("Creating control images...")
+            canny_image = self.canny_detector(image, low_threshold=50, high_threshold=150)
+            depth_image = self.midas_detector(image)
+            
+            # Process with ControlNets
+            logger.info("Processing with Canny ControlNet...")
+            canny_conditioning = self.canny_compel(positive_prompt)
+            canny_result = self.canny_pipe(
+                prompt_embeds=canny_conditioning,
+                negative_prompt=negative_prompt,
+                image=canny_image,
+                num_inference_steps=settings['steps'],
+                guidance_scale=settings['guidance_scale'],
+                controlnet_conditioning_scale=settings['controlnet_scale'],
+                generator=torch.Generator(device=self.device).manual_seed(settings['seed'])
+            ).images[0]
+            
+            logger.info("Processing with Depth ControlNet...")
+            depth_conditioning = self.depth_compel(positive_prompt)
+            depth_result = self.depth_pipe(
+                prompt_embeds=depth_conditioning,
+                negative_prompt=negative_prompt,
+                image=depth_image,
+                num_inference_steps=settings['steps'],
+                guidance_scale=settings['guidance_scale'],
+                controlnet_conditioning_scale=settings['controlnet_scale'] * 0.7,
+                generator=torch.Generator(device=self.device).manual_seed(settings['seed'] + 1)
+            ).images[0]
+            
+            # Create mask for inpainting
+            logger.info("Creating inpainting mask...")
+            mask = self.create_ring_mask(image)
+            enhanced_mask = self.create_enhanced_mask(image, mask)
+            
+            # Inpainting
+            logger.info("Processing with inpainting...")
+            inpaint_conditioning = self.inpaint_compel(positive_prompt)
+            inpaint_result = self.inpaint_pipe(
+                prompt_embeds=inpaint_conditioning,
+                negative_prompt=negative_prompt,
+                image=image,
+                mask_image=enhanced_mask,
+                num_inference_steps=settings['steps'],
+                guidance_scale=settings['guidance_scale'],
+                generator=torch.Generator(device=self.device).manual_seed(settings['seed'] + 2)
+            ).images[0]
+            
+            # Combine results
+            logger.info("Combining results...")
+            combined = self.combine_results_advanced(
+                original=image,
+                results={
+                    'canny': canny_result,
+                    'depth': depth_result,
+                    'inpaint': inpaint_result
+                },
+                mask=enhanced_mask,
+                weights={'canny': 0.3, 'depth': 0.3, 'inpaint': 0.4}
+            )
+            
+            # Final enhancements
+            logger.info("Applying final enhancements...")
+            final = self.apply_final_enhancements(combined, settings['enhancement_strength'])
+            
+            # Ensure correct size
+            if final.size != original_size:
+                final = final.resize(original_size, Image.Resampling.LANCZOS)
+            
+            # Add to processing history
+            self.processing_history.append({
+                'timestamp': datetime.now().isoformat(),
+                'original_size': original_size,
+                'black_frame_detected': black_frame_result['has_black_frame'],
+                'settings': settings
+            })
+            
+            logger.info("Image processing completed successfully")
+            return final, {
+                'success': True,
+                'black_frame_removed': black_frame_result['has_black_frame'],
+                'processing_time': time.time()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing image: {str(e)}")
+            logger.error(traceback.format_exc())
+            return image, {'success': False, 'error': str(e)}
 
-# RunPod handler
-def handler(event):
-    """RunPod serverless handler"""
+    def create_ring_mask(self, image):
+        """Create mask for ring area using edge detection"""
+        logger.info("Creating ring mask")
+        
+        try:
+            # Convert to grayscale
+            gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+            
+            # Apply CLAHE for better contrast
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            enhanced = clahe.apply(gray)
+            
+            # Edge detection
+            edges = cv2.Canny(enhanced, 50, 150)
+            
+            # Find contours
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Create mask
+            mask = np.zeros_like(gray)
+            
+            # Filter contours by area and circularity
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area > 100:  # Minimum area threshold
+                    # Check circularity
+                    perimeter = cv2.arcLength(contour, True)
+                    if perimeter > 0:
+                        circularity = 4 * np.pi * area / (perimeter * perimeter)
+                        if circularity > 0.3:  # Ring-like shapes
+                            cv2.drawContours(mask, [contour], -1, 255, -1)
+            
+            # Dilate mask
+            kernel = np.ones((7,7), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=2)
+            
+            # Convert to PIL
+            return Image.fromarray(mask)
+            
+        except Exception as e:
+            logger.error(f"Error creating ring mask: {str(e)}")
+            # Return center-focused mask as fallback
+            mask = Image.new('L', image.size, 0)
+            center_x, center_y = image.size[0] // 2, image.size[1] // 2
+            radius = min(image.size) // 3
+            
+            for x in range(image.size[0]):
+                for y in range(image.size[1]):
+                    dist = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+                    if dist < radius:
+                        mask.putpixel((x, y), 255)
+            
+            return mask
+
+    def combine_results_advanced(self, original, results, mask, weights):
+        """Advanced combination of multiple results"""
+        logger.info("Combining multiple results")
+        
+        try:
+            # Ensure all images are same size
+            target_size = original.size
+            for key in results:
+                if results[key].size != target_size:
+                    results[key] = results[key].resize(target_size, Image.Resampling.LANCZOS)
+            
+            # Convert to arrays
+            orig_array = np.array(original).astype(float)
+            mask_array = np.array(mask.convert('L')).astype(float) / 255.0
+            mask_3ch = np.stack([mask_array] * 3, axis=-1)
+            
+            # Weighted combination
+            combined = np.zeros_like(orig_array)
+            total_weight = sum(weights.values())
+            
+            for key, img in results.items():
+                weight = weights.get(key, 1.0) / total_weight
+                img_array = np.array(img).astype(float)
+                combined += img_array * weight
+            
+            # Blend with original
+            result = orig_array * (1 - mask_3ch) + combined * mask_3ch
+            
+            # Convert back to PIL
+            result = result.clip(0, 255).astype(np.uint8)
+            return Image.fromarray(result)
+            
+        except Exception as e:
+            logger.error(f"Error combining results: {str(e)}")
+            return original
+
+    def apply_final_enhancements(self, image, strength=1.0):
+        """Apply final enhancements to the image"""
+        logger.info(f"Applying final enhancements with strength: {strength}")
+        
+        try:
+            # Adjust sharpness
+            sharpness_enhancer = ImageEnhance.Sharpness(image)
+            image = sharpness_enhancer.enhance(1 + 0.3 * strength)
+            
+            # Adjust contrast
+            contrast_enhancer = ImageEnhance.Contrast(image)
+            image = contrast_enhancer.enhance(1 + 0.2 * strength)
+            
+            # Adjust color
+            color_enhancer = ImageEnhance.Color(image)
+            image = color_enhancer.enhance(1 + 0.1 * strength)
+            
+            # Apply unsharp mask
+            image_np = np.array(image)
+            gaussian = cv2.GaussianBlur(image_np, (0, 0), 2.0)
+            unsharp_mask = cv2.addWeighted(image_np, 1.5, gaussian, -0.5, 0)
+            
+            # Blend with original
+            result = cv2.addWeighted(image_np, 1 - 0.3 * strength, unsharp_mask, 0.3 * strength, 0)
+            
+            return Image.fromarray(result.clip(0, 255).astype(np.uint8))
+            
+        except Exception as e:
+            logger.error(f"Error applying enhancements: {str(e)}")
+            return image
+
+# RunPod Handler
+def download_image(url):
+    """Download image from URL"""
+    logger.info(f"Downloading image from: {url}")
+    
     try:
-        input_data = event.get('input', {})
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        img = Image.open(BytesIO(response.content)).convert('RGB')
+        logger.info(f"Image downloaded successfully, size: {img.size}")
+        return img
+    except Exception as e:
+        logger.error(f"Error downloading image: {str(e)}")
+        raise
+
+def handler(job):
+    """RunPod handler function"""
+    print(f"Wedding Ring AI Enhancement v16.1")
+    logger.info(f"Handler called with job: {job}")
+    
+    try:
+        # Parse input
+        logger.info("Parsing job input...")
+        job_input = job.get('input', {})
         
-        # Get base64 image
-        image_base64 = input_data.get('image')
-        if not image_base64:
-            return {'error': 'No image provided'}
+        if not job_input:
+            logger.error("No input provided")
+            return {"error": "No input provided"}
         
-        # Decode base64 to image
-        image_bytes = base64.b64decode(image_base64)
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        logger.info(f"Job input: {job_input}")
         
-        # Save temporary file
-        temp_path = '/tmp/input_image.jpg'
-        cv2.imwrite(temp_path, image)
+        # Get image URL
+        image_url = job_input.get('image_url')
+        if not image_url:
+            logger.error("No image_url provided")
+            return {"error": "No image_url provided"}
+        
+        # Get settings
+        settings = {
+            'prompt': job_input.get('prompt', 'ultra-high quality wedding ring, professional jewelry photography'),
+            'negative_prompt': job_input.get('negative_prompt', 'low quality, blurry, distorted'),
+            'steps': job_input.get('steps', 30),
+            'guidance_scale': job_input.get('guidance_scale', 7.5),
+            'controlnet_scale': job_input.get('controlnet_scale', 1.0),
+            'enhancement_strength': job_input.get('enhancement_strength', 1.0),
+            'seed': job_input.get('seed', 42)
+        }
+        
+        logger.info(f"Settings: {settings}")
+        
+        # Initialize enhancer
+        logger.info("Initializing enhancer...")
+        enhancer = WeddingRingEnhancer()
+        
+        # Load models
+        logger.info("Loading models...")
+        enhancer.load_models()
+        
+        # Download image
+        logger.info("Downloading input image...")
+        input_image = download_image(image_url)
         
         # Process image
-        enhancer = WeddingRingEnhancer()
-        result = enhancer.process_image(temp_path)
+        logger.info("Processing image...")
+        enhanced_image, metadata = enhancer.process_single_image(input_image, settings)
         
-        # Clean up
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        # Save result
+        logger.info("Saving result...")
+        output_path = "/tmp/enhanced_ring.jpg"
+        enhanced_image.save(output_path, 'JPEG', quality=95)
         
+        # Upload to temporary storage (you need to implement this based on your setup)
+        # For now, we'll return the local path
+        
+        result = {
+            "status": "success",
+            "output_path": output_path,
+            "metadata": metadata,
+            "processing_history": enhancer.processing_history
+        }
+        
+        logger.info(f"Processing complete: {result}")
         return result
         
     except Exception as e:
-        return {'error': str(e)}
+        logger.error(f"Error in handler: {str(e)}")
+        logger.error(traceback.format_exc())
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
-# Test mode
 if __name__ == "__main__":
-    print("Wedding Ring AI Enhancement v16.0")
-    print("Perfect Black Frame Removal System")
-    print("Testing mode...")
-    
-    # Test with a sample image if available
-    test_image = "test_wedding_ring.jpg"
-    if os.path.exists(test_image):
-        enhancer = WeddingRingEnhancer()
-        result = enhancer.process_image(test_image)
-        print(f"Processing complete!")
-        print(f"Metal type: {result.get('metal_type')}")
-        print(f"Lighting: {result.get('lighting')}")
-        print(f"Version: {result.get('version')}")
-    else:
-        print("No test image found. Please provide 'test_wedding_ring.jpg'")
+    logger.info("Starting RunPod serverless worker...")
+    runpod.serverless.start({"handler": handler})
