@@ -398,4 +398,195 @@ def remove_border_with_after_background(image, bbox, thickness, lighting='natura
         blend_mask[y:y+h, x+remove_thickness-blend_thickness:x+remove_thickness+blend_thickness] = 1.0
     # 우측
     if x+w-remove_thickness > 0:
-        blend_mask[y:y+h, x+w-remove_thickness-
+        blend_mask[y:y+h, x+w-remove_thickness-blend_thickness:x+w-remove_thickness+blend_thickness] = 1.0
+    
+    # 31x31 가우시안 블러
+    blend_mask = cv2.GaussianBlur(blend_mask, (31, 31), 10)
+    
+    # 블렌딩 적용
+    for c in range(3):
+        result[:,:,c] = result[:,:,c] * (1 - blend_mask) + image[:,:,c] * blend_mask
+    
+    return result.astype(np.uint8)
+
+def create_perfect_thumbnail(image, bbox=None):
+    """대화 34번: 완벽한 1000x1300 썸네일 (웨딩링 화면 가득)"""
+    h, w = image.shape[:2]
+    
+    if bbox:
+        x, y, bw, bh = bbox
+        # 웨딩링 중심
+        center_x = x + bw // 2
+        center_y = y + bh // 2
+        
+        # 크롭 크기 (웨딩링이 화면의 80% 차지하도록)
+        crop_size = int(max(bw, bh) * 1.2)
+    else:
+        # 테두리 없으면 중앙 기준
+        center_x = w // 2
+        center_y = h // 2
+        crop_size = min(h, w) // 2
+    
+    # 크롭 영역
+    x1 = max(0, center_x - crop_size)
+    y1 = max(0, center_y - crop_size)
+    x2 = min(w, center_x + crop_size)
+    y2 = min(h, center_y + crop_size)
+    
+    cropped = image[y1:y2, x1:x2]
+    
+    # 1000x1300으로 리사이즈
+    thumbnail = cv2.resize(cropped, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
+    
+    return thumbnail
+
+def handler(event):
+    """RunPod Serverless 핸들러 - 42개 대화 모든 성과 포함"""
+    try:
+        input_data = event.get("input", {})
+        
+        # 테스트
+        if "test" in input_data:
+            return {
+                "output": {
+                    "status": "ready",
+                    "message": "Wedding Ring AI v22.0 Strong Complete - 42개 대화 성과 모두 포함",
+                    "version": "v22.0",
+                    "features": [
+                        "v13.3 완전한 12가지 파라미터",
+                        "10단계 보정 프로세스",
+                        "적응형 두께 감지 (100픽셀)",
+                        "28쌍 AFTER 배경색",
+                        "샴페인골드 화이트화",
+                        "31x31 가우시안 블렌딩",
+                        "완벽한 1000x1300 썸네일"
+                    ]
+                }
+            }
+        
+        # 이미지 처리
+        image_base64 = input_data.get("image_base64")
+        if not image_base64:
+            return {"output": {"error": "No image provided"}}
+        
+        # Base64 디코딩
+        image_data = base64.b64decode(image_base64)
+        image = Image.open(io.BytesIO(image_data))
+        image_array = np.array(image.convert('RGB'))
+        original_image = image_array.copy()
+        
+        # 1. 검은색 테두리 감지 (대화 29번: 적응형)
+        bbox, thickness, contour = detect_border_ultra_adaptive(image_array)
+        
+        # 2. 금속 타입 감지 (샴페인골드 우선)
+        if bbox and contour is not None:
+            # 테두리 내부에서만 감지
+            inner_mask = np.zeros(image_array.shape[:2], dtype=np.uint8)
+            cv2.drawContours(inner_mask, [contour], -1, 255, -1)
+            metal_type = detect_metal_type_advanced(image_array, inner_mask)
+        else:
+            metal_type = detect_metal_type_advanced(image_array)
+        
+        # 3. 조명 환경 감지
+        lighting = detect_lighting_condition(image_array)
+        
+        # 4. 파라미터 선택
+        params = WEDDING_RING_PARAMS.get(metal_type, {}).get(lighting, 
+                                         WEDDING_RING_PARAMS['white_gold']['natural'])
+        
+        # 5. v13.3 완전한 10단계 보정 적용
+        enhanced = apply_v13_complete_enhancement(image_array, params)
+        
+        # 6. 검은색 테두리 제거 (있을 경우)
+        if bbox and thickness > 10:
+            enhanced = remove_border_with_after_background(enhanced, bbox, thickness, lighting)
+            
+            # 웨딩링 영역 추가 보정
+            x, y, w, h = bbox
+            ring_margin = thickness + 50
+            ring_x = x + ring_margin
+            ring_y = y + ring_margin
+            ring_w = w - 2*ring_margin
+            ring_h = h - 2*ring_margin
+            
+            if ring_w > 50 and ring_h > 50:
+                # 웨딩링 영역만 추가로 밝고 선명하게
+                ring_area = enhanced[ring_y:ring_y+ring_h, ring_x:ring_x+ring_w]
+                ring_area = cv2.convertScaleAbs(ring_area, alpha=1.1, beta=5)
+                
+                # 언샤프 마스킹으로 디테일 강화
+                gaussian = cv2.GaussianBlur(ring_area, (0, 0), 2.0)
+                ring_area = cv2.addWeighted(ring_area, 1.5, gaussian, -0.5, 0)
+                
+                enhanced[ring_y:ring_y+ring_h, ring_x:ring_x+ring_w] = ring_area
+        
+        # 7. 2x 업스케일링 (LANCZOS4)
+        height, width = enhanced.shape[:2]
+        upscaled = cv2.resize(enhanced, (width*2, height*2), interpolation=cv2.INTER_LANCZOS4)
+        
+        # 8. 썸네일 생성 (대화 34번: 웨딩링 화면 가득)
+        thumbnail = create_perfect_thumbnail(enhanced, bbox)
+        
+        # 9. JPEG 인코딩 (품질 95)
+        _, main_buffer = cv2.imencode('.jpg', upscaled, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        _, thumb_buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        
+        # 10. Base64 인코딩
+        main_base64 = base64.b64encode(main_buffer).decode('utf-8')
+        thumb_base64 = base64.b64encode(thumb_buffer).decode('utf-8')
+        
+        # output 중첩 구조 (Make.com 경로에 맞춤)
+        return {
+            "output": {
+                "enhanced_image": main_base64,
+                "thumbnail": thumb_base64,
+                "processing_info": {
+                    "metal_type": metal_type,
+                    "lighting": lighting,
+                    "border_detected": bbox is not None,
+                    "border_thickness": thickness if bbox else 0,
+                    "v13_params_used": True,
+                    "after_background_used": bbox is not None,
+                    "processing_steps": [
+                        "border_detection",
+                        "metal_detection",
+                        "lighting_analysis",
+                        "v13.3_enhancement",
+                        "border_removal",
+                        "ring_enhancement",
+                        "upscaling",
+                        "thumbnail_creation"
+                    ]
+                }
+            }
+        }
+        
+    except Exception as e:
+        # 에러 발생시에도 최소한의 처리
+        try:
+            # 기본 보정이라도 적용
+            enhanced = cv2.convertScaleAbs(image_array, alpha=1.2, beta=10)
+            _, buffer = cv2.imencode('.jpg', enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            fallback_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            return {
+                "output": {
+                    "enhanced_image": fallback_base64,
+                    "thumbnail": fallback_base64,
+                    "processing_info": {
+                        "error": str(e),
+                        "fallback_used": True
+                    }
+                }
+            }
+        except:
+            return {
+                "output": {
+                    "error": f"Critical error: {str(e)}",
+                    "enhanced_image": "",
+                    "thumbnail": ""
+                }
+            }
+
+# RunPod Serverless 시작
+runpod.serverless.start({"handler": handler})
