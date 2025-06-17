@@ -8,8 +8,8 @@ from PIL import Image
 
 class WeddingRingEnhancer:
     def __init__(self):
-        """Wedding Ring AI Enhancement System v15.0"""
-        self.version = "15.0"
+        """Wedding Ring AI Enhancement System v16.0 - Perfect Frame Removal"""
+        self.version = "16.0"
         
         # v13.3 Enhancement parameters - COMPLETE SET
         self.enhancement_params = {
@@ -107,131 +107,211 @@ class WeddingRingEnhancer:
             }
         }
         
-        # After file background colors for each metal and lighting
+        # Bright and clean background colors like image 5
         self.after_bg_colors = {
-            'gold': {'studio': (245, 242, 238), 'natural': (248, 245, 241), 'warm': (250, 247, 243)},
-            'silver': {'studio': (242, 243, 244), 'natural': (245, 246, 247), 'warm': (247, 245, 243)},
-            'rose_gold': {'studio': (246, 243, 240), 'natural': (249, 246, 243), 'warm': (251, 248, 245)},
-            'platinum': {'studio': (241, 242, 243), 'natural': (244, 245, 246), 'warm': (246, 244, 242)}
+            'gold': {'studio': (250, 248, 245), 'natural': (252, 250, 248), 'warm': (254, 252, 250)},
+            'silver': {'studio': (248, 249, 250), 'natural': (250, 251, 252), 'warm': (252, 250, 248)},
+            'rose_gold': {'studio': (251, 249, 247), 'natural': (253, 251, 249), 'warm': (255, 253, 251)},
+            'platinum': {'studio': (247, 248, 249), 'natural': (249, 250, 251), 'warm': (251, 249, 247)}
         }
 
-    def detect_black_frame(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """Detect black rectangular frame with improved accuracy"""
+    def detect_black_frame_advanced(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        """Advanced black frame detection with multiple methods"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
         
-        # Multiple threshold values for better detection
-        for threshold in [30, 40, 50, 60, 70]:
-            # Create binary mask
+        # Method 1: Multiple threshold detection
+        frame_coords = None
+        for threshold in [20, 30, 40, 50, 60, 70, 80]:
             _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
             
-            # Find contours
+            # Find largest contour
             contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
             if not contours:
                 continue
                 
-            # Find the largest contour
-            largest_contour = max(contours, key=cv2.contourArea)
+            largest = max(contours, key=cv2.contourArea)
+            x, y, rect_w, rect_h = cv2.boundingRect(largest)
             
-            # Get bounding rectangle
-            x, y, rect_w, rect_h = cv2.boundingRect(largest_contour)
-            
-            # Check if it's a proper frame (close to image borders)
-            if (x < 50 and y < 50 and 
-                (x + rect_w) > w - 50 and (y + rect_h) > h - 50 and
-                rect_w > w * 0.7 and rect_h > h * 0.7):
-                
-                # Find the inner edge of the black frame
-                # Scan inward to find where black ends
-                inner_x1, inner_y1 = x, y
-                inner_x2, inner_y2 = x + rect_w, y + rect_h
-                
-                # Scan from edges to find exact black frame boundaries
-                # Top edge
-                for scan_y in range(y, y + 200):
-                    if scan_y >= h:
-                        break
-                    row = gray[scan_y, x:x+rect_w]
-                    if np.mean(row) > threshold + 20:
-                        inner_y1 = scan_y
-                        break
-                
-                # Bottom edge
-                for scan_y in range(y + rect_h - 1, y + rect_h - 200, -1):
-                    if scan_y < 0:
-                        break
-                    row = gray[scan_y, x:x+rect_w]
-                    if np.mean(row) > threshold + 20:
-                        inner_y2 = scan_y + 1
-                        break
-                
-                # Left edge
-                for scan_x in range(x, x + 200):
-                    if scan_x >= w:
-                        break
-                    col = gray[y:y+rect_h, scan_x]
-                    if np.mean(col) > threshold + 20:
-                        inner_x1 = scan_x
-                        break
-                
-                # Right edge
-                for scan_x in range(x + rect_w - 1, x + rect_w - 200, -1):
-                    if scan_x < 0:
-                        break
-                    col = gray[y:y+rect_h, scan_x]
-                    if np.mean(col) > threshold + 20:
-                        inner_x2 = scan_x + 1
-                        break
-                
-                return (inner_x1, inner_y1, inner_x2, inner_y2)
+            # Check if it's a frame
+            if (x < 100 and y < 100 and 
+                (x + rect_w) > w - 100 and (y + rect_h) > h - 100 and
+                rect_w > w * 0.6 and rect_h > h * 0.6):
+                frame_coords = self._find_exact_black_edges(gray, (x, y, x + rect_w, y + rect_h), threshold)
+                if frame_coords:
+                    break
         
+        # Method 2: Edge-based detection if method 1 fails
+        if not frame_coords:
+            edges = cv2.Canny(gray, 50, 150)
+            lines = cv2.HoughLinesP(edges, 1, np.pi/180, 100, minLineLength=100, maxLineGap=10)
+            
+            if lines is not None:
+                # Find rectangular frame from lines
+                frame_coords = self._find_frame_from_lines(lines, w, h)
+        
+        # Method 3: Gradient-based detection
+        if not frame_coords:
+            # Find strong gradients indicating frame edges
+            sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+            sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+            gradient = np.sqrt(sobelx**2 + sobely**2)
+            
+            # Find frame from gradient
+            frame_coords = self._find_frame_from_gradient(gradient, w, h)
+        
+        return frame_coords
+
+    def _find_exact_black_edges(self, gray: np.ndarray, rough_coords: Tuple[int, int, int, int], 
+                               threshold: int) -> Optional[Tuple[int, int, int, int]]:
+        """Find exact edges of black frame"""
+        x1, y1, x2, y2 = rough_coords
+        h, w = gray.shape
+        
+        # Scan inward to find exact edges
+        # Top edge
+        for y in range(y1, min(y1 + 200, h)):
+            if np.mean(gray[y, x1:x2]) > threshold + 30:
+                y1 = y
+                break
+        
+        # Bottom edge
+        for y in range(y2 - 1, max(y2 - 200, 0), -1):
+            if np.mean(gray[y, x1:x2]) > threshold + 30:
+                y2 = y + 1
+                break
+        
+        # Left edge
+        for x in range(x1, min(x1 + 200, w)):
+            if np.mean(gray[y1:y2, x]) > threshold + 30:
+                x1 = x
+                break
+        
+        # Right edge
+        for x in range(x2 - 1, max(x2 - 200, 0), -1):
+            if np.mean(gray[y1:y2, x]) > threshold + 30:
+                x2 = x + 1
+                break
+        
+        # Validate frame
+        if x2 - x1 > w * 0.5 and y2 - y1 > h * 0.5:
+            return (x1, y1, x2, y2)
         return None
 
-    def remove_black_frame(self, image: np.ndarray, frame_coords: Tuple[int, int, int, int], 
-                          metal_type: str, lighting: str) -> np.ndarray:
-        """Remove black frame completely and fill with appropriate background"""
+    def _find_frame_from_lines(self, lines: np.ndarray, w: int, h: int) -> Optional[Tuple[int, int, int, int]]:
+        """Find frame from detected lines"""
+        # Group lines by orientation and position
+        h_lines = []
+        v_lines = []
+        
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            if abs(y2 - y1) < abs(x2 - x1) * 0.1:  # Horizontal
+                h_lines.append((y1 + y2) // 2)
+            elif abs(x2 - x1) < abs(y2 - y1) * 0.1:  # Vertical
+                v_lines.append((x1 + x2) // 2)
+        
+        if len(h_lines) >= 2 and len(v_lines) >= 2:
+            h_lines.sort()
+            v_lines.sort()
+            
+            # Find frame edges
+            top = min([y for y in h_lines if y < h * 0.3])
+            bottom = max([y for y in h_lines if y > h * 0.7])
+            left = min([x for x in v_lines if x < w * 0.3])
+            right = max([x for x in v_lines if x > w * 0.7])
+            
+            return (left, top, right, bottom)
+        return None
+
+    def _find_frame_from_gradient(self, gradient: np.ndarray, w: int, h: int) -> Optional[Tuple[int, int, int, int]]:
+        """Find frame from gradient magnitude"""
+        # Find strong gradient lines
+        _, binary = cv2.threshold(gradient.astype(np.uint8), 50, 255, cv2.THRESH_BINARY)
+        
+        # Project to find edges
+        h_proj = np.sum(binary, axis=1)
+        v_proj = np.sum(binary, axis=0)
+        
+        # Find peaks in projections
+        h_peaks = np.where(h_proj > w * 0.3)[0]
+        v_peaks = np.where(v_proj > h * 0.3)[0]
+        
+        if len(h_peaks) >= 2 and len(v_peaks) >= 2:
+            return (v_peaks[0], h_peaks[0], v_peaks[-1], h_peaks[-1])
+        return None
+
+    def remove_black_frame_completely(self, image: np.ndarray, frame_coords: Tuple[int, int, int, int], 
+                                    metal_type: str, lighting: str) -> np.ndarray:
+        """Remove black frame completely with bright background"""
         x1, y1, x2, y2 = frame_coords
         result = image.copy()
         h, w = image.shape[:2]
         
-        # Get background color
-        bg_color = self.after_bg_colors.get(metal_type, {}).get(lighting, (245, 243, 240))
+        # Get bright background color
+        bg_color = self.after_bg_colors.get(metal_type, {}).get(lighting, (252, 250, 248))
         
-        # Create mask for black frame area
-        mask = np.zeros((h, w), dtype=np.uint8)
-        
-        # Fill outer area (black frame area)
-        mask[:y1, :] = 255  # Top
-        mask[y2:, :] = 255  # Bottom
-        mask[:, :x1] = 255  # Left
-        mask[:, x2:] = 255  # Right
-        
-        # Also detect any remaining black pixels in frame area
+        # Create comprehensive mask for all black pixels
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        black_mask = gray < 80
         
-        # Combine masks - only in frame area
-        frame_mask = np.zeros_like(mask)
-        frame_mask[:y1, :] = black_mask[:y1, :]
-        frame_mask[y2:, :] = black_mask[y2:, :]
-        frame_mask[:, :x1] = black_mask[:, :x1]
-        frame_mask[:, x2:] = black_mask[:, x2:]
+        # Multiple masks for thorough detection
+        masks = []
+        for threshold in [30, 40, 50, 60, 70, 80]:
+            mask = gray < threshold
+            masks.append(mask)
         
-        # Apply background color
-        result[mask > 0] = bg_color
-        result[frame_mask > 0] = bg_color
+        # Combine all masks
+        combined_mask = np.logical_or.reduce(masks)
         
-        # Smooth edges
-        kernel = np.ones((3, 3), np.uint8)
-        mask_dilated = cv2.dilate(mask.astype(np.uint8), kernel, iterations=2)
+        # Only apply to frame area (not inside)
+        frame_mask = np.zeros_like(combined_mask)
+        frame_mask[:y1, :] = combined_mask[:y1, :]  # Top
+        frame_mask[y2:, :] = combined_mask[y2:, :]  # Bottom  
+        frame_mask[:, :x1] = combined_mask[:, :x1]  # Left
+        frame_mask[:, x2:] = combined_mask[:, x2:]  # Right
         
-        # Create smooth transition
-        dist_transform = cv2.distanceTransform(255 - mask_dilated, cv2.DIST_L2, 5)
-        dist_transform = np.clip(dist_transform / 5.0, 0, 1)
+        # Add border detection for remaining black pixels
+        # Top border
+        for y in range(max(0, y1-10), min(y1+10, h)):
+            for x in range(w):
+                if gray[y, x] < 80:
+                    frame_mask[y, x] = True
         
-        for c in range(3):
-            result[:, :, c] = result[:, :, c] * (1 - dist_transform) + bg_color[c] * dist_transform
+        # Bottom border
+        for y in range(max(0, y2-10), min(y2+10, h)):
+            for x in range(w):
+                if gray[y, x] < 80:
+                    frame_mask[y, x] = True
+        
+        # Left border
+        for x in range(max(0, x1-10), min(x1+10, w)):
+            for y in range(h):
+                if gray[y, x] < 80:
+                    frame_mask[y, x] = True
+        
+        # Right border
+        for x in range(max(0, x2-10), min(x2+10, w)):
+            for y in range(h):
+                if gray[y, x] < 80:
+                    frame_mask[y, x] = True
+        
+        # Apply bright background color
+        result[frame_mask] = bg_color
+        
+        # Smooth transition
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        frame_mask_dilated = cv2.dilate(frame_mask.astype(np.uint8), kernel, iterations=1)
+        
+        # Gaussian blur for smooth edges
+        transition_area = frame_mask_dilated - frame_mask.astype(np.uint8)
+        if np.any(transition_area):
+            for c in range(3):
+                channel = result[:, :, c].astype(np.float32)
+                channel[transition_area > 0] = (
+                    channel[transition_area > 0] * 0.3 + 
+                    bg_color[c] * 0.7
+                )
+                result[:, :, c] = channel.astype(np.uint8)
         
         return result
 
@@ -253,8 +333,14 @@ class WeddingRingEnhancer:
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
         enhanced = clahe.apply(gray)
         
-        # Detect edges
-        edges = cv2.Canny(enhanced, 30, 100)
+        # Multiple edge detection methods
+        edges1 = cv2.Canny(enhanced, 30, 100)
+        edges2 = cv2.Canny(enhanced, 50, 150)
+        edges = cv2.bitwise_or(edges1, edges2)
+        
+        # Morphological operations to connect edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
         
         # Find contours
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -269,24 +355,35 @@ class WeddingRingEnhancer:
             if area < 500:  # Too small
                 continue
                 
-            # Check circularity
+            # Check shape characteristics
             perimeter = cv2.arcLength(contour, True)
             if perimeter == 0:
                 continue
                 
-            circularity = 4 * np.pi * area / (perimeter * perimeter)
-            if circularity > 0.3:  # Reasonably circular
-                valid_contours.append(contour)
+            # Fit ellipse if possible
+            if len(contour) >= 5:
+                try:
+                    ellipse = cv2.fitEllipse(contour)
+                    (center, (width, height), angle) = ellipse
+                    
+                    # Check if ellipse-like
+                    aspect_ratio = min(width, height) / max(width, height)
+                    if aspect_ratio > 0.3:  # Not too elongated
+                        valid_contours.append(contour)
+                except:
+                    pass
         
         if not valid_contours:
-            return None
+            # Fallback: use largest contour
+            largest_contour = max(contours, key=cv2.contourArea)
+            valid_contours = [largest_contour]
         
         # Get bounding box of all valid contours
         all_points = np.vstack(valid_contours)
         x, y, w, h = cv2.boundingRect(all_points)
         
         # Add padding
-        padding = 20
+        padding = 30
         x = max(0, x - padding)
         y = max(0, y - padding)
         w = min(search_img.shape[1] - x, w + 2 * padding)
@@ -295,11 +392,11 @@ class WeddingRingEnhancer:
         return (x + offset_x, y + offset_y, x + offset_x + w, y + offset_y + h)
 
     def apply_enhancement(self, image: np.ndarray, params: Dict) -> np.ndarray:
-        """Apply v13.3 enhancement parameters"""
+        """Apply v13.3 enhancement parameters with brightness adjustment"""
         result = image.copy().astype(np.float32)
         
-        # Apply brightness
-        result = result * params.get('brightness', 1.0)
+        # Apply brightness (increased for brighter result)
+        result = result * params.get('brightness', 1.0) * 1.1  # Extra 10% brightness
         
         # Apply contrast
         mean = np.mean(result, axis=(0, 1), keepdims=True)
@@ -371,33 +468,68 @@ class WeddingRingEnhancer:
         
         return result.astype(np.uint8)
 
-    def create_thumbnail(self, image: np.ndarray, frame_coords: Optional[Tuple[int, int, int, int]]) -> np.ndarray:
-        """Create 1000x1300 thumbnail from inner area"""
+    def create_perfect_thumbnail(self, image: np.ndarray, frame_coords: Optional[Tuple[int, int, int, int]]) -> np.ndarray:
+        """Create perfect 1000x1300 thumbnail with ring centered"""
         if frame_coords:
             x1, y1, x2, y2 = frame_coords
-            # Crop to inner area (without black frame)
-            cropped = image[y1:y2, x1:x2]
+            # Use inner area only
+            inner_image = image[y1:y2, x1:x2]
         else:
-            cropped = image
+            inner_image = image
         
-        # Calculate aspect ratios
-        target_ratio = 1000 / 1300  # 0.769
-        h, w = cropped.shape[:2]
-        current_ratio = w / h
+        # Detect ring in inner area for better centering
+        ring_bbox = self.detect_ring(inner_image)
         
-        if current_ratio > target_ratio:
-            # Image is wider, crop width
-            new_w = int(h * target_ratio)
-            x_offset = (w - new_w) // 2
-            final_crop = cropped[:, x_offset:x_offset + new_w]
+        if ring_bbox:
+            rx1, ry1, rx2, ry2 = ring_bbox
+            ring_center_x = (rx1 + rx2) // 2
+            ring_center_y = (ry1 + ry2) // 2
+            ring_width = rx2 - rx1
+            ring_height = ry2 - ry1
+            
+            # Calculate crop area to center the ring
+            # Make crop area larger than ring to include some background
+            crop_size = max(ring_width, ring_height) * 1.8
+            
+            # Adjust for 1000:1300 aspect ratio
+            crop_width = int(crop_size)
+            crop_height = int(crop_size * 1.3)
+            
+            # Calculate crop coordinates
+            crop_x1 = max(0, int(ring_center_x - crop_width // 2))
+            crop_y1 = max(0, int(ring_center_y - crop_height // 2))
+            crop_x2 = min(inner_image.shape[1], crop_x1 + crop_width)
+            crop_y2 = min(inner_image.shape[0], crop_y1 + crop_height)
+            
+            # Adjust if crop goes out of bounds
+            if crop_x2 > inner_image.shape[1]:
+                crop_x1 = inner_image.shape[1] - crop_width
+                crop_x2 = inner_image.shape[1]
+            if crop_y2 > inner_image.shape[0]:
+                crop_y1 = inner_image.shape[0] - crop_height
+                crop_y2 = inner_image.shape[0]
+            
+            cropped = inner_image[crop_y1:crop_y2, crop_x1:crop_x2]
         else:
-            # Image is taller, crop height
-            new_h = int(w / target_ratio)
-            y_offset = (h - new_h) // 2
-            final_crop = cropped[y_offset:y_offset + new_h, :]
+            # Fallback: center crop
+            h, w = inner_image.shape[:2]
+            target_ratio = 1000 / 1300
+            current_ratio = w / h
+            
+            if current_ratio > target_ratio:
+                new_w = int(h * target_ratio)
+                x_offset = (w - new_w) // 2
+                cropped = inner_image[:, x_offset:x_offset + new_w]
+            else:
+                new_h = int(w / target_ratio)
+                y_offset = (h - new_h) // 2
+                cropped = inner_image[y_offset:y_offset + new_h, :]
         
-        # Resize to exact 1000x1300
-        thumbnail = cv2.resize(final_crop, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
+        # Resize to exact 1000x1300 with high quality
+        thumbnail = cv2.resize(cropped, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
+        
+        # Apply slight brightness boost to match reference
+        thumbnail = cv2.convertScaleAbs(thumbnail, alpha=1.05, beta=5)
         
         return thumbnail
 
@@ -407,20 +539,22 @@ class WeddingRingEnhancer:
         h, w = image.shape[:2]
         center_region = image[h//3:2*h//3, w//3:2*w//3]
         
-        # Calculate average color
-        avg_color = np.mean(center_region, axis=(0, 1))
-        b, g, r = avg_color
+        # Calculate average color in LAB space for better color detection
+        lab = cv2.cvtColor(center_region, cv2.COLOR_BGR2LAB)
+        avg_lab = np.mean(lab, axis=(0, 1))
+        l, a, b = avg_lab
         
-        # Calculate color ratios
-        if r > b and r > g:
-            if r - b > 20:
+        # Determine metal type based on LAB values
+        if a > 5 and b > 15:  # Warm tones
+            if a > 10:
                 return 'rose_gold'
             else:
                 return 'gold'
-        elif b > r and g > r:
-            return 'silver'
-        elif abs(r - g) < 10 and abs(g - b) < 10:
-            return 'platinum'
+        elif abs(a) < 3 and abs(b) < 10:  # Neutral tones
+            if l > 180:
+                return 'platinum'
+            else:
+                return 'silver'
         else:
             return 'gold'  # Default
 
@@ -434,23 +568,31 @@ class WeddingRingEnhancer:
         mean_l = np.mean(l_channel)
         std_l = np.std(l_channel)
         
+        # Check color temperature
+        avg_b = np.mean(lab[:, :, 2])
+        avg_a = np.mean(lab[:, :, 1])
+        
         # Determine lighting
         if mean_l > 200 and std_l < 30:
             return 'studio'
-        elif mean_l > 150 and std_l > 40:
-            return 'natural'
-        else:
+        elif avg_b > 135:  # Warm tone
             return 'warm'
+        else:
+            return 'natural'
 
     def process_image(self, image_path: str) -> Dict[str, str]:
-        """Main processing function"""
+        """Main processing function with perfect black frame removal"""
         # Read image
         image = cv2.imread(image_path)
         if image is None:
             raise ValueError(f"Cannot read image: {image_path}")
         
-        # Detect black frame
-        frame_coords = self.detect_black_frame(image)
+        # Detect black frame with advanced method
+        frame_coords = self.detect_black_frame_advanced(image)
+        
+        # Default metal and lighting
+        metal_type = 'gold'
+        lighting = 'natural'
         
         if frame_coords:
             # Detect ring within frame
@@ -466,7 +608,8 @@ class WeddingRingEnhancer:
                 lighting = self.detect_lighting(ring_region)
                 
                 # Get enhancement parameters
-                params = self.enhancement_params.get(metal_type, {}).get(lighting, {})
+                params = self.enhancement_params.get(metal_type, {}).get(lighting, 
+                                                    self.enhancement_params['gold']['natural'])
                 
                 # Apply enhancement to ring
                 enhanced_ring = self.apply_enhancement(ring_region, params)
@@ -474,10 +617,8 @@ class WeddingRingEnhancer:
                 # Put enhanced ring back
                 image[ry1:ry2, rx1:rx2] = enhanced_ring
             
-            # Remove black frame
-            image = self.remove_black_frame(image, frame_coords, 
-                                          metal_type if ring_bbox else 'gold', 
-                                          lighting if ring_bbox else 'studio')
+            # Remove black frame completely with bright background
+            image = self.remove_black_frame_completely(image, frame_coords, metal_type, lighting)
         else:
             # No frame detected, process entire image
             ring_bbox = self.detect_ring(image)
@@ -489,20 +630,21 @@ class WeddingRingEnhancer:
                 metal_type = self.detect_metal_type(ring_region)
                 lighting = self.detect_lighting(ring_region)
                 
-                params = self.enhancement_params.get(metal_type, {}).get(lighting, {})
+                params = self.enhancement_params.get(metal_type, {}).get(lighting,
+                                                    self.enhancement_params['gold']['natural'])
                 enhanced_ring = self.apply_enhancement(ring_region, params)
                 
                 image[ry1:ry2, rx1:rx2] = enhanced_ring
         
-        # Create thumbnail
-        thumbnail = self.create_thumbnail(image, frame_coords)
+        # Create perfect thumbnail
+        thumbnail = self.create_perfect_thumbnail(image, frame_coords)
         
         # Save outputs
         output_path = image_path.replace('.', '_enhanced.')
         thumbnail_path = image_path.replace('.', '_thumbnail.')
         
-        cv2.imwrite(output_path, image)
-        cv2.imwrite(thumbnail_path, thumbnail)
+        cv2.imwrite(output_path, image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        cv2.imwrite(thumbnail_path, thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
         
         # Convert to base64
         _, buffer = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -514,8 +656,8 @@ class WeddingRingEnhancer:
         return {
             'enhanced_image': enhanced_base64,
             'thumbnail': thumbnail_base64,
-            'metal_type': metal_type if ring_bbox else 'unknown',
-            'lighting': lighting if ring_bbox else 'unknown',
+            'metal_type': metal_type,
+            'lighting': lighting,
             'version': self.version
         }
 
@@ -554,7 +696,8 @@ def handler(event):
 
 # Test mode
 if __name__ == "__main__":
-    print("Wedding Ring AI Enhancement v15.0")
+    print("Wedding Ring AI Enhancement v16.0")
+    print("Perfect Black Frame Removal System")
     print("Testing mode...")
     
     # Test with a sample image if available
@@ -565,5 +708,6 @@ if __name__ == "__main__":
         print(f"Processing complete!")
         print(f"Metal type: {result.get('metal_type')}")
         print(f"Lighting: {result.get('lighting')}")
+        print(f"Version: {result.get('version')}")
     else:
         print("No test image found. Please provide 'test_wedding_ring.jpg'")
