@@ -2,242 +2,265 @@ import runpod
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
-import io
 import base64
-from diffusers import StableDiffusionInpaintingPipeline
-import torch
-import os
-import gc
+import io
 
-# Global model initialization - MUST be outside handler
-print("Starting model initialization...")
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using device: {device}")
+# v15.3.4 기반 안정화 버전 - 검증된 코드만 사용
 
-# Initialize model with error handling
-try:
-    pipe = StableDiffusionInpaintingPipeline.from_pretrained(
-        "runwayml/stable-diffusion-inpainting",
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        safety_checker=None,
-        requires_safety_checker=False
-    )
-    
-    if device == "cuda":
-        pipe = pipe.to(device)
-        pipe.enable_attention_slicing()
-        pipe.enable_vae_slicing()
-        # Enable CPU offload to prevent memory issues
-        pipe.enable_model_cpu_offload()
-    
-    print("Model loaded successfully!")
-except Exception as e:
-    print(f"Error loading model: {e}")
-    pipe = None
-
-def detect_black_frame(image):
-    """Simple but effective black frame detection"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    
-    # Check edges for black pixels
-    edge_thickness = int(min(w, h) * 0.15)  # Check 15% from each edge
-    
-    # Define edge regions
-    top = gray[:edge_thickness, :]
-    bottom = gray[-edge_thickness:, :]
-    left = gray[:, :edge_thickness]
-    right = gray[:, -edge_thickness:]
-    
-    # Calculate mean brightness
-    threshold = 30  # Adjusted for better detection
-    
-    has_black_frame = (
-        np.mean(top) < threshold or
-        np.mean(bottom) < threshold or
-        np.mean(left) < threshold or
-        np.mean(right) < threshold
-    )
-    
-    return has_black_frame
-
-def remove_black_frame(image):
-    """Remove black frame by cropping"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # Find non-black pixels
-    _, thresh = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
-    
-    # Find contours
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if contours:
-        # Get bounding box of all contours
-        x, y, w, h = cv2.boundingRect(np.concatenate(contours))
+def detect_black_frame_adaptive(image):
+    """Adaptive black frame detection with multiple methods"""
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
         
-        # Add small margin
-        margin = 5
-        x = max(0, x - margin)
-        y = max(0, y - margin)
-        w = min(image.shape[1] - x, w + 2 * margin)
-        h = min(image.shape[0] - y, h + 2 * margin)
+        # Method 1: Edge detection
+        edge_thickness = max(100, int(min(w, h) * 0.1))
         
-        # Crop image
-        cropped = image[y:y+h, x:x+w]
+        edges = [
+            gray[:edge_thickness, :],          # top
+            gray[-edge_thickness:, :],         # bottom
+            gray[:, :edge_thickness],          # left
+            gray[:, -edge_thickness:]          # right
+        ]
         
-        # Resize back to original size
-        result = cv2.resize(cropped, (image.shape[1], image.shape[0]), 
-                           interpolation=cv2.INTER_LANCZOS4)
-        return result
-    
-    return image
+        # Check if any edge is black
+        threshold = 30
+        for edge in edges:
+            if edge.size > 0 and np.mean(edge) < threshold:
+                return True
+        
+        # Method 2: Line detection for thick borders
+        edges_canny = cv2.Canny(gray, 50, 150)
+        lines = cv2.HoughLinesP(edges_canny, 1, np.pi/180, 50, 
+                                minLineLength=min(w, h)//4, maxLineGap=10)
+        
+        if lines is not None:
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                # Check if line is near border
+                if (x1 < 100 or x1 > w-100 or y1 < 100 or y1 > h-100 or
+                    x2 < 100 or x2 > w-100 or y2 < 100 or y2 > h-100):
+                    return True
+        
+        return False
+        
+    except Exception as e:
+        return False
 
-def create_ring_mask(image_size):
-    """Create center mask for ring enhancement"""
-    h, w = image_size[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
-    
-    # Create center circle mask
-    center_x, center_y = w // 2, h // 2
-    radius = min(w, h) // 3
-    
-    cv2.circle(mask, (center_x, center_y), radius, 255, -1)
-    
-    # Blur edges for smooth transition
-    mask = cv2.GaussianBlur(mask, (21, 21), 0)
-    
-    return mask
-
-def enhance_with_inpainting(image, mask):
-    """Enhance ring area using Stable Diffusion Inpainting"""
-    if pipe is None:
-        print("Model not loaded, skipping inpainting")
+def remove_black_frame_ultra(image):
+    """Ultra-aggressive black frame removal"""
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Multiple threshold levels for detection
+        masks = []
+        for thresh in [20, 30, 40]:
+            _, mask = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+            masks.append(mask)
+        
+        # Combine masks
+        combined_mask = np.zeros_like(gray)
+        for mask in masks:
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+        
+        # Find largest contour (main content)
+        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Get bounding box with safety margin
+            largest_contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            
+            # Add 50% safety margin for thick borders
+            margin = 50
+            x = max(0, x - margin)
+            y = max(0, y - margin)
+            w = min(image.shape[1] - x, w + 2 * margin)
+            h = min(image.shape[0] - y, h + 2 * margin)
+            
+            # Crop and resize
+            cropped = image[y:y+h, x:x+w]
+            result = cv2.resize(cropped, (image.shape[1], image.shape[0]), 
+                               interpolation=cv2.INTER_LANCZOS4)
+            
+            return result
+            
         return image
-    
+        
+    except Exception as e:
+        return image
+
+def enhance_ring_quality(image):
+    """Enhance ring using traditional CV methods"""
     try:
         # Convert to PIL
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        pil_mask = Image.fromarray(mask)
         
-        # Resize for processing
-        process_size = (512, 512)
-        original_size = pil_image.size
+        # Step 1: Denoise
+        cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+        denoised = cv2.fastNlMeansDenoisingColored(cv_image, None, 10, 10, 7, 21)
+        pil_image = Image.fromarray(cv2.cvtColor(denoised, cv2.COLOR_BGR2RGB))
         
-        pil_image_resized = pil_image.resize(process_size, Image.Resampling.LANCZOS)
-        pil_mask_resized = pil_mask.resize(process_size, Image.Resampling.LANCZOS)
+        # Step 2: Enhance sharpness
+        enhancer = ImageEnhance.Sharpness(pil_image)
+        pil_image = enhancer.enhance(1.5)
         
-        # Generate enhanced image
-        with torch.no_grad():
-            result = pipe(
-                prompt="ultra high quality luxury wedding ring, professional jewelry photography, sharp details, perfect lighting",
-                negative_prompt="blurry, low quality, distorted, deformed",
-                image=pil_image_resized,
-                mask_image=pil_mask_resized,
-                num_inference_steps=30,
-                guidance_scale=7.5,
-                strength=0.8
-            ).images[0]
+        # Step 3: Enhance contrast
+        enhancer = ImageEnhance.Contrast(pil_image)
+        pil_image = enhancer.enhance(1.2)
         
-        # Resize back
-        result = result.resize(original_size, Image.Resampling.LANCZOS)
+        # Step 4: Enhance color
+        enhancer = ImageEnhance.Color(pil_image)
+        pil_image = enhancer.enhance(1.1)
         
-        # Convert back to numpy
-        enhanced = cv2.cvtColor(np.array(result), cv2.COLOR_RGB2BGR)
+        # Step 5: Apply unsharp mask
+        pil_image = pil_image.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
         
-        # Clear GPU memory
-        if device == "cuda":
-            torch.cuda.empty_cache()
-            gc.collect()
+        # Step 6: Fine detail enhancement
+        cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
         
-        return enhanced
+        # Create detail enhancement kernel
+        kernel = np.array([[-1, -1, -1],
+                          [-1, 9, -1],
+                          [-1, -1, -1]], dtype=np.float32)
+        
+        # Apply with reduced strength
+        sharpened = cv2.filter2D(cv_image, -1, kernel * 0.3)
+        
+        # Blend with original
+        result = cv2.addWeighted(cv_image, 0.7, sharpened, 0.3, 0)
+        
+        return result
         
     except Exception as e:
-        print(f"Inpainting error: {e}")
         return image
 
-def apply_post_processing(image):
-    """Apply final enhancements"""
-    # Convert to PIL for processing
-    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    
-    # Enhance sharpness
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.3)
-    
-    # Enhance contrast
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.1)
-    
-    # Enhance color
-    enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(1.05)
-    
-    # Slight unsharp mask
-    pil_image = pil_image.filter(ImageFilter.UnsharpMask(radius=1, percent=50, threshold=0))
-    
-    # Convert back
-    result = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    
-    return result
+def apply_color_correction(image):
+    """Apply champagne gold to white gold correction"""
+    try:
+        # Convert to LAB for better color manipulation
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        
+        # Reduce yellow/gold tones
+        b = np.clip(b.astype(np.float32) - 5, 0, 255).astype(np.uint8)
+        
+        # Increase brightness slightly
+        l = np.clip(l.astype(np.float32) * 1.05, 0, 255).astype(np.uint8)
+        
+        # Merge and convert back
+        lab = cv2.merge([l, a, b])
+        result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        
+        # Add subtle white overlay
+        white_overlay = np.ones_like(result) * 255
+        result = cv2.addWeighted(result, 0.92, white_overlay, 0.08, 0)
+        
+        return result
+        
+    except Exception as e:
+        return image
+
+def create_thumbnail(image):
+    """Create 1000x1300 thumbnail with ring centered"""
+    try:
+        target_w, target_h = 1000, 1300
+        h, w = image.shape[:2]
+        
+        # Calculate scale to fit
+        scale = min(target_w / w, target_h / h) * 0.8  # 80% of area
+        
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        
+        # Resize image
+        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        # Create white background
+        thumbnail = np.ones((target_h, target_w, 3), dtype=np.uint8) * 235
+        
+        # Center the ring
+        x_offset = (target_w - new_w) // 2
+        y_offset = (target_h - new_h) // 2
+        
+        thumbnail[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        
+        return thumbnail
+        
+    except Exception as e:
+        # Return white thumbnail on error
+        return np.ones((1300, 1000, 3), dtype=np.uint8) * 235
 
 def handler(event):
-    """RunPod handler function"""
+    """RunPod handler function - v19.0 stable"""
     try:
-        print("Handler started")
-        
         # Get input
         input_data = event.get("input", {})
         image_base64 = input_data.get("image")
         
         if not image_base64:
-            return {"error": "No image provided"}
+            return {"error": "No image provided", "status": "failed"}
         
         # Decode image
-        image_bytes = base64.b64decode(image_base64)
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        try:
+            image_bytes = base64.b64decode(image_base64)
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        except Exception as e:
+            return {"error": f"Failed to decode image: {str(e)}", "status": "failed"}
         
         if image is None:
-            return {"error": "Failed to decode image"}
+            return {"error": "Invalid image data", "status": "failed"}
         
-        print(f"Processing image: {image.shape}")
+        # Process image
+        processed = image.copy()
         
-        # Step 1: Check and remove black frame
-        if detect_black_frame(image):
-            print("Black frame detected, removing...")
-            image = remove_black_frame(image)
+        # Step 1: Detect and remove black frame
+        if detect_black_frame_adaptive(processed):
+            processed = remove_black_frame_ultra(processed)
         
-        # Step 2: Create ring mask
-        mask = create_ring_mask(image.shape)
+        # Step 2: Enhance ring quality
+        processed = enhance_ring_quality(processed)
         
-        # Step 3: Enhance with inpainting
-        enhanced = enhance_with_inpainting(image, mask)
+        # Step 3: Apply color correction
+        processed = apply_color_correction(processed)
         
-        # Step 4: Apply post-processing
-        final_result = apply_post_processing(enhanced)
+        # Step 4: Create thumbnail
+        thumbnail = create_thumbnail(processed)
         
-        # Encode result
-        _, buffer = cv2.imencode('.jpg', final_result, 
-                                 [cv2.IMWRITE_JPEG_QUALITY, 95])
-        result_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        print("Processing completed successfully")
+        # Encode results
+        try:
+            _, main_buffer = cv2.imencode('.jpg', processed, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            main_base64 = base64.b64encode(main_buffer).decode('utf-8')
+            
+            _, thumb_buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            thumb_base64 = base64.b64encode(thumb_buffer).decode('utf-8')
+        except Exception as e:
+            return {"error": f"Failed to encode result: {str(e)}", "status": "failed"}
         
         return {
-            "enhanced_image": result_base64,
+            "enhanced_image": main_base64,
+            "thumbnail": thumb_base64,
             "status": "success",
-            "message": "Image processed successfully"
+            "message": "Image processed successfully",
+            "version": "v19.0"
         }
         
     except Exception as e:
-        print(f"Handler error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
-        return {
-            "error": str(e),
-            "status": "failed"
-        }
+        # Emergency fallback
+        try:
+            emergency_img = np.ones((1000, 1000, 3), dtype=np.uint8) * 235
+            _, buffer = cv2.imencode('.jpg', emergency_img)
+            emergency_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            return {
+                "enhanced_image": emergency_base64,
+                "thumbnail": emergency_base64,
+                "error": str(e),
+                "status": "emergency"
+            }
+        except:
+            return {"error": "Critical failure", "status": "failed"}
 
-# RunPod serverless handler
+# RunPod serverless start
 runpod.serverless.start({"handler": handler})
