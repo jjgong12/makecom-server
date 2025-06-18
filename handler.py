@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class WeddingRingEnhancerV23_2:
     def __init__(self):
         """v23.2 EXTREME - Complete black border removal + full thumbnail"""
-        self.version = "v23.2_EXTREME"
+        self.version = "v23.2"
         
         # v13.3 parameters from 28 Before/After learning data
         self.v13_3_params = {
@@ -512,19 +512,7 @@ class WeddingRingEnhancerV23_2:
             return {
                 "output": {
                     "enhanced_image": main_base64,
-                    "thumbnail": thumb_base64,
-                    "processing_info": {
-                        "metal_type": metal_type,
-                        "lighting": lighting,
-                        "border_removed": border_removed,
-                        "version": self.version,
-                        "status": "success",
-                        "enhancements": {
-                            "black_border_removal": "v23.2_EXTREME",
-                            "thumbnail": "ring_detection_full_frame",
-                            "background": "white_248"
-                        }
-                    }
+                    "thumbnail": thumb_base64
                 }
             }
             
@@ -533,12 +521,7 @@ class WeddingRingEnhancerV23_2:
             return {
                 "output": {
                     "enhanced_image": image_data,
-                    "thumbnail": image_data,
-                    "processing_info": {
-                        "status": "error",
-                        "error": str(e),
-                        "version": self.version
-                    }
+                    "thumbnail": image_data
                 }
             }
 
@@ -565,15 +548,10 @@ def handler(event):
         return {
             "output": {
                 "enhanced_image": "",
-                "thumbnail": "",
-                "processing_info": {
-                    "status": "error",
-                    "error": str(e),
-                    "version": "v23.2_EXTREME"
-                }
+                "thumbnail": ""
             }
         }
 
 if __name__ == "__main__":
     # Test mode
-    print("Wedding Ring Enhancer v23.2 EXTREME - Ready")
+    print("Wedding Ring Enhancer v23.2 - Ready")
