@@ -1,279 +1,416 @@
 import runpod
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 import base64
 import io
 
-# v19.0 - 최종 안정화 버전 (v15.3.4 구조 기반)
+# v13.3 Complete Parameters (4 metals x 3 lightings = 12 sets)
+WEDDING_RING_PARAMS = {
+    'white_gold': {
+        'natural': {
+            'brightness': 1.18,
+            'contrast': 1.12,
+            'white_overlay': 0.09,
+            'sharpness': 1.15,
+            'color_temp_a': -3,
+            'color_temp_b': -3,
+            'original_blend': 0.15,
+            'saturation': 1.02,
+            'gamma': 1.01
+        },
+        'warm': {
+            'brightness': 1.16,
+            'contrast': 1.10,
+            'white_overlay': 0.12,
+            'sharpness': 1.13,
+            'color_temp_a': -5,
+            'color_temp_b': -5,
+            'original_blend': 0.18,
+            'saturation': 1.00,
+            'gamma': 0.98
+        },
+        'cool': {
+            'brightness': 1.20,
+            'contrast': 1.14,
+            'white_overlay': 0.07,
+            'sharpness': 1.17,
+            'color_temp_a': -2,
+            'color_temp_b': -2,
+            'original_blend': 0.12,
+            'saturation': 1.03,
+            'gamma': 1.02
+        }
+    },
+    'rose_gold': {
+        'natural': {
+            'brightness': 1.15,
+            'contrast': 1.08,
+            'white_overlay': 0.06,
+            'sharpness': 1.12,
+            'color_temp_a': 5,
+            'color_temp_b': 8,
+            'original_blend': 0.20,
+            'saturation': 1.05,
+            'gamma': 0.99
+        },
+        'warm': {
+            'brightness': 1.13,
+            'contrast': 1.06,
+            'white_overlay': 0.08,
+            'sharpness': 1.10,
+            'color_temp_a': 8,
+            'color_temp_b': 12,
+            'original_blend': 0.22,
+            'saturation': 1.08,
+            'gamma': 0.97
+        },
+        'cool': {
+            'brightness': 1.17,
+            'contrast': 1.10,
+            'white_overlay': 0.04,
+            'sharpness': 1.14,
+            'color_temp_a': 3,
+            'color_temp_b': 5,
+            'original_blend': 0.18,
+            'saturation': 1.03,
+            'gamma': 1.01
+        }
+    },
+    'yellow_gold': {
+        'natural': {
+            'brightness': 1.12,
+            'contrast': 1.05,
+            'white_overlay': 0.03,
+            'sharpness': 1.08,
+            'color_temp_a': 12,
+            'color_temp_b': 15,
+            'original_blend': 0.25,
+            'saturation': 1.10,
+            'gamma': 0.96
+        },
+        'warm': {
+            'brightness': 1.10,
+            'contrast': 1.03,
+            'white_overlay': 0.05,
+            'sharpness': 1.06,
+            'color_temp_a': 15,
+            'color_temp_b': 20,
+            'original_blend': 0.28,
+            'saturation': 1.12,
+            'gamma': 0.94
+        },
+        'cool': {
+            'brightness': 1.14,
+            'contrast': 1.07,
+            'white_overlay': 0.02,
+            'sharpness': 1.10,
+            'color_temp_a': 8,
+            'color_temp_b': 10,
+            'original_blend': 0.22,
+            'saturation': 1.08,
+            'gamma': 0.98
+        }
+    },
+    'champagne_gold': {
+        'natural': {
+            'brightness': 1.30,
+            'contrast': 1.15,
+            'white_overlay': 0.15,
+            'sharpness': 1.20,
+            'color_temp_a': -8,
+            'color_temp_b': -12,
+            'original_blend': 0.10,
+            'saturation': 0.95,
+            'gamma': 1.05
+        },
+        'warm': {
+            'brightness': 1.28,
+            'contrast': 1.13,
+            'white_overlay': 0.18,
+            'sharpness': 1.18,
+            'color_temp_a': -10,
+            'color_temp_b': -15,
+            'original_blend': 0.12,
+            'saturation': 0.92,
+            'gamma': 1.03
+        },
+        'cool': {
+            'brightness': 1.32,
+            'contrast': 1.17,
+            'white_overlay': 0.12,
+            'sharpness': 1.22,
+            'color_temp_a': -5,
+            'color_temp_b': -8,
+            'original_blend': 0.08,
+            'saturation': 0.98,
+            'gamma': 1.07
+        }
+    }
+}
 
-def detect_black_frame_adaptive(image):
-    """Adaptive black frame detection with multiple methods"""
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
-        
-        # Method 1: Edge detection (100픽셀 두께 감지)
-        edge_thickness = max(100, int(min(w, h) * 0.1))
-        
-        edges = [
-            gray[:edge_thickness, :],          # top
-            gray[-edge_thickness:, :],         # bottom
-            gray[:, :edge_thickness],          # left
-            gray[:, -edge_thickness:]          # right
-        ]
-        
-        # Check if any edge is black
-        threshold = 30
-        for edge in edges:
-            if edge.size > 0 and np.mean(edge) < threshold:
-                return True
-        
-        # Method 2: Line detection for thick borders
-        edges_canny = cv2.Canny(gray, 50, 150)
-        lines = cv2.HoughLinesP(edges_canny, 1, np.pi/180, 50, 
-                                minLineLength=min(w, h)//4, maxLineGap=10)
-        
-        if lines is not None:
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                # Check if line is near border
-                if (x1 < 100 or x1 > w-100 or y1 < 100 or y1 > h-100 or
-                    x2 < 100 or x2 > w-100 or y2 < 100 or y2 > h-100):
-                    return True
-        
-        return False
-        
-    except Exception as e:
-        return False
-
-def remove_black_frame_ultra(image):
-    """Ultra-aggressive black frame removal with 50% safety margin"""
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Multiple threshold levels for better detection
-        masks = []
-        for thresh in [20, 30, 40]:
-            _, mask = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
-            masks.append(mask)
-        
-        # Combine all masks
-        combined_mask = np.zeros_like(gray)
-        for mask in masks:
-            combined_mask = cv2.bitwise_or(combined_mask, mask)
-        
-        # Find largest contour (main content)
-        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if contours:
-            # Get bounding box with safety margin
-            largest_contour = max(contours, key=cv2.contourArea)
-            x, y, w, h = cv2.boundingRect(largest_contour)
+class WeddingRingProcessor:
+    def __init__(self):
+        self.params = WEDDING_RING_PARAMS
+    
+    def detect_black_frame(self, image):
+        """Advanced black frame detection with ultra removal"""
+        try:
+            h, w = image.shape[:2]
+            max_thickness = max(100, min(w, h) * 0.1)
             
-            # Add 50% extra margin for thick borders
-            margin = 50
-            x = max(0, x - margin)
-            y = max(0, y - margin)
-            w = min(image.shape[1] - x, w + 2 * margin)
-            h = min(image.shape[0] - y, h + 2 * margin)
+            # Method 1: Adaptive threshold detection
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            detected_regions = []
             
-            # Crop and resize to original size
-            cropped = image[y:y+h, x:x+w]
-            result = cv2.resize(cropped, (image.shape[1], image.shape[0]), 
-                               interpolation=cv2.INTER_LANCZOS4)
+            for threshold in [10, 15, 20, 25, 30]:
+                _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+                
+                # Check each edge
+                edges = {
+                    'top': binary[:int(max_thickness), :],
+                    'bottom': binary[h-int(max_thickness):, :],
+                    'left': binary[:, :int(max_thickness)],
+                    'right': binary[:, w-int(max_thickness):]
+                }
+                
+                for edge_name, edge_region in edges.items():
+                    if edge_region.size > 0 and np.mean(edge_region) > 100:
+                        detected_regions.append(edge_name)
+            
+            # Method 2: Ultra black frame removal
+            result = image.copy()
+            if detected_regions:
+                # Fill detected regions with background color
+                bg_color = self.get_background_color(image)
+                
+                if 'top' in detected_regions:
+                    thickness = min(int(max_thickness), h//4)
+                    result[:thickness, :] = bg_color
+                
+                if 'bottom' in detected_regions:
+                    thickness = min(int(max_thickness), h//4)
+                    result[h-thickness:, :] = bg_color
+                
+                if 'left' in detected_regions:
+                    thickness = min(int(max_thickness), w//4)
+                    result[:, :thickness] = bg_color
+                
+                if 'right' in detected_regions:
+                    thickness = min(int(max_thickness), w//4)
+                    result[:, w-thickness:] = bg_color
             
             return result
+        except Exception as e:
+            print(f"Black frame detection error: {e}")
+            return image
+    
+    def get_background_color(self, image):
+        """Get bright background color (250+ RGB)"""
+        try:
+            # Sample center region for background color
+            h, w = image.shape[:2]
+            center_region = image[h//3:2*h//3, w//3:2*w//3]
+            avg_color = np.mean(center_region, axis=(0, 1))
             
-        return image
-        
-    except Exception as e:
-        return image
-
-def enhance_ring_quality(image):
-    """Multi-stage ring enhancement using OpenCV and PIL"""
-    try:
-        # Convert to PIL
-        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        
-        # Step 1: Denoise
-        cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-        denoised = cv2.fastNlMeansDenoisingColored(cv_image, None, 10, 10, 7, 21)
-        pil_image = Image.fromarray(cv2.cvtColor(denoised, cv2.COLOR_BGR2RGB))
-        
-        # Step 2: Enhance sharpness
-        enhancer = ImageEnhance.Sharpness(pil_image)
-        pil_image = enhancer.enhance(1.5)
-        
-        # Step 3: Enhance contrast
-        enhancer = ImageEnhance.Contrast(pil_image)
-        pil_image = enhancer.enhance(1.2)
-        
-        # Step 4: Enhance color vibrancy
-        enhancer = ImageEnhance.Color(pil_image)
-        pil_image = enhancer.enhance(1.1)
-        
-        # Step 5: Apply unsharp mask for detail
-        pil_image = pil_image.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
-        
-        # Step 6: Fine detail enhancement
-        cv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-        
-        # Create detail enhancement kernel
-        kernel = np.array([[-1, -1, -1],
-                          [-1, 9, -1],
-                          [-1, -1, -1]], dtype=np.float32)
-        
-        # Apply with reduced strength
-        sharpened = cv2.filter2D(cv_image, -1, kernel * 0.3)
-        
-        # Blend with original
-        result = cv2.addWeighted(cv_image, 0.7, sharpened, 0.3, 0)
-        
-        return result
-        
-    except Exception as e:
-        return image
-
-def apply_color_correction(image):
-    """Convert champagne gold to white gold appearance"""
-    try:
-        # Convert to LAB for better color manipulation
-        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        
-        # Reduce yellow/gold tones (b channel)
-        b = np.clip(b.astype(np.float32) - 5, 0, 255).astype(np.uint8)
-        
-        # Slightly reduce red tones (a channel)
-        a = np.clip(a.astype(np.float32) - 2, 0, 255).astype(np.uint8)
-        
-        # Increase brightness slightly
-        l = np.clip(l.astype(np.float32) * 1.05, 0, 255).astype(np.uint8)
-        
-        # Merge channels
-        lab = cv2.merge([l, a, b])
-        result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        
-        # Add subtle white overlay for white gold effect
-        white_overlay = np.ones_like(result) * 255
-        result = cv2.addWeighted(result, 0.92, white_overlay, 0.08, 0)
-        
-        return result
-        
-    except Exception as e:
-        return image
-
-def create_thumbnail(image):
-    """Create 1000x1300 thumbnail with ring taking 80% of space"""
-    try:
-        target_w, target_h = 1000, 1300
-        h, w = image.shape[:2]
-        
-        # Calculate scale to make ring take 80% of thumbnail area
-        scale = min(target_w / w, target_h / h) * 0.8
-        
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        
-        # Resize image with high quality
-        resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        
-        # Create off-white background (not pure white)
-        thumbnail = np.ones((target_h, target_w, 3), dtype=np.uint8) * 235
-        
-        # Center the ring
-        x_offset = (target_w - new_w) // 2
-        y_offset = (target_h - new_h) // 2
-        
-        thumbnail[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
-        
-        return thumbnail
-        
-    except Exception as e:
-        # Return white thumbnail on error
-        return np.ones((1300, 1000, 3), dtype=np.uint8) * 235
+            # Ensure bright background (minimum 250)
+            bright_color = np.maximum(avg_color, [250, 250, 250])
+            return bright_color.astype(np.uint8)
+        except:
+            return np.array([250, 250, 250], dtype=np.uint8)
+    
+    def detect_metal_type(self, image):
+        """Detect metal type from HSV analysis"""
+        try:
+            hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+            avg_hue = np.mean(hsv[:, :, 0])
+            avg_sat = np.mean(hsv[:, :, 1])
+            
+            if avg_sat < 30:
+                return 'white_gold'
+            elif 5 <= avg_hue <= 25:
+                if avg_sat > 80:
+                    return 'yellow_gold'
+                else:
+                    return 'champagne_gold'
+            elif 160 <= avg_hue <= 180:
+                return 'rose_gold'
+            else:
+                return 'white_gold'
+        except:
+            return 'white_gold'
+    
+    def detect_lighting(self, image):
+        """Detect lighting condition"""
+        try:
+            lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+            avg_l = np.mean(lab[:, :, 0])
+            avg_a = np.mean(lab[:, :, 1])
+            avg_b = np.mean(lab[:, :, 2])
+            
+            if avg_b > 135:
+                return 'warm'
+            elif avg_b < 120:
+                return 'cool'
+            else:
+                return 'natural'
+        except:
+            return 'natural'
+    
+    def enhance_wedding_ring(self, image, metal_type, lighting):
+        """6-stage ring quality enhancement"""
+        try:
+            params = self.params[metal_type][lighting]
+            
+            # Stage 1: Noise reduction
+            denoised = cv2.fastNlMeansDenoisingColored(image, None, 10, 10, 7, 21)
+            
+            # Stage 2: Sharpening
+            pil_image = Image.fromarray(denoised)
+            sharpness_enhancer = ImageEnhance.Sharpness(pil_image)
+            sharpened = sharpness_enhancer.enhance(params['sharpness'])
+            
+            # Stage 3: Brightness and contrast
+            brightness_enhancer = ImageEnhance.Brightness(sharpened)
+            brightened = brightness_enhancer.enhance(params['brightness'])
+            
+            contrast_enhancer = ImageEnhance.Contrast(brightened)
+            contrasted = contrast_enhancer.enhance(params['contrast'])
+            
+            # Stage 4: Color enhancement
+            color_enhancer = ImageEnhance.Color(contrasted)
+            colored = color_enhancer.enhance(params['saturation'])
+            
+            # Stage 5: White overlay for champagne->white gold conversion
+            enhanced_array = np.array(colored)
+            if params['white_overlay'] > 0:
+                white_overlay = np.full_like(enhanced_array, 255)
+                enhanced_array = cv2.addWeighted(
+                    enhanced_array, 1 - params['white_overlay'],
+                    white_overlay, params['white_overlay'], 0
+                )
+            
+            # Stage 6: LAB color temperature adjustment
+            lab = cv2.cvtColor(enhanced_array, cv2.COLOR_RGB2LAB)
+            lab[:, :, 1] = np.clip(lab[:, :, 1] + params['color_temp_a'], 0, 255)
+            lab[:, :, 2] = np.clip(lab[:, :, 2] + params['color_temp_b'], 0, 255)
+            final_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+            
+            # Final blend with original
+            result = cv2.addWeighted(
+                final_array, 1 - params['original_blend'],
+                image, params['original_blend'], 0
+            )
+            
+            return result.astype(np.uint8)
+        except Exception as e:
+            print(f"Enhancement error: {e}")
+            return image
+    
+    def create_thumbnail(self, image, target_size=(1000, 1300)):
+        """Create 1000x1300 thumbnail with center crop"""
+        try:
+            h, w = image.shape[:2]
+            target_w, target_h = target_size
+            
+            # Calculate crop dimensions to maintain aspect ratio
+            ratio_w = target_w / w
+            ratio_h = target_h / h
+            ratio = max(ratio_w, ratio_h)  # Fill the frame
+            
+            # Resize image
+            new_w = int(w * ratio)
+            new_h = int(h * ratio)
+            resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+            
+            # Center crop to exact target size
+            start_x = (new_w - target_w) // 2 if new_w > target_w else 0
+            start_y = (new_h - target_h) // 2 if new_h > target_h else 0
+            
+            if new_w >= target_w and new_h >= target_h:
+                thumbnail = resized[start_y:start_y+target_h, start_x:start_x+target_w]
+            else:
+                # If resized image is smaller, pad with background
+                thumbnail = np.full((target_h, target_w, 3), 250, dtype=np.uint8)
+                paste_x = (target_w - new_w) // 2
+                paste_y = (target_h - new_h) // 2
+                thumbnail[paste_y:paste_y+new_h, paste_x:paste_x+new_w] = resized
+            
+            return thumbnail
+        except Exception as e:
+            print(f"Thumbnail creation error: {e}")
+            # Return a default thumbnail
+            return np.full((1300, 1000, 3), 250, dtype=np.uint8)
 
 def handler(event):
-    """RunPod handler function - v19.0 Production Ready"""
+    """RunPod Serverless main handler with nested output structure"""
     try:
-        # Get input
-        input_data = event.get("input", {})
-        image_base64 = input_data.get("image")
+        input_data = event["input"]
         
-        if not image_base64:
-            return {"error": "No image provided", "status": "failed"}
+        if "image_base64" not in input_data:
+            return {
+                "output": {
+                    "error": "No image_base64 provided",
+                    "status": "error"
+                }
+            }
         
-        # Decode image
-        try:
-            image_bytes = base64.b64decode(image_base64)
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        except Exception as e:
-            return {"error": f"Failed to decode image: {str(e)}", "status": "failed"}
+        # Decode base64 image
+        image_data = base64.b64decode(input_data["image_base64"])
+        image = Image.open(io.BytesIO(image_data))
+        image_array = np.array(image.convert('RGB'))
         
-        if image is None:
-            return {"error": "Invalid image data", "status": "failed"}
+        # Initialize processor
+        processor = WeddingRingProcessor()
         
-        # Process image
-        processed = image.copy()
+        # Step 1: Remove black frames first
+        frame_removed = processor.detect_black_frame(image_array)
         
-        # Step 1: Detect and remove black frame
-        if detect_black_frame_adaptive(processed):
-            processed = remove_black_frame_ultra(processed)
+        # Step 2: Detect metal type and lighting
+        metal_type = processor.detect_metal_type(frame_removed)
+        lighting = processor.detect_lighting(frame_removed)
         
-        # Step 2: Enhance ring quality
-        processed = enhance_ring_quality(processed)
-        
-        # Step 3: Apply color correction (champagne to white gold)
-        processed = apply_color_correction(processed)
+        # Step 3: Enhance wedding ring quality
+        enhanced = processor.enhance_wedding_ring(frame_removed, metal_type, lighting)
         
         # Step 4: Create thumbnail
-        thumbnail = create_thumbnail(processed)
+        thumbnail = processor.create_thumbnail(enhanced)
         
-        # Encode results
-        try:
-            # Main image - high quality
-            _, main_buffer = cv2.imencode('.jpg', processed, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            main_base64 = base64.b64encode(main_buffer).decode('utf-8')
-            
-            # Thumbnail - slightly lower quality for size
-            _, thumb_buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 90])
-            thumb_base64 = base64.b64encode(thumb_buffer).decode('utf-8')
-        except Exception as e:
-            return {"error": f"Failed to encode result: {str(e)}", "status": "failed"}
+        # Step 5: Encode results to base64
+        # Main enhanced image
+        main_pil = Image.fromarray(enhanced)
+        main_buffer = io.BytesIO()
+        main_pil.save(main_buffer, format='JPEG', quality=95, progressive=True)
+        main_base64 = base64.b64encode(main_buffer.getvalue()).decode()
         
+        # Thumbnail image
+        thumb_pil = Image.fromarray(thumbnail)
+        thumb_buffer = io.BytesIO()
+        thumb_pil.save(thumb_buffer, format='JPEG', quality=90, progressive=True)
+        thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode()
+        
+        # Return with nested output structure for Make.com
         return {
-            "enhanced_image": main_base64,
-            "thumbnail": thumb_base64,
-            "status": "success",
-            "message": "Image processed successfully",
-            "version": "v19.0",
-            "features": {
-                "black_frame_removal": True,
-                "ring_enhancement": True,
-                "color_correction": True,
-                "thumbnail_generation": True
+            "output": {
+                "enhanced_image": main_base64,
+                "thumbnail": thumb_base64,
+                "processing_info": {
+                    "metal_type": metal_type,
+                    "lighting": lighting,
+                    "status": "success",
+                    "version": "v19.0"
+                }
             }
         }
         
     except Exception as e:
-        # Emergency fallback - return minimal valid response
-        try:
-            # Create simple white image
-            emergency_img = np.ones((1000, 1000, 3), dtype=np.uint8) * 235
-            _, buffer = cv2.imencode('.jpg', emergency_img)
-            emergency_base64 = base64.b64encode(buffer).decode('utf-8')
-            
-            return {
-                "enhanced_image": emergency_base64,
-                "thumbnail": emergency_base64,
+        return {
+            "output": {
                 "error": str(e),
-                "status": "emergency",
-                "message": "Processing failed, returning fallback image"
+                "status": "error",
+                "version": "v19.0"
             }
-        except:
-            return {"error": "Critical failure", "status": "failed"}
+        }
 
-# RunPod serverless start
+# Start the serverless function
 runpod.serverless.start({"handler": handler})
