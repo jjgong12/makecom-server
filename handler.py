@@ -1,95 +1,106 @@
-import runpod
 import os
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
-import json
-import io
+from PIL import Image, ImageEnhance
 import base64
-from typing import Optional, Tuple, Dict, List
+import io
 import logging
+from typing import Dict, Tuple, Optional
 
-# Configure logging
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class WeddingRingEnhancerV23Ultra:
+class WeddingRingEnhancerV23_2:
     def __init__(self):
-        """v23.1 ULTRA 웨딩링 처리 시스템 - 검은테두리 완전제거 + 색상왜곡 해결"""
+        """v23.2 EXTREME - Complete black border removal + full thumbnail"""
+        self.version = "v23.2_EXTREME"
         
-        # v13.3 완전한 4금속×3조명 = 12가지 파라미터 (28쌍 학습 데이터 기반)
-        self.params = {
+        # v13.3 parameters from 28 Before/After learning data
+        self.v13_3_params = {
             'white_gold': {
                 'natural': {
-                    'brightness': 1.28, 'contrast': 1.18, 'sharpness': 1.35, 'clarity': 1.20,
-                    'saturation': 1.08, 'warmth': 0.95, 'white_overlay': 0.12,
-                    'gamma': 1.15, 'color_temp_a': -2, 'color_temp_b': -2
+                    'brightness': 1.29, 'contrast': 1.28, 'exposure': 0.42,
+                    'highlights': 0.18, 'shadows': -0.24, 'vibrance': 0.28,
+                    'saturation': 1.03, 'warmth': 1.03, 'white_overlay': 0.26,
+                    'gamma': 1.13, 'color_temp_a': -6, 'color_temp_b': -4
                 },
                 'warm': {
-                    'brightness': 1.32, 'contrast': 1.22, 'sharpness': 1.40, 'clarity': 1.25,
-                    'saturation': 1.12, 'warmth': 1.05, 'white_overlay': 0.08,
-                    'gamma': 1.12, 'color_temp_a': -1, 'color_temp_b': -1
+                    'brightness': 1.31, 'contrast': 1.29, 'exposure': 0.44,
+                    'highlights': 0.20, 'shadows': -0.26, 'vibrance': 0.29,
+                    'saturation': 1.04, 'warmth': 1.06, 'white_overlay': 0.28,
+                    'gamma': 1.14, 'color_temp_a': -8, 'color_temp_b': -5
                 },
                 'cool': {
-                    'brightness': 1.25, 'contrast': 1.15, 'sharpness': 1.30, 'clarity': 1.18,
-                    'saturation': 1.05, 'warmth': 0.88, 'white_overlay': 0.15,
-                    'gamma': 1.18, 'color_temp_a': -3, 'color_temp_b': -3
+                    'brightness': 1.27, 'contrast': 1.26, 'exposure': 0.40,
+                    'highlights': 0.17, 'shadows': -0.23, 'vibrance': 0.26,
+                    'saturation': 1.01, 'warmth': 0.99, 'white_overlay': 0.24,
+                    'gamma': 1.12, 'color_temp_a': -4, 'color_temp_b': -3
                 }
             },
             'yellow_gold': {
                 'natural': {
-                    'brightness': 1.25, 'contrast': 1.20, 'sharpness': 1.25, 'clarity': 1.15,
-                    'saturation': 1.15, 'warmth': 1.08, 'white_overlay': 0.05,
-                    'gamma': 1.10, 'color_temp_a': 1, 'color_temp_b': 2
+                    'brightness': 1.24, 'contrast': 1.22, 'exposure': 0.36,
+                    'highlights': 0.14, 'shadows': -0.19, 'vibrance': 0.21,
+                    'saturation': 0.97, 'warmth': 0.95, 'white_overlay': 0.19,
+                    'gamma': 1.10, 'color_temp_a': -3, 'color_temp_b': -2
                 },
                 'warm': {
-                    'brightness': 1.30, 'contrast': 1.25, 'sharpness': 1.30, 'clarity': 1.20,
-                    'saturation': 1.20, 'warmth': 1.12, 'white_overlay': 0.03,
-                    'gamma': 1.08, 'color_temp_a': 2, 'color_temp_b': 3
+                    'brightness': 1.26, 'contrast': 1.24, 'exposure': 0.38,
+                    'highlights': 0.16, 'shadows': -0.21, 'vibrance': 0.23,
+                    'saturation': 0.99, 'warmth': 0.98, 'white_overlay': 0.21,
+                    'gamma': 1.11, 'color_temp_a': -5, 'color_temp_b': -3
                 },
                 'cool': {
-                    'brightness': 1.22, 'contrast': 1.18, 'sharpness': 1.22, 'clarity': 1.12,
-                    'saturation': 1.10, 'warmth': 1.02, 'white_overlay': 0.08,
-                    'gamma': 1.12, 'color_temp_a': 0, 'color_temp_b': 1
+                    'brightness': 1.22, 'contrast': 1.20, 'exposure': 0.34,
+                    'highlights': 0.13, 'shadows': -0.18, 'vibrance': 0.19,
+                    'saturation': 0.95, 'warmth': 0.92, 'white_overlay': 0.17,
+                    'gamma': 1.09, 'color_temp_a': -2, 'color_temp_b': -1
                 }
             },
             'rose_gold': {
                 'natural': {
-                    'brightness': 1.26, 'contrast': 1.19, 'sharpness': 1.28, 'clarity': 1.17,
-                    'saturation': 1.12, 'warmth': 1.06, 'white_overlay': 0.06,
-                    'gamma': 1.11, 'color_temp_a': 1, 'color_temp_b': -1
+                    'brightness': 1.26, 'contrast': 1.24, 'exposure': 0.38,
+                    'highlights': 0.15, 'shadows': -0.20, 'vibrance': 0.23,
+                    'saturation': 0.99, 'warmth': 0.97, 'white_overlay': 0.21,
+                    'gamma': 1.11, 'color_temp_a': -4, 'color_temp_b': -3
                 },
                 'warm': {
-                    'brightness': 1.29, 'contrast': 1.23, 'sharpness': 1.32, 'clarity': 1.21,
-                    'saturation': 1.16, 'warmth': 1.10, 'white_overlay': 0.04,
-                    'gamma': 1.09, 'color_temp_a': 2, 'color_temp_b': 0
+                    'brightness': 1.28, 'contrast': 1.26, 'exposure': 0.40,
+                    'highlights': 0.17, 'shadows': -0.22, 'vibrance': 0.25,
+                    'saturation': 1.01, 'warmth': 1.00, 'white_overlay': 0.23,
+                    'gamma': 1.12, 'color_temp_a': -6, 'color_temp_b': -4
                 },
                 'cool': {
-                    'brightness': 1.24, 'contrast': 1.16, 'sharpness': 1.25, 'clarity': 1.14,
-                    'saturation': 1.08, 'warmth': 0.98, 'white_overlay': 0.09,
-                    'gamma': 1.13, 'color_temp_a': 0, 'color_temp_b': -2
+                    'brightness': 1.24, 'contrast': 1.22, 'exposure': 0.36,
+                    'highlights': 0.14, 'shadows': -0.19, 'vibrance': 0.21,
+                    'saturation': 0.97, 'warmth': 0.94, 'white_overlay': 0.19,
+                    'gamma': 1.10, 'color_temp_a': -3, 'color_temp_b': -2
                 }
             },
             'champagne_gold': {
                 'natural': {
-                    'brightness': 1.30, 'contrast': 1.21, 'sharpness': 1.33, 'clarity': 1.22,
-                    'saturation': 1.02, 'warmth': 1.04, 'white_overlay': 0.15,
-                    'gamma': 1.14, 'color_temp_a': -6, 'color_temp_b': -6
+                    'brightness': 1.25, 'contrast': 1.23, 'exposure': 0.37,
+                    'highlights': 0.15, 'shadows': -0.20, 'vibrance': 0.22,
+                    'saturation': 0.98, 'warmth': 0.96, 'white_overlay': 0.20,
+                    'gamma': 1.11, 'color_temp_a': -4, 'color_temp_b': -3
                 },
                 'warm': {
-                    'brightness': 1.33, 'contrast': 1.25, 'sharpness': 1.37, 'clarity': 1.26,
-                    'saturation': 1.05, 'warmth': 1.08, 'white_overlay': 0.12,
-                    'gamma': 1.11, 'color_temp_a': -5, 'color_temp_b': -5
+                    'brightness': 1.27, 'contrast': 1.25, 'exposure': 0.39,
+                    'highlights': 0.17, 'shadows': -0.22, 'vibrance': 0.24,
+                    'saturation': 1.00, 'warmth': 0.99, 'white_overlay': 0.22,
+                    'gamma': 1.12, 'color_temp_a': -6, 'color_temp_b': -4
                 },
                 'cool': {
-                    'brightness': 1.27, 'contrast': 1.18, 'sharpness': 1.30, 'clarity': 1.19,
-                    'saturation': 0.98, 'warmth': 0.96, 'white_overlay': 0.18,
-                    'gamma': 1.16, 'color_temp_a': -7, 'color_temp_b': -7
+                    'brightness': 1.23, 'contrast': 1.21, 'exposure': 0.35,
+                    'highlights': 0.14, 'shadows': -0.19, 'vibrance': 0.20,
+                    'saturation': 0.96, 'warmth': 0.93, 'white_overlay': 0.18,
+                    'gamma': 1.10, 'color_temp_a': -3, 'color_temp_b': -2
                 }
             }
         }
         
-        # 28쌍 AFTER 파일 학습 기반 배경색 시스템
+        # Background colors from 28 AFTER files
         self.after_bg_colors = {
             'white_gold': {
                 'natural': [252, 250, 248], 'warm': [254, 252, 250], 'cool': [250, 248, 245]
@@ -105,209 +116,347 @@ class WeddingRingEnhancerV23Ultra:
             }
         }
 
-    def detect_and_remove_black_border_v23(self, image: np.ndarray) -> Tuple[np.ndarray, bool]:
-        """v23.0 ULTRA 강화: 검은테두리 완전제거 (다중 threshold + 전체라인 체크)"""
+    def detect_and_remove_black_border_v23_2(self, image: np.ndarray) -> Tuple[np.ndarray, bool]:
+        """v23.2 EXTREME: Maximum black border removal (70% scan + threshold 150)"""
         h, w = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
-        # v23.0 ULTRA: 50% 영역까지 스캔 (40% → 50% 강화)
-        max_border = min(int(h * 0.5), int(w * 0.5), 500)
+        # v23.2 EXTREME: Scan up to 70% of image
+        max_border = min(int(h * 0.7), int(w * 0.7), 700)
         
         borders = {'top': 0, 'bottom': 0, 'left': 0, 'right': 0}
         found_border = False
         
-        # ULTRA 상단 검은 테두리 감지 (전체 라인 체크 + 다중 threshold)
+        # EXTREME top border detection
         for y in range(max_border):
-            row_mean = np.mean(gray[y, :])  # 전체 라인 체크 (중앙 50% → 전체)
-            # 다중 threshold: 120, 100, 80 순차적으로 체크
-            if row_mean < 120:  # 더 강력한 감지 (80 → 120)
+            row_mean = np.mean(gray[y, :])
+            if row_mean < 150:  # EXTREME threshold
                 borders['top'] = y + 1
                 found_border = True
             else:
                 break
         
-        # ULTRA 하단 검은 테두리 감지
+        # EXTREME bottom border detection
         for y in range(h-1, h-max_border-1, -1):
-            row_mean = np.mean(gray[y, :])  # 전체 라인 체크
-            if row_mean < 120:
+            row_mean = np.mean(gray[y, :])
+            if row_mean < 150:
                 borders['bottom'] = h - y
                 found_border = True
             else:
                 break
         
-        # ULTRA 좌측 검은 테두리 감지
+        # EXTREME left border detection
         for x in range(max_border):
-            col_mean = np.mean(gray[:, x])  # 전체 컬럼 체크 (중앙 50% → 전체)
-            if col_mean < 120:
+            col_mean = np.mean(gray[:, x])
+            if col_mean < 150:
                 borders['left'] = x + 1
                 found_border = True
             else:
                 break
         
-        # ULTRA 우측 검은 테두리 감지
+        # EXTREME right border detection
         for x in range(w-1, w-max_border-1, -1):
-            col_mean = np.mean(gray[:, x])  # 전체 컬럼 체크
-            if col_mean < 120:
+            col_mean = np.mean(gray[:, x])
+            if col_mean < 150:
                 borders['right'] = w - x
                 found_border = True
             else:
                 break
         
-        # 검은 테두리가 발견되면 크롭
         if found_border:
-            y1 = borders['top']
-            y2 = h - borders['bottom']
-            x1 = borders['left']
-            x2 = w - borders['right']
+            # v23.2: EXTREME safety margin 15 pixels
+            safety_margin = 15
+            top = max(0, borders['top'] + safety_margin)
+            bottom = max(0, borders['bottom'] + safety_margin)
+            left = max(0, borders['left'] + safety_margin)
+            right = max(0, borders['right'] + safety_margin)
             
-            # 더 큰 안전 마진 (5 → 10)
-            safety_margin = 10
-            y1 = max(0, y1 - safety_margin)
-            y2 = min(h, y2 + safety_margin)
-            x1 = max(0, x1 - safety_margin)
-            x2 = min(w, x2 + safety_margin)
+            # Crop with extreme margins
+            cropped = image[top:h-bottom, left:w-right]
             
-            cropped = image[y1:y2, x1:x2]
+            # Secondary precision crop - EXTREME
+            gray2 = cv2.cvtColor(cropped, cv2.COLOR_RGB2GRAY)
+            h2, w2 = cropped.shape[:2]
             
-            # 3차 ULTRA 정밀 크롭 (15 → 25 픽셀 더 강력하게)
-            if cropped.shape[0] > 50 and cropped.shape[1] > 50:
-                gray2 = cv2.cvtColor(cropped, cv2.COLOR_RGB2GRAY)
-                
-                # 상단 추가 제거 (더 강력한 체크)
-                if np.mean(gray2[:20, :]) < 120:  # 10 → 20픽셀, 100 → 120
-                    edge_cut = 25  # 15 → 25픽셀
+            # Check edges and remove more aggressively
+            edge_cut = 30  # EXTREME edge cut
+            
+            # Check all edges for any remaining dark pixels
+            if h2 > 60 and w2 > 60:
+                if np.mean(gray2[:30, :]) < 120:  # Top edge
                     cropped = cropped[edge_cut:, :]
-                
-                # 하단 추가 제거
-                if cropped.shape[0] > 25 and np.mean(gray2[-20:, :]) < 120:
-                    edge_cut = 25
+                if np.mean(gray2[-30:, :]) < 120:  # Bottom edge
                     cropped = cropped[:-edge_cut, :]
-                
-                # 좌측 추가 제거
-                if cropped.shape[1] > 25 and np.mean(gray2[:, :20]) < 120:
-                    edge_cut = 25
+                if np.mean(gray2[:, :30]) < 120:  # Left edge
                     cropped = cropped[:, edge_cut:]
-                
-                # 우측 추가 제거
-                if cropped.shape[1] > 25 and np.mean(gray2[:, -20:]) < 120:
-                    edge_cut = 25
+                if np.mean(gray2[:, -30:]) < 120:  # Right edge
                     cropped = cropped[:, :-edge_cut]
             
-            logger.info(f"v23.0 ULTRA Black border removed: {borders}")
             return cropped, True
         
         return image, False
 
-    def detect_metal_type(self, image: np.ndarray) -> str:
-        """간단한 RGB 기반 금속 타입 감지 (HSV 변환 제거)"""
-        try:
-            # v23.0 핵심: HSV 변환 제거, RGB 기반으로 단순화
-            mean_r = np.mean(image[:, :, 0])
-            mean_g = np.mean(image[:, :, 1])
-            mean_b = np.mean(image[:, :, 2])
+    def detect_ring_bounds(self, image: np.ndarray) -> Tuple[int, int, int, int]:
+        """Detect wedding ring boundaries for perfect thumbnail cropping"""
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        
+        # Apply edge detection to find ring
+        edges = cv2.Canny(gray, 50, 150)
+        
+        # Find contours
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Find the largest contour (likely the ring)
+            largest_contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(largest_contour)
             
-            # RGB 비율로 금속 타입 분류
-            if mean_r > mean_g + 10 and mean_r > mean_b + 10:
-                if mean_r - mean_g > 20:
+            # Add some padding around the ring
+            padding = 50
+            x = max(0, x - padding)
+            y = max(0, y - padding)
+            w = min(image.shape[1] - x, w + 2 * padding)
+            h = min(image.shape[0] - y, h + 2 * padding)
+            
+            return x, y, w, h
+        
+        # If no ring detected, return center crop
+        h, w = image.shape[:2]
+        crop_size = min(h, w) * 0.8
+        x = int((w - crop_size) / 2)
+        y = int((h - crop_size) / 2)
+        return x, y, int(crop_size), int(crop_size)
+
+    def create_perfect_thumbnail_v23_2(self, image: np.ndarray) -> np.ndarray:
+        """v23.2: Wedding ring centered and filling 1000x1300 completely"""
+        try:
+            target_width, target_height = 1000, 1300
+            
+            # Detect ring boundaries
+            x, y, w, h = self.detect_ring_bounds(image)
+            
+            # Crop to ring area
+            ring_crop = image[y:y+h, x:x+w]
+            
+            # Calculate scale to fill target dimensions
+            scale_w = target_width / w
+            scale_h = target_height / h
+            scale = max(scale_w, scale_h) * 0.95  # 95% to ensure ring fills frame
+            
+            # Calculate new dimensions
+            new_width = int(w * scale)
+            new_height = int(h * scale)
+            
+            # Resize ring
+            pil_ring = Image.fromarray(ring_crop)
+            resized_ring = pil_ring.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Create white canvas
+            canvas = Image.new('RGB', (target_width, target_height), color=(248, 248, 248))
+            
+            # Center the ring on canvas
+            paste_x = (target_width - new_width) // 2
+            paste_y = (target_height - new_height) // 2
+            
+            # If resized image is larger than canvas, crop it
+            if new_width > target_width or new_height > target_height:
+                # Crop from center
+                crop_x = max(0, (new_width - target_width) // 2)
+                crop_y = max(0, (new_height - target_height) // 2)
+                
+                resized_ring = resized_ring.crop((
+                    crop_x, 
+                    crop_y, 
+                    crop_x + min(new_width, target_width),
+                    crop_y + min(new_height, target_height)
+                ))
+                paste_x = 0
+                paste_y = 0
+            
+            canvas.paste(resized_ring, (paste_x, paste_y))
+            
+            return np.array(canvas)
+            
+        except Exception as e:
+            logger.error(f"Thumbnail creation failed: {e}")
+            # Fallback to simple resize
+            return self.simple_thumbnail_fallback(image)
+    
+    def simple_thumbnail_fallback(self, image: np.ndarray) -> np.ndarray:
+        """Simple fallback thumbnail creation"""
+        target_width, target_height = 1000, 1300
+        h, w = image.shape[:2]
+        
+        # Simple center crop
+        if w > h:
+            new_w = int(h * target_width / target_height)
+            x_start = (w - new_w) // 2
+            cropped = image[:, x_start:x_start + new_w]
+        else:
+            new_h = int(w * target_height / target_width)
+            y_start = (h - new_h) // 2
+            cropped = image[y_start:y_start + new_h, :]
+        
+        # Resize to target
+        pil_image = Image.fromarray(cropped)
+        resized = pil_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        
+        return np.array(resized)
+
+    def detect_metal_type(self, image: np.ndarray) -> str:
+        """Detect metal type using color analysis"""
+        try:
+            h, w = image.shape[:2]
+            center_y, center_x = h // 2, w // 2
+            sample_size = min(h, w) // 4
+            
+            y1 = max(0, center_y - sample_size // 2)
+            y2 = min(h, center_y + sample_size // 2)
+            x1 = max(0, center_x - sample_size // 2)
+            x2 = min(w, center_x + sample_size // 2)
+            
+            center_region = image[y1:y2, x1:x2]
+            
+            # Calculate color metrics
+            avg_color = np.mean(center_region, axis=(0, 1))
+            r, g, b = avg_color
+            
+            brightness = np.mean(avg_color)
+            rg_ratio = r / (g + 1)
+            gb_ratio = g / (b + 1)
+            
+            if brightness > 180:
+                if abs(r - g) < 10 and abs(g - b) < 10:
+                    return 'white_gold'
+                elif r > g and rg_ratio > 1.08:
                     return 'rose_gold'
                 else:
-                    return 'yellow_gold'
-            elif mean_r < 180 and mean_g < 180 and mean_b < 180:
-                return 'champagne_gold'
+                    return 'champagne_gold'
             else:
-                return 'white_gold'
+                return 'yellow_gold'
                 
         except Exception as e:
-            logger.warning(f"Metal detection failed: {e}")
+            logger.error(f"Metal detection error: {e}")
             return 'white_gold'
 
-    def detect_lighting(self, image: np.ndarray) -> str:
-        """간단한 밝기 기반 조명 감지 (LAB 변환 제거)"""
+    def detect_lighting_condition(self, image: np.ndarray) -> str:
+        """Detect lighting condition"""
         try:
-            # v23.0 핵심: LAB 변환 제거, 단순 밝기 기반
-            brightness = np.mean(image)
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+            hist = hist.flatten() / hist.sum()
             
-            if brightness < 120:
+            # Calculate distribution metrics
+            mean_brightness = np.average(np.arange(256), weights=hist)
+            
+            # Analyze color temperature
+            avg_color = np.mean(image, axis=(0, 1))
+            r, g, b = avg_color
+            
+            warm_cool_ratio = (r - b) / (r + b + 1)
+            
+            if warm_cool_ratio > 0.05:
                 return 'warm'
-            elif brightness > 160:
+            elif warm_cool_ratio < -0.05:
                 return 'cool'
             else:
                 return 'natural'
                 
         except Exception as e:
-            logger.warning(f"Lighting detection failed: {e}")
+            logger.error(f"Lighting detection error: {e}")
             return 'natural'
 
-    def enhance_wedding_ring_v23(self, image: np.ndarray, metal_type: str, lighting: str) -> np.ndarray:
-        """v23.0 안전한 PIL 기반 보정 (HSV/LAB 변환 완전 제거)"""
-        try:
-            params = self.params.get(metal_type, {}).get(lighting, self.params['white_gold']['natural'])
-            
-            # PIL로 변환
-            pil_image = Image.fromarray(image)
-            
-            # 1. 노이즈 제거 (가벼운 블러)
-            enhanced = pil_image.filter(ImageFilter.GaussianBlur(radius=0.5))
-            
-            # 2. 밝기 조정 (PIL 기반 - 안전)
-            enhancer = ImageEnhance.Brightness(enhanced)
-            enhanced = enhancer.enhance(params['brightness'])
-            
-            # 3. 대비 조정 (PIL 기반 - 안전)
-            enhancer = ImageEnhance.Contrast(enhanced)
-            enhanced = enhancer.enhance(params['contrast'])
-            
-            # 4. 선명도 조정 (PIL 기반 - 안전)
-            enhancer = ImageEnhance.Sharpness(enhanced)
-            enhanced = enhancer.enhance(params['sharpness'])
-            
-            # v23.0 핵심: HSV/LAB 색공간 변환 완전 제거!
-            # (색상 왜곡의 주범이었음)
-            
-            # NumPy로 변환
-            enhanced = np.array(enhanced)
-            
-            # 5. 미묘한 화이트 오버레이 (샴페인골드용)
-            if metal_type == 'champagne_gold':
-                white_strength = params.get('white_overlay', 0.1)
-                white_overlay = np.full_like(enhanced, 255, dtype=np.uint8)
-                enhanced = cv2.addWeighted(enhanced, 1-white_strength, white_overlay, white_strength, 0)
-            
-            # 6. 부드러운 블렌딩 (80% 보정 + 20% 원본)
-            enhanced = cv2.addWeighted(enhanced, 0.8, image, 0.2, 0)
-            
-            return enhanced.astype(np.uint8)
-            
-        except Exception as e:
-            logger.error(f"Enhancement failed: {e}")
-            return image
+    def apply_v13_3_enhancement(self, image: np.ndarray, metal_type: str, lighting: str) -> np.ndarray:
+        """Apply v13.3 10-step enhancement process"""
+        params = self.v13_3_params.get(metal_type, {}).get(lighting, self.v13_3_params['white_gold']['natural'])
+        
+        # Convert to PIL for processing
+        pil_image = Image.fromarray(image)
+        
+        # Step 1-2: Brightness and Contrast
+        enhancer = ImageEnhance.Brightness(pil_image)
+        pil_image = enhancer.enhance(params['brightness'])
+        
+        enhancer = ImageEnhance.Contrast(pil_image)
+        pil_image = enhancer.enhance(params['contrast'])
+        
+        # Convert back to numpy for advanced processing
+        img_array = np.array(pil_image).astype(np.float32)
+        
+        # Step 3: Exposure adjustment
+        exposure_factor = 1 + params['exposure']
+        img_array = np.clip(img_array * exposure_factor, 0, 255)
+        
+        # Step 4-5: Highlights and Shadows
+        gray = cv2.cvtColor(img_array.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+        
+        # Highlights adjustment
+        highlight_mask = (gray > 180).astype(np.float32)
+        highlight_mask = cv2.GaussianBlur(highlight_mask, (21, 21), 0)
+        highlight_adjustment = 1 + (params['highlights'] * highlight_mask[:, :, np.newaxis])
+        img_array = np.clip(img_array * highlight_adjustment, 0, 255)
+        
+        # Shadows adjustment
+        shadow_mask = (gray < 80).astype(np.float32)
+        shadow_mask = cv2.GaussianBlur(shadow_mask, (21, 21), 0)
+        shadow_adjustment = 1 - (params['shadows'] * shadow_mask[:, :, np.newaxis])
+        img_array = np.clip(img_array * shadow_adjustment, 0, 255)
+        
+        # Step 6-7: Vibrance and Saturation (safe method)
+        pil_temp = Image.fromarray(img_array.astype(np.uint8))
+        
+        # Saturation
+        enhancer = ImageEnhance.Color(pil_temp)
+        pil_temp = enhancer.enhance(params['saturation'])
+        img_array = np.array(pil_temp).astype(np.float32)
+        
+        # Step 8: Temperature adjustment
+        img_array[:, :, 0] = np.clip(img_array[:, :, 0] + params['color_temp_a'], 0, 255)
+        img_array[:, :, 2] = np.clip(img_array[:, :, 2] + params['color_temp_b'], 0, 255)
+        
+        # Step 9: White overlay
+        white_overlay = np.ones_like(img_array) * 255
+        alpha = params['white_overlay']
+        img_array = (1 - alpha) * img_array + alpha * white_overlay
+        
+        # Step 10: Gamma correction
+        img_array = np.clip(255 * np.power(img_array / 255, 1 / params['gamma']), 0, 255)
+        
+        return img_array.astype(np.uint8)
 
-    def create_white_background_v23(self, image: np.ndarray, metal_type: str, lighting: str) -> np.ndarray:
-        """v23.0 완전 흰색 배경 생성 (248 RGB)"""
+    def create_white_background(self, image: np.ndarray) -> np.ndarray:
+        """Create perfect white background (248, 248, 248)"""
         try:
-            h, w = image.shape[:2]
-            
-            # v23.0 핵심: 배경을 248 (거의 흰색)으로 교체
-            background = np.full_like(image, 248, dtype=np.uint8)
-            
-            # 간단한 마스크 생성 (웨딩링 영역 보호)
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-            _, mask = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
             
-            # 형태학적 연산으로 마스크 정제
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+            # Multiple threshold approach for better masking
+            _, mask1 = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+            _, mask2 = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+            
+            # Combine masks
+            mask = cv2.bitwise_or(mask1, mask2)
+            
+            # Clean up mask
+            kernel = np.ones((5, 5), np.uint8)
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             
-            # 가우시안 블러로 부드러운 경계
-            mask = cv2.GaussianBlur(mask, (31, 31), 0)
-            mask_norm = mask.astype(np.float32) / 255.0
+            # Find largest contour (the ring)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                largest_contour = max(contours, key=cv2.contourArea)
+                mask = np.zeros_like(mask)
+                cv2.drawContours(mask, [largest_contour], -1, 255, -1)
             
-            # 3채널로 확장
-            mask_3ch = np.stack([mask_norm] * 3, axis=-1)
+            # Smooth mask edges
+            mask = cv2.GaussianBlur(mask, (5, 5), 2)
+            mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB) / 255.0
             
-            # 배경 합성
-            result = background.astype(np.float32) * (1 - mask_3ch) + image.astype(np.float32) * mask_3ch
+            # Create white background
+            background = np.full_like(image, 248, dtype=np.uint8)
+            
+            # Composite
+            result = image.astype(np.float32) * mask_3ch + background.astype(np.float32) * (1 - mask_3ch)
             
             return result.astype(np.uint8)
             
@@ -315,139 +464,116 @@ class WeddingRingEnhancerV23Ultra:
             logger.error(f"Background creation failed: {e}")
             return image
 
-    def create_perfect_thumbnail_v23(self, image: np.ndarray) -> np.ndarray:
-        """v23.0 썸네일 90% 확대 (기존 80% → 90%)"""
-        try:
-            target_width, target_height = 1000, 1300
-            h, w = image.shape[:2]
-            
-            # 현재 비율 계산
-            current_ratio = w / h
-            target_ratio = target_width / target_height
-            
-            if current_ratio > target_ratio:
-                # 이미지가 더 넓음 - 높이 기준으로 맞춤
-                new_height = target_height
-                new_width = int(target_height * current_ratio)
-            else:
-                # 이미지가 더 높음 - 너비 기준으로 맞춤
-                new_width = target_width
-                new_height = int(target_width / current_ratio)
-            
-            # 리사이즈
-            pil_image = Image.fromarray(image)
-            resized = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # 흰색 캔버스 생성
-            canvas = Image.new('RGB', (target_width, target_height), color=(248, 248, 248))
-            
-            # 중앙 배치 (90% 확대를 위한 조정)
-            paste_x = (target_width - new_width) // 2
-            paste_y = (target_height - new_height) // 2
-            
-            # v23.0: 90% 확대 효과 (10% 확대 적용)
-            scale_factor = 1.125  # 12.5% 확대 (기존보다 더 크게)
-            final_width = int(new_width * scale_factor)
-            final_height = int(new_height * scale_factor)
-            
-            if final_width <= target_width and final_height <= target_height:
-                resized = resized.resize((final_width, final_height), Image.Resampling.LANCZOS)
-                paste_x = (target_width - final_width) // 2
-                paste_y = (target_height - final_height) // 2
-            
-            canvas.paste(resized, (paste_x, paste_y))
-            
-            return np.array(canvas)
-            
-        except Exception as e:
-            logger.error(f"Thumbnail creation failed: {e}")
-            return image
-
     def process_image(self, image_data: str, output_format: str = "enhanced") -> Dict:
-        """v23.0 메인 처리 함수"""
+        """v23.2 main processing function"""
         try:
-            # Base64 디코딩
+            # Base64 decoding
             image_bytes = base64.b64decode(image_data)
             image = Image.open(io.BytesIO(image_bytes))
             image_np = np.array(image.convert('RGB'))
             
             results = {}
             
-            # 1. v23.0 검은 테두리 제거
-            processed_image, border_removed = self.detect_and_remove_black_border_v23(image_np)
+            # 1. v23.2 EXTREME black border removal
+            processed_image, border_removed = self.detect_and_remove_black_border_v23_2(image_np)
             logger.info(f"Border removal: {border_removed}")
             
-            # 2. 금속 타입 및 조명 감지 (HSV/LAB 변환 제거)
+            # 2. Detect metal type and lighting
             metal_type = self.detect_metal_type(processed_image)
-            lighting = self.detect_lighting(processed_image)
-            logger.info(f"Detected: {metal_type}, {lighting}")
+            lighting = self.detect_lighting_condition(processed_image)
+            logger.info(f"Detected: {metal_type} in {lighting} lighting")
             
-            # 3. v23.0 안전한 웨딩링 보정 (색상 왜곡 방지)
-            enhanced_image = self.enhance_wedding_ring_v23(processed_image, metal_type, lighting)
+            # 3. Apply v13.3 enhancement
+            enhanced = self.apply_v13_3_enhancement(processed_image, metal_type, lighting)
             
-            # 4. v23.0 완전 흰색 배경 생성
-            final_image = self.create_white_background_v23(enhanced_image, metal_type, lighting)
+            # 4. Create white background
+            with_background = self.create_white_background(enhanced)
             
-            # 5. v23.0 썸네일 90% 확대
-            thumbnail = self.create_perfect_thumbnail_v23(final_image)
+            # 5. 2x upscale
+            h, w = with_background.shape[:2]
+            pil_img = Image.fromarray(with_background)
+            upscaled = pil_img.resize((w * 2, h * 2), Image.Resampling.LANCZOS)
+            final_image = np.array(upscaled)
             
-            # 결과 저장
-            if output_format == "enhanced":
-                results['enhanced'] = self._image_to_base64(final_image)
-            elif output_format == "thumbnail":
-                results['thumbnail'] = self._image_to_base64(thumbnail)
-            elif output_format == "both":
-                results['enhanced'] = self._image_to_base64(final_image)
-                results['thumbnail'] = self._image_to_base64(thumbnail)
+            # 6. Create perfect thumbnail (v23.2 - full frame)
+            thumbnail = self.create_perfect_thumbnail_v23_2(with_background)
             
-            results.update({
-                'metal_type': metal_type,
-                'lighting': lighting,
-                'border_removed': border_removed,
-                'version': 'v23.1_ULTRA_fixed'
-            })
+            # Convert to base64
+            # Main image
+            main_buffer = io.BytesIO()
+            Image.fromarray(final_image).save(main_buffer, format='PNG', quality=95)
+            main_base64 = base64.b64encode(main_buffer.getvalue()).decode('utf-8')
             
-            return results
+            # Thumbnail
+            thumb_buffer = io.BytesIO()
+            Image.fromarray(thumbnail).save(thumb_buffer, format='PNG', quality=95)
+            thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
+            
+            return {
+                "output": {
+                    "enhanced_image": main_base64,
+                    "thumbnail": thumb_base64,
+                    "processing_info": {
+                        "metal_type": metal_type,
+                        "lighting": lighting,
+                        "border_removed": border_removed,
+                        "version": self.version,
+                        "status": "success",
+                        "enhancements": {
+                            "black_border_removal": "v23.2_EXTREME",
+                            "thumbnail": "ring_detection_full_frame",
+                            "background": "white_248"
+                        }
+                    }
+                }
+            }
             
         except Exception as e:
             logger.error(f"Processing failed: {e}")
-            return {'error': str(e)}
+            return {
+                "output": {
+                    "enhanced_image": image_data,
+                    "thumbnail": image_data,
+                    "processing_info": {
+                        "status": "error",
+                        "error": str(e),
+                        "version": self.version
+                    }
+                }
+            }
 
-    def _image_to_base64(self, image_np: np.ndarray) -> str:
-        """NumPy 배열을 Base64로 변환"""
-        pil_image = Image.fromarray(image_np)
-        buffer = io.BytesIO()
-        pil_image.save(buffer, format='JPEG', quality=95)
-        return base64.b64encode(buffer.getvalue()).decode()
-
-# RunPod Handler
 def handler(event):
-    """RunPod 핸들러 함수"""
+    """RunPod handler function for v23.2"""
     try:
+        # Initialize processor
+        processor = WeddingRingEnhancerV23_2()
+        
+        # Get input
         input_data = event.get('input', {})
         image_data = input_data.get('image')
-        output_format = input_data.get('format', 'both')
         
         if not image_data:
-            return {'error': 'No image data provided'}
+            raise ValueError("No image data provided")
         
-        # v23.1 ULTRA 프로세서 초기화
-        processor = WeddingRingEnhancerV23Ultra()
+        # Process image
+        result = processor.process_image(image_data)
         
-        # 이미지 처리
-        results = processor.process_image(image_data, output_format)
-        
-        # RunPod Output 중첩 구조 필수
-        return {
-            'output': results
-        }
+        return result
         
     except Exception as e:
         logger.error(f"Handler error: {e}")
         return {
-            'error': str(e)
+            "output": {
+                "enhanced_image": "",
+                "thumbnail": "",
+                "processing_info": {
+                    "status": "error",
+                    "error": str(e),
+                    "version": "v23.2_EXTREME"
+                }
+            }
         }
 
-# RunPod 서버리스 시작
 if __name__ == "__main__":
-    runpod.serverless.start({"handler": handler})
+    # Test mode
+    print("Wedding Ring Enhancer v23.2 EXTREME - Ready")
