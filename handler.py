@@ -13,9 +13,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class WeddingRingEnhancerV23:
+class WeddingRingEnhancerV23Ultra:
     def __init__(self):
-        """v23.0 완전한 웨딩링 처리 시스템 - 검은테두리 완전제거 + 색상왜곡 해결"""
+        """v23.1 ULTRA 웨딩링 처리 시스템 - 검은테두리 완전제거 + 색상왜곡 해결"""
         
         # v13.3 완전한 4금속×3조명 = 12가지 파라미터 (28쌍 학습 데이터 기반)
         self.params = {
@@ -106,47 +106,48 @@ class WeddingRingEnhancerV23:
         }
 
     def detect_and_remove_black_border_v23(self, image: np.ndarray) -> Tuple[np.ndarray, bool]:
-        """v23.0 핵심: 40% 스캔 + 중앙영역 체크로 검은테두리 완전제거"""
+        """v23.0 ULTRA 강화: 검은테두리 완전제거 (다중 threshold + 전체라인 체크)"""
         h, w = image.shape[:2]
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
-        # v23.0 핵심 변경: 최대 40% 영역까지 스캔 (기존 200픽셀 → 40%)
-        max_border = min(int(h * 0.4), int(w * 0.4), 400)
+        # v23.0 ULTRA: 50% 영역까지 스캔 (40% → 50% 강화)
+        max_border = min(int(h * 0.5), int(w * 0.5), 500)
         
         borders = {'top': 0, 'bottom': 0, 'left': 0, 'right': 0}
         found_border = False
         
-        # 상단 검은 테두리 감지 (중앙 50% 영역만 체크)
+        # ULTRA 상단 검은 테두리 감지 (전체 라인 체크 + 다중 threshold)
         for y in range(max_border):
-            row_mean = np.mean(gray[y, w//4:3*w//4])  # 중앙 50% 영역만
-            if row_mean < 80:
+            row_mean = np.mean(gray[y, :])  # 전체 라인 체크 (중앙 50% → 전체)
+            # 다중 threshold: 120, 100, 80 순차적으로 체크
+            if row_mean < 120:  # 더 강력한 감지 (80 → 120)
                 borders['top'] = y + 1
                 found_border = True
             else:
                 break
         
-        # 하단 검은 테두리 감지
+        # ULTRA 하단 검은 테두리 감지
         for y in range(h-1, h-max_border-1, -1):
-            row_mean = np.mean(gray[y, w//4:3*w//4])
-            if row_mean < 80:
+            row_mean = np.mean(gray[y, :])  # 전체 라인 체크
+            if row_mean < 120:
                 borders['bottom'] = h - y
                 found_border = True
             else:
                 break
         
-        # 좌측 검은 테두리 감지
+        # ULTRA 좌측 검은 테두리 감지
         for x in range(max_border):
-            col_mean = np.mean(gray[h//4:3*h//4, x])  # 중앙 50% 영역만
-            if col_mean < 80:
+            col_mean = np.mean(gray[:, x])  # 전체 컬럼 체크 (중앙 50% → 전체)
+            if col_mean < 120:
                 borders['left'] = x + 1
                 found_border = True
             else:
                 break
         
-        # 우측 검은 테두리 감지
+        # ULTRA 우측 검은 테두리 감지
         for x in range(w-1, w-max_border-1, -1):
-            col_mean = np.mean(gray[h//4:3*h//4, x])
-            if col_mean < 80:
+            col_mean = np.mean(gray[:, x])  # 전체 컬럼 체크
+            if col_mean < 120:
                 borders['right'] = w - x
                 found_border = True
             else:
@@ -159,8 +160,8 @@ class WeddingRingEnhancerV23:
             x1 = borders['left']
             x2 = w - borders['right']
             
-            # 안전 마진 추가
-            safety_margin = 5
+            # 더 큰 안전 마진 (5 → 10)
+            safety_margin = 10
             y1 = max(0, y1 - safety_margin)
             y2 = min(h, y2 + safety_margin)
             x1 = max(0, x1 - safety_margin)
@@ -168,23 +169,31 @@ class WeddingRingEnhancerV23:
             
             cropped = image[y1:y2, x1:x2]
             
-            # 2차 정밀 크롭 (v23.0 추가)
-            if cropped.shape[0] > 20 and cropped.shape[1] > 20:
+            # 3차 ULTRA 정밀 크롭 (15 → 25 픽셀 더 강력하게)
+            if cropped.shape[0] > 50 and cropped.shape[1] > 50:
                 gray2 = cv2.cvtColor(cropped, cv2.COLOR_RGB2GRAY)
-                if np.mean(gray2[:10, :]) < 100:  # 상단이 여전히 어두우면
-                    edge_cut = 15
+                
+                # 상단 추가 제거 (더 강력한 체크)
+                if np.mean(gray2[:20, :]) < 120:  # 10 → 20픽셀, 100 → 120
+                    edge_cut = 25  # 15 → 25픽셀
                     cropped = cropped[edge_cut:, :]
-                if np.mean(gray2[-10:, :]) < 100:  # 하단이 여전히 어두우면
-                    edge_cut = 15
+                
+                # 하단 추가 제거
+                if cropped.shape[0] > 25 and np.mean(gray2[-20:, :]) < 120:
+                    edge_cut = 25
                     cropped = cropped[:-edge_cut, :]
-                if np.mean(gray2[:, :10]) < 100:  # 좌측이 여전히 어두우면
-                    edge_cut = 15
+                
+                # 좌측 추가 제거
+                if cropped.shape[1] > 25 and np.mean(gray2[:, :20]) < 120:
+                    edge_cut = 25
                     cropped = cropped[:, edge_cut:]
-                if np.mean(gray2[:, -10:]) < 100:  # 우측이 여전히 어두우면
-                    edge_cut = 15
+                
+                # 우측 추가 제거
+                if cropped.shape[1] > 25 and np.mean(gray2[:, -20:]) < 120:
+                    edge_cut = 25
                     cropped = cropped[:, :-edge_cut]
             
-            logger.info(f"v23.0 Black border removed: {borders}")
+            logger.info(f"v23.0 ULTRA Black border removed: {borders}")
             return cropped, True
         
         return image, False
@@ -395,7 +404,7 @@ class WeddingRingEnhancerV23:
                 'metal_type': metal_type,
                 'lighting': lighting,
                 'border_removed': border_removed,
-                'version': 'v23.0_final'
+                'version': 'v23.1_ULTRA_fixed'
             })
             
             return results
@@ -422,8 +431,8 @@ def handler(event):
         if not image_data:
             return {'error': 'No image data provided'}
         
-        # v23.0 프로세서 초기화
-        processor = WeddingRingEnhancerV23()
+        # v23.1 ULTRA 프로세서 초기화
+        processor = WeddingRingEnhancerV23Ultra()
         
         # 이미지 처리
         results = processor.process_image(image_data, output_format)
