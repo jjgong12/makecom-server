@@ -23,189 +23,180 @@ def handler(event):
         if image is None:
             return {"error": "Failed to decode image"}
         
-        # Step 1: Remove black border completely
-        # Convert to grayscale for better edge detection
+        # Step 1: Aggressive black border removal
+        # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Find the actual content area (non-black area)
-        # Use multiple thresholds to ensure complete black removal
-        _, thresh1 = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
-        _, thresh2 = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
-        _, thresh3 = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
+        # Find non-black pixels (anything above threshold is content)
+        # Use very low threshold to catch all black areas
+        _, binary = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
         
-        # Combine all thresholds
-        combined_thresh = cv2.bitwise_or(thresh1, cv2.bitwise_or(thresh2, thresh3))
+        # Find contours of the content
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Apply morphological operations to clean up
-        kernel = np.ones((5,5), np.uint8)
-        cleaned = cv2.morphologyEx(combined_thresh, cv2.MORPH_CLOSE, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
-        
-        # Find contours
-        contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours:
-            # If no contours found, use the whole image
-            x, y, w, h = 0, 0, image.shape[1], image.shape[0]
+        if contours:
+            # Get bounding box of all contours combined
+            x_min, y_min = image.shape[1], image.shape[0]
+            x_max, y_max = 0, 0
+            
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                x_min = min(x_min, x)
+                y_min = min(y_min, y)
+                x_max = max(x_max, x + w)
+                y_max = max(y_max, y + h)
+            
+            # Add small padding
+            padding = 5
+            x_min = max(0, x_min - padding)
+            y_min = max(0, y_min - padding)
+            x_max = min(image.shape[1], x_max + padding)
+            y_max = min(image.shape[0], y_max + padding)
+            
+            # Crop image
+            cropped = image[y_min:y_max, x_min:x_max]
         else:
-            # Find the largest contour (should be the main content)
+            cropped = image
+        
+        # Step 2: Create pure white background
+        h, w = cropped.shape[:2]
+        
+        # Scale up if image is too small
+        min_dimension = 2048
+        if w < min_dimension or h < min_dimension:
+            scale = min_dimension / min(w, h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            cropped = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+            h, w = new_h, new_w
+        
+        # Convert to RGB for PIL
+        rgb_image = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_image)
+        
+        # Step 3: Ring detection and isolation
+        # Convert to HSV for better detection
+        hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
+        
+        # Create multiple masks for different ring materials
+        # For metallic surfaces (low saturation, high value)
+        mask1 = cv2.inRange(hsv, np.array([0, 0, 100]), np.array([180, 60, 255]))
+        
+        # For gold tones
+        mask2 = cv2.inRange(hsv, np.array([10, 20, 100]), np.array([30, 255, 255]))
+        
+        # For silver/white gold
+        mask3 = cv2.inRange(hsv, np.array([0, 0, 180]), np.array([180, 30, 255]))
+        
+        # Combine masks
+        ring_mask = cv2.bitwise_or(mask1, cv2.bitwise_or(mask2, mask3))
+        
+        # Clean up mask
+        kernel = np.ones((5,5), np.uint8)
+        ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_CLOSE, kernel)
+        ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_OPEN, kernel)
+        
+        # Find largest contour (main ring area)
+        contours, _ = cv2.findContours(ring_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
             largest_contour = max(contours, key=cv2.contourArea)
+            ring_mask_clean = np.zeros(ring_mask.shape, dtype=np.uint8)
+            cv2.drawContours(ring_mask_clean, [largest_contour], -1, 255, -1)
+            
+            # Expand mask slightly for better coverage
+            ring_mask_clean = cv2.dilate(ring_mask_clean, kernel, iterations=2)
+            
+            # Get ring bounding box for processing
             x, y, w, h = cv2.boundingRect(largest_contour)
-            
-            # Add small padding to avoid cutting edges
-            padding = 10
-            x = max(0, x - padding)
-            y = max(0, y - padding)
-            w = min(image.shape[1] - x, w + 2 * padding)
-            h = min(image.shape[0] - y, h + 2 * padding)
+            ring_region = {
+                'x': x, 'y': y, 'w': w, 'h': h,
+                'cx': x + w//2, 'cy': y + h//2
+            }
+        else:
+            ring_mask_clean = np.ones(ring_mask.shape, dtype=np.uint8) * 255
+            ring_region = {
+                'x': 0, 'y': 0, 'w': w, 'h': h,
+                'cx': w//2, 'cy': h//2
+            }
         
-        # Crop to remove black border
-        cropped = image[y:y+h, x:x+w]
+        # Step 4: Detect metal type and lighting
+        metal_type, lighting = detect_metal_and_lighting(cropped, ring_mask_clean)
         
-        # Step 2: Create clean white background
-        # Get the original aspect ratio
-        original_h, original_w = cropped.shape[:2]
-        aspect_ratio = original_w / original_h
-        
-        # Create new white background with original aspect ratio
-        if aspect_ratio > 1:  # Wider than tall
-            new_w = max(original_w, 2048)
-            new_h = int(new_w / aspect_ratio)
-        else:  # Taller than wide
-            new_h = max(original_h, 2048)
-            new_w = int(new_h * aspect_ratio)
-        
-        # Create white background
-        white_bg = np.ones((new_h, new_w, 3), dtype=np.uint8) * 255
-        
-        # Resize cropped image to fit
-        resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        
-        # Step 3: Apply edge smoothing to blend with white background
-        # Create mask for edge blending
-        gray_resized = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray_resized, 240, 255, cv2.THRESH_BINARY_INV)
-        
-        # Dilate mask slightly for smoother edges
-        kernel_small = np.ones((3,3), np.uint8)
-        mask = cv2.dilate(mask, kernel_small, iterations=1)
-        
-        # Apply Gaussian blur to mask for smooth blending
-        mask_blur = cv2.GaussianBlur(mask, (5, 5), 0)
-        
-        # Convert mask to 3 channels
-        mask_3ch = cv2.cvtColor(mask_blur, cv2.COLOR_GRAY2BGR) / 255.0
-        
-        # Blend image with white background using the mask
-        result = resized * mask_3ch + white_bg * (1 - mask_3ch)
-        result = result.astype(np.uint8)
-        
-        # Step 4: Detect ring area for enhancement
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
-        
-        # Create mask for metallic/shiny areas (rings)
-        # Lower saturation areas with high value (brightness)
-        lower_metal = np.array([0, 0, 150])
-        upper_metal = np.array([180, 50, 255])
-        metal_mask = cv2.inRange(hsv, lower_metal, upper_metal)
-        
-        # Clean up the mask
-        metal_mask = cv2.morphologyEx(metal_mask, cv2.MORPH_CLOSE, kernel)
-        metal_mask = cv2.morphologyEx(metal_mask, cv2.MORPH_OPEN, kernel)
-        
-        # Find ring contours
-        ring_contours, _ = cv2.findContours(metal_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Create ring enhancement mask
-        ring_mask = np.zeros(result.shape[:2], dtype=np.uint8)
-        if ring_contours:
-            # Filter contours by area to get only significant ones
-            min_area = 1000
-            valid_contours = [c for c in ring_contours if cv2.contourArea(c) > min_area]
-            
-            if valid_contours:
-                cv2.drawContours(ring_mask, valid_contours, -1, 255, -1)
-                # Dilate slightly for better coverage
-                ring_mask = cv2.dilate(ring_mask, kernel, iterations=2)
-                # Blur for smooth transition
-                ring_mask = cv2.GaussianBlur(ring_mask, (15, 15), 0)
-        
-        # Step 5: Apply v13.3 wedding ring enhancement parameters
-        # Detect metal type and lighting
-        metal_type, lighting = detect_metal_and_lighting(result, ring_mask)
-        
-        # Get enhancement parameters
+        # Step 5: Apply v13.3 enhancement
         params = get_v13_3_params(metal_type, lighting)
         
-        # Convert to PIL for enhancement
-        pil_image = Image.fromarray(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+        # Create enhanced version
+        enhanced = pil_image.copy()
         
-        # Apply enhancements selectively
-        if np.any(ring_mask > 0):
-            # Create enhanced version
-            enhanced = pil_image.copy()
-            
-            # Brightness
-            if params['brightness'] != 1.0:
-                enhancer = ImageEnhance.Brightness(enhanced)
-                enhanced = enhancer.enhance(params['brightness'])
-            
-            # Contrast
-            if params['contrast'] != 1.0:
-                enhancer = ImageEnhance.Contrast(enhanced)
-                enhanced = enhancer.enhance(params['contrast'])
-            
-            # Sharpness
-            if params['sharpness'] != 1.0:
-                enhancer = ImageEnhance.Sharpness(enhanced)
-                enhanced = enhancer.enhance(params['sharpness'])
-            
-            # Convert back to numpy
-            enhanced_np = np.array(enhanced)
-            original_np = np.array(pil_image)
-            
-            # Apply ring mask for selective enhancement
-            ring_mask_3ch = np.stack([ring_mask/255.0]*3, axis=-1)
-            final_enhanced = (enhanced_np * ring_mask_3ch + original_np * (1 - ring_mask_3ch)).astype(np.uint8)
-            
-            # Apply white overlay if needed
-            if params['white_overlay'] > 0:
-                white_layer = np.ones_like(final_enhanced) * 255
-                overlay_mask = ring_mask_3ch * params['white_overlay']
-                final_enhanced = (final_enhanced * (1 - overlay_mask) + white_layer * overlay_mask).astype(np.uint8)
-            
-            # Apply color temperature adjustment to ring area only
-            if params['color_temp_a'] != 0 or params['color_temp_b'] != 0:
-                # Convert to LAB
-                lab = cv2.cvtColor(final_enhanced, cv2.COLOR_RGB2LAB).astype(np.float32)
-                
-                # Apply color temperature to ring area
-                lab[:,:,1] = np.where(ring_mask > 0, 
-                                     np.clip(lab[:,:,1] + params['color_temp_a'], 0, 255),
-                                     lab[:,:,1])
-                lab[:,:,2] = np.where(ring_mask > 0,
-                                     np.clip(lab[:,:,2] + params['color_temp_b'], 0, 255),
-                                     lab[:,:,2])
-                
-                # Convert back to RGB
-                final_enhanced = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
-            
-            # Blend with original based on blend parameter
-            if params['original_blend'] > 0:
-                final_enhanced = (final_enhanced * (1 - params['original_blend']) + 
-                                original_np * params['original_blend']).astype(np.uint8)
-            
-            final_pil = Image.fromarray(final_enhanced)
-        else:
-            final_pil = pil_image
+        # Apply brightness
+        if params['brightness'] != 1.0:
+            enhancer = ImageEnhance.Brightness(enhanced)
+            enhanced = enhancer.enhance(params['brightness'])
         
-        # Step 6: Final quality enhancement
-        # Apply subtle unsharp mask for crisp details
-        final_pil = final_pil.filter(ImageFilter.UnsharpMask(radius=1, percent=50, threshold=0))
+        # Apply contrast
+        if params['contrast'] != 1.0:
+            enhancer = ImageEnhance.Contrast(enhanced)
+            enhanced = enhancer.enhance(params['contrast'])
         
-        # Step 7: Create thumbnail (1000x1300)
-        thumb = create_thumbnail(final_pil, ring_mask if np.any(ring_mask > 0) else None)
+        # Apply sharpness
+        if params['sharpness'] != 1.0:
+            enhancer = ImageEnhance.Sharpness(enhanced)
+            enhanced = enhancer.enhance(params['sharpness'])
+        
+        # Convert to numpy for advanced processing
+        enhanced_np = np.array(enhanced)
+        original_np = np.array(pil_image)
+        
+        # Apply color temperature adjustment
+        if params['color_temp_a'] != 0 or params['color_temp_b'] != 0:
+            # Convert to LAB color space
+            lab = cv2.cvtColor(enhanced_np, cv2.COLOR_RGB2LAB).astype(np.float32)
+            
+            # Apply adjustments
+            lab[:,:,1] += params['color_temp_a']
+            lab[:,:,2] += params['color_temp_b']
+            
+            # Clip values
+            lab[:,:,1] = np.clip(lab[:,:,1], 0, 255)
+            lab[:,:,2] = np.clip(lab[:,:,2], 0, 255)
+            
+            # Convert back to RGB
+            enhanced_np = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+        
+        # Apply white overlay to ring area only
+        if params['white_overlay'] > 0:
+            # Create white overlay
+            white_overlay = np.ones_like(enhanced_np) * 255
+            
+            # Apply overlay using ring mask
+            ring_mask_3ch = cv2.cvtColor(ring_mask_clean, cv2.COLOR_GRAY2BGR) / 255.0
+            overlay_strength = params['white_overlay'] * ring_mask_3ch
+            
+            enhanced_np = (enhanced_np * (1 - overlay_strength) + white_overlay * overlay_strength).astype(np.uint8)
+        
+        # Blend with original
+        if params['original_blend'] > 0:
+            enhanced_np = (enhanced_np * (1 - params['original_blend']) + original_np * params['original_blend']).astype(np.uint8)
+        
+        # Step 6: Create clean white background composite
+        # Create pure white background
+        white_bg = np.ones((h, w, 3), dtype=np.uint8) * 255
+        
+        # Create smooth mask for blending
+        ring_mask_blur = cv2.GaussianBlur(ring_mask_clean, (21, 21), 0)
+        ring_mask_3ch = cv2.cvtColor(ring_mask_blur, cv2.COLOR_GRAY2BGR) / 255.0
+        
+        # Composite enhanced ring onto white background
+        final_image = (enhanced_np * ring_mask_3ch + white_bg * (1 - ring_mask_3ch)).astype(np.uint8)
+        
+        # Convert to PIL
+        final_pil = Image.fromarray(final_image)
+        
+        # Apply final sharpening
+        final_pil = final_pil.filter(ImageFilter.UnsharpMask(radius=2, percent=100, threshold=0))
+        
+        # Step 7: Create thumbnail
+        thumbnail = create_thumbnail(final_pil, ring_region)
         
         # Convert to base64
         # Main image
@@ -215,10 +206,10 @@ def handler(event):
         
         # Thumbnail
         thumb_buffer = io.BytesIO()
-        thumb.save(thumb_buffer, format='JPEG', quality=95, progressive=True, optimize=True)
+        thumbnail.save(thumb_buffer, format='JPEG', quality=95, progressive=True, optimize=True)
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode()
         
-        # Return with output nesting structure (CRITICAL!)
+        # Return with output nesting
         return {
             "output": {
                 "enhanced_image": main_base64,
@@ -227,12 +218,13 @@ def handler(event):
                     "metal_type": metal_type,
                     "lighting": lighting,
                     "original_size": f"{image.shape[1]}x{image.shape[0]}",
-                    "cropped_size": f"{original_w}x{original_h}",
+                    "cropped_size": f"{w}x{h}",
                     "final_size": f"{final_pil.width}x{final_pil.height}",
                     "thumbnail_size": "1000x1300",
                     "black_border_removed": True,
+                    "white_background": True,
                     "enhancement_applied": True,
-                    "version": "v20.0",
+                    "version": "v20.1",
                     "status": "success"
                 }
             }
@@ -243,59 +235,53 @@ def handler(event):
             "output": {
                 "error": f"Processing error: {str(e)}",
                 "status": "failed",
-                "version": "v20.0"
+                "version": "v20.1"
             }
         }
 
-def detect_metal_and_lighting(image_np, ring_mask=None):
+def detect_metal_and_lighting(image_np, ring_mask):
     """Detect metal type and lighting condition"""
     try:
-        # Convert to RGB if needed
-        if len(image_np.shape) == 2:
-            image_np = cv2.cvtColor(image_np, cv2.COLOR_GRAY2RGB)
-        elif image_np.shape[2] == 4:
-            image_np = cv2.cvtColor(image_np, cv2.COLOR_BGRA2RGB)
-        elif image_np.shape[2] == 3:
-            image_np = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+        # Get ring pixels only
+        ring_pixels = image_np[ring_mask > 128]
         
-        # Use ring area if mask provided, otherwise use center area
-        if ring_mask is not None and np.any(ring_mask > 0):
-            mask_bool = ring_mask > 128
-            masked_pixels = image_np[mask_bool]
-            if len(masked_pixels) > 0:
-                avg_color = np.mean(masked_pixels, axis=0)
-            else:
-                avg_color = np.mean(image_np, axis=(0, 1))
-        else:
-            # Use center region
+        if len(ring_pixels) == 0:
+            # Fallback to center region
             h, w = image_np.shape[:2]
-            center_y, center_x = h // 2, w // 2
-            region_size = min(h, w) // 4
-            center_region = image_np[center_y-region_size:center_y+region_size,
-                                   center_x-region_size:center_x+region_size]
+            center_region = image_np[h//3:2*h//3, w//3:2*w//3]
             avg_color = np.mean(center_region, axis=(0, 1))
-        
-        r, g, b = avg_color
-        
-        # Calculate color characteristics
-        brightness = np.mean(avg_color)
-        rg_ratio = r / (g + 1)
-        rb_ratio = r / (b + 1)
-        
-        # Metal type detection
-        if rg_ratio > 1.15 and rb_ratio > 1.2:
-            metal_type = "rose_gold"
-        elif brightness > 200 and abs(r - g) < 10 and abs(g - b) < 10:
-            metal_type = "white_gold"
-        elif rg_ratio > 1.05 and brightness > 180:
-            metal_type = "yellow_gold"
         else:
-            metal_type = "white_gold"  # Default
+            avg_color = np.mean(ring_pixels, axis=0)
         
-        # Lighting detection
-        if brightness > 220:
+        # BGR to RGB
+        b, g, r = avg_color
+        
+        # Calculate characteristics
+        brightness = np.mean(avg_color)
+        
+        # Color ratios
+        max_color = max(r, g, b)
+        if max_color > 0:
+            r_ratio = r / max_color
+            g_ratio = g / max_color
+            b_ratio = b / max_color
+        else:
+            r_ratio = g_ratio = b_ratio = 1
+        
+        # Detect metal type
+        if r_ratio > 0.95 and g_ratio > 0.85 and g_ratio < 0.95:
+            metal_type = "rose_gold"
+        elif r_ratio > 0.95 and g_ratio > 0.9 and b_ratio < 0.8:
+            metal_type = "yellow_gold"
+        elif abs(r_ratio - g_ratio) < 0.05 and abs(g_ratio - b_ratio) < 0.05:
+            metal_type = "white_gold"
+        else:
+            metal_type = "mixed_metal"
+        
+        # Detect lighting
+        if brightness > 200:
             lighting = "bright"
-        elif brightness < 180:
+        elif brightness < 150:
             lighting = "ambient"
         else:
             lighting = "natural"
@@ -433,40 +419,52 @@ def get_v13_3_params(metal_type, lighting):
         # Default fallback
         return params_v13_3['white_gold']['natural']
 
-def create_thumbnail(pil_image, ring_mask=None):
+def create_thumbnail(pil_image, ring_region):
     """Create 1000x1300 thumbnail with ring centered"""
     target_width = 1000
     target_height = 1300
     
-    # If we have a ring mask, use it to find the ring area
-    if ring_mask is not None and np.any(ring_mask > 0):
-        # Find bounding box of the ring
-        y_indices, x_indices = np.where(ring_mask > 0)
-        if len(y_indices) > 0 and len(x_indices) > 0:
-            y_min, y_max = y_indices.min(), y_indices.max()
-            x_min, x_max = x_indices.min(), x_indices.max()
-            
-            # Add padding
-            padding = 50
-            y_min = max(0, y_min - padding)
-            y_max = min(pil_image.height, y_max + padding)
-            x_min = max(0, x_min - padding)
-            x_max = min(pil_image.width, x_max + padding)
-            
-            # Crop to ring area
-            ring_crop = pil_image.crop((x_min, y_min, x_max, y_max))
-        else:
-            ring_crop = pil_image
-    else:
-        ring_crop = pil_image
+    # Get ring center and dimensions
+    cx = ring_region['cx']
+    cy = ring_region['cy']
+    rw = ring_region['w']
+    rh = ring_region['h']
     
-    # Calculate scale to fit in 1000x1300 while maintaining aspect ratio
+    # Calculate crop area to center the ring
+    # Make crop area larger than ring to include some background
+    crop_factor = 1.5
+    crop_w = int(rw * crop_factor)
+    crop_h = int(rh * crop_factor)
+    
+    # Calculate crop coordinates
+    x1 = max(0, cx - crop_w // 2)
+    y1 = max(0, cy - crop_h // 2)
+    x2 = min(pil_image.width, x1 + crop_w)
+    y2 = min(pil_image.height, y1 + crop_h)
+    
+    # Adjust if crop went out of bounds
+    if x2 - x1 < crop_w:
+        if x1 == 0:
+            x2 = min(pil_image.width, crop_w)
+        else:
+            x1 = max(0, pil_image.width - crop_w)
+    
+    if y2 - y1 < crop_h:
+        if y1 == 0:
+            y2 = min(pil_image.height, crop_h)
+        else:
+            y1 = max(0, pil_image.height - crop_h)
+    
+    # Crop to ring area
+    ring_crop = pil_image.crop((x1, y1, x2, y2))
+    
+    # Calculate scale to fit in target size
     crop_w, crop_h = ring_crop.size
     scale_w = target_width / crop_w
     scale_h = target_height / crop_h
-    scale = min(scale_w, scale_h) * 0.8  # 80% to leave some margin
+    scale = min(scale_w, scale_h) * 0.8  # 80% to leave margin
     
-    # Resize the cropped area
+    # Resize
     new_w = int(crop_w * scale)
     new_h = int(crop_h * scale)
     resized = ring_crop.resize((new_w, new_h), Image.Resampling.LANCZOS)
@@ -479,8 +477,8 @@ def create_thumbnail(pil_image, ring_mask=None):
     y_offset = (target_height - new_h) // 2
     thumbnail.paste(resized, (x_offset, y_offset))
     
-    # Apply subtle sharpening
-    thumbnail = thumbnail.filter(ImageFilter.UnsharpMask(radius=1, percent=30, threshold=0))
+    # Apply sharpening
+    thumbnail = thumbnail.filter(ImageFilter.UnsharpMask(radius=1, percent=50, threshold=0))
     
     return thumbnail
 
