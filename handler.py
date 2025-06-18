@@ -6,6 +6,7 @@ import base64
 import io
 import logging
 from typing import Dict, Tuple, Optional
+import runpod
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -531,11 +532,12 @@ def handler(event):
         # Initialize processor
         processor = WeddingRingEnhancerV23_2()
         
-        # Get input
+        # Get input - check both 'image' and 'image_base64'
         input_data = event.get('input', {})
-        image_data = input_data.get('image')
+        image_data = input_data.get('image') or input_data.get('image_base64')
         
         if not image_data:
+            logger.error(f"No image data found. Event structure: {event}")
             raise ValueError("No image data provided")
         
         # Process image
@@ -555,3 +557,4 @@ def handler(event):
 if __name__ == "__main__":
     # Test mode
     print("Wedding Ring Enhancer v23.2 - Ready")
+    runpod.serverless.start({"handler": handler})
