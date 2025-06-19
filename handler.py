@@ -2,12 +2,14 @@ import runpod
 import base64
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import io
+from io import BytesIO
+import logging
 
-def log(message):
-    """Simple logging function"""
-    print(f"[Wedding Ring AI v71 Supreme] {message}")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def detect_and_remove_black_border_supreme(image):
     """
@@ -23,7 +25,7 @@ def detect_and_remove_black_border_supreme(image):
     original_h, original_w = h, w
     
     # PASS 1: Ultra aggressive scan (50% of image, like v23.1 ULTRA)
-    log("PASS 1: Ultra aggressive border scan - 50% area")
+    logger.info("PASS 1: Ultra aggressive border scan - 50% area")
     max_border = min(int(h * 0.5), int(w * 0.5), 500)
     
     # Top border - check entire row
@@ -81,13 +83,13 @@ def detect_and_remove_black_border_supreme(image):
     
     # Apply PASS 1
     if top_crop > 0 or bottom_crop < h or left_crop > 0 or right_crop < w:
-        log(f"PASS 1 removed: top={top_crop}, bottom={h-bottom_crop}, left={left_crop}, right={w-right_crop}")
+        logger.info(f"PASS 1 removed: top={top_crop}, bottom={h-bottom_crop}, left={left_crop}, right={w-right_crop}")
         image = image[top_crop:bottom_crop, left_crop:right_crop]
         gray = gray[top_crop:bottom_crop, left_crop:right_crop]
         h, w = gray.shape
     
     # PASS 2: Secondary precision crop (like v23.1)
-    log("PASS 2: Precision border removal")
+    logger.info("PASS 2: Precision border removal")
     
     # Check smaller area for remaining borders
     check_size = min(30, int(h * 0.1), int(w * 0.1))
@@ -102,7 +104,7 @@ def detect_and_remove_black_border_supreme(image):
         if top_extra > 0:
             image = image[top_extra:, :]
             gray = gray[top_extra:, :]
-            log(f"PASS 2 removed additional {top_extra}px from top")
+            logger.info(f"PASS 2 removed additional {top_extra}px from top")
     
     # Bottom edge check
     h, w = gray.shape
@@ -115,7 +117,7 @@ def detect_and_remove_black_border_supreme(image):
         if bottom_extra > 0:
             image = image[:-bottom_extra, :]
             gray = gray[:-bottom_extra, :]
-            log(f"PASS 2 removed additional {bottom_extra}px from bottom")
+            logger.info(f"PASS 2 removed additional {bottom_extra}px from bottom")
     
     # Left edge check
     h, w = gray.shape
@@ -128,7 +130,7 @@ def detect_and_remove_black_border_supreme(image):
         if left_extra > 0:
             image = image[:, left_extra:]
             gray = gray[:, left_extra:]
-            log(f"PASS 2 removed additional {left_extra}px from left")
+            logger.info(f"PASS 2 removed additional {left_extra}px from left")
     
     # Right edge check
     h, w = gray.shape
@@ -141,10 +143,10 @@ def detect_and_remove_black_border_supreme(image):
         if right_extra > 0:
             image = image[:, :-right_extra]
             gray = gray[:, :-right_extra]
-            log(f"PASS 2 removed additional {right_extra}px from right")
+            logger.info(f"PASS 2 removed additional {right_extra}px from right")
     
     # PASS 3: Final fine-tuning (very aggressive)
-    log("PASS 3: Final edge cleaning")
+    logger.info("PASS 3: Final edge cleaning")
     h, w = gray.shape
     
     # Ultra fine edge removal - even more aggressive
@@ -153,118 +155,241 @@ def detect_and_remove_black_border_supreme(image):
     if np.mean(gray[:edge_check, :]) < 100:
         image = image[edge_check:, :]
         gray = gray[edge_check:, :]
-        log("PASS 3 removed 15px from top")
+        logger.info("PASS 3 removed 15px from top")
     
     if gray.shape[0] > edge_check and np.mean(gray[-edge_check:, :]) < 100:
         image = image[:-edge_check, :]
         gray = gray[:-edge_check, :]
-        log("PASS 3 removed 15px from bottom")
+        logger.info("PASS 3 removed 15px from bottom")
     
     if gray.shape[1] > edge_check and np.mean(gray[:, :edge_check]) < 100:
         image = image[:, edge_check:]
         gray = gray[:, edge_check:]
-        log("PASS 3 removed 15px from left")
+        logger.info("PASS 3 removed 15px from left")
     
     if gray.shape[1] > edge_check and np.mean(gray[:, -edge_check:]) < 100:
         image = image[:, :-edge_check]
-        log("PASS 3 removed 15px from right")
+        logger.info("PASS 3 removed 15px from right")
     
     # Final safety check
     final_h, final_w = image.shape[:2]
     if final_h < original_h * 0.3 or final_w < original_w * 0.3:
-        log("Warning: Removed too much, but proceeding anyway")
+        logger.warning("Warning: Removed too much, but proceeding anyway")
     
-    log(f"Supreme removal complete: {original_h}x{original_w} -> {final_h}x{final_w}")
+    logger.info(f"Supreme removal complete: {original_h}x{original_w} -> {final_h}x{final_w}")
     return image
 
-def enhance_wedding_ring(image):
+def detect_ring_opencv(image):
     """
-    Enhanced wedding ring processing with strong corrections
+    Detect wedding ring(s) in the image using OpenCV
     """
-    # Convert to PIL
-    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Strong brightness boost for wedding rings
-    enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(1.4)
-    
-    # Strong contrast for metal definition
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.3)
-    
-    # Maximum sharpness for details
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(2.0)
-    
-    # Slight color enhancement
-    enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(1.1)
-    
-    # Convert back to OpenCV
-    enhanced = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    
-    # Additional OpenCV processing
-    # Strong denoise
-    enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
-    
-    # Unsharp mask for extra pop
-    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 3.0)
-    enhanced = cv2.addWeighted(enhanced, 1.7, gaussian, -0.7, 0)
-    
-    # Ensure pure white background (248, 248, 248)
-    gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
-    enhanced[mask == 255] = [248, 248, 248]
-    
-    return enhanced
-
-def create_thumbnail_supreme(image, target_size=(1000, 1300)):
-    """
-    Create thumbnail with supreme border removal - matching main image logic
-    """
-    log("Creating supreme thumbnail with same border removal")
-    
-    # Apply same supreme border removal as main image
-    image_clean = detect_and_remove_black_border_supreme(image.copy())
-    
-    h, w = image_clean.shape[:2]
-    
-    # Convert to grayscale for ring detection
-    gray = cv2.cvtColor(image_clean, cv2.COLOR_BGR2GRAY)
-    
-    # Binary threshold for ring detection
+    # Binary threshold
     _, binary = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)
     
     # Morphological operations to connect ring parts
     kernel = np.ones((5, 5), np.uint8)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
     
     # Find contours
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    if contours:
-        # Get bounding box of all contours (entire ring set)
-        x_min, y_min = w, h
-        x_max, y_max = 0, 0
-        
-        for contour in contours:
-            x, y, w_c, h_c = cv2.boundingRect(contour)
-            x_min = min(x_min, x)
-            y_min = min(y_min, y)
-            x_max = max(x_max, x + w_c)
-            y_max = max(y_max, y + h_c)
-        
+    if not contours:
+        return None
+    
+    # Get bounding box of all significant contours
+    valid_contours = [c for c in contours if cv2.contourArea(c) > 500]
+    
+    if not valid_contours:
+        return None
+    
+    # Get overall bounding box
+    x_min, y_min = float('inf'), float('inf')
+    x_max, y_max = 0, 0
+    
+    for contour in valid_contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        x_min = min(x_min, x)
+        y_min = min(y_min, y)
+        x_max = max(x_max, x + w)
+        y_max = max(y_max, y + h)
+    
+    return (x_min, y_min, x_max - x_min, y_max - y_min)
+
+def enhance_wedding_ring(image, metal_type='white_gold', lighting='balanced'):
+    """
+    Enhanced wedding ring processing with metal-specific adjustments
+    """
+    # Convert to PIL
+    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    
+    # Metal-specific enhancement parameters
+    metal_params = {
+        'white_gold': {
+            'brightness': 1.4,
+            'contrast': 1.3,
+            'saturation': 0.95,
+            'temperature': -5
+        },
+        'yellow_gold': {
+            'brightness': 1.35,
+            'contrast': 1.25,
+            'saturation': 1.15,
+            'temperature': 10
+        },
+        'rose_gold': {
+            'brightness': 1.35,
+            'contrast': 1.2,
+            'saturation': 1.2,
+            'temperature': 15
+        },
+        'platinum': {
+            'brightness': 1.45,
+            'contrast': 1.35,
+            'saturation': 0.9,
+            'temperature': -10
+        }
+    }
+    
+    # Lighting-specific adjustments
+    lighting_params = {
+        'studio': {
+            'brightness_mult': 1.0,
+            'contrast_mult': 1.1,
+            'highlights': 1.2
+        },
+        'natural': {
+            'brightness_mult': 1.05,
+            'contrast_mult': 0.95,
+            'highlights': 1.0
+        },
+        'mixed': {
+            'brightness_mult': 1.02,
+            'contrast_mult': 1.0,
+            'highlights': 1.1
+        },
+        'balanced': {
+            'brightness_mult': 1.0,
+            'contrast_mult': 1.0,
+            'highlights': 1.05
+        }
+    }
+    
+    # Get parameters
+    metal = metal_params.get(metal_type, metal_params['white_gold'])
+    light = lighting_params.get(lighting, lighting_params['balanced'])
+    
+    # Apply brightness with lighting adjustment
+    enhancer = ImageEnhance.Brightness(pil_image)
+    pil_image = enhancer.enhance(metal['brightness'] * light['brightness_mult'])
+    
+    # Apply contrast with lighting adjustment
+    enhancer = ImageEnhance.Contrast(pil_image)
+    pil_image = enhancer.enhance(metal['contrast'] * light['contrast_mult'])
+    
+    # Apply saturation
+    enhancer = ImageEnhance.Color(pil_image)
+    pil_image = enhancer.enhance(metal['saturation'])
+    
+    # Maximum sharpness for details
+    enhancer = ImageEnhance.Sharpness(pil_image)
+    pil_image = enhancer.enhance(2.0)
+    
+    # Convert back to OpenCV for advanced processing
+    enhanced = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    
+    # Apply color temperature adjustment
+    if metal['temperature'] != 0:
+        if metal['temperature'] > 0:  # Warmer
+            enhanced[:,:,0] = np.clip(enhanced[:,:,0] * 0.95, 0, 255)  # Less blue
+            enhanced[:,:,2] = np.clip(enhanced[:,:,2] * 1.05, 0, 255)  # More red
+        else:  # Cooler
+            enhanced[:,:,0] = np.clip(enhanced[:,:,0] * 1.05, 0, 255)  # More blue
+            enhanced[:,:,2] = np.clip(enhanced[:,:,2] * 0.95, 0, 255)  # Less red
+    
+    # Bilateral filter for smoothness while preserving edges
+    enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
+    
+    # Highlight enhancement for sparkle
+    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    
+    # Enhance highlights
+    highlight_threshold = 200
+    highlights_mask = cv2.inRange(l, highlight_threshold, 255)
+    l[highlights_mask > 0] = np.clip(l[highlights_mask > 0] * light['highlights'], 0, 255).astype(np.uint8)
+    
+    # Merge back
+    enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+    
+    # Final unsharp mask for pop
+    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 3.0)
+    enhanced = cv2.addWeighted(enhanced, 1.7, gaussian, -0.7, 0)
+    
+    return enhanced
+
+def create_professional_background(image):
+    """
+    Create a professional white background for the image
+    """
+    # Convert to PIL
+    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    
+    # Create slightly larger canvas for breathing room
+    width, height = pil_image.size
+    new_width = int(width * 1.1)
+    new_height = int(height * 1.1)
+    
+    # Create professional white background (248, 248, 248)
+    background = Image.new('RGB', (new_width, new_height), (248, 248, 248))
+    
+    # Center the image
+    x_offset = (new_width - width) // 2
+    y_offset = (new_height - height) // 2
+    background.paste(pil_image, (x_offset, y_offset))
+    
+    # Add very subtle vignette for depth
+    vignette = Image.new('L', (new_width, new_height), 255)
+    for i in range(3):
+        vignette = vignette.filter(ImageFilter.GaussianBlur(50))
+    
+    # Apply vignette
+    background = Image.composite(
+        background,
+        Image.new('RGB', (new_width, new_height), (240, 240, 240)),
+        vignette
+    )
+    
+    return background
+
+def create_thumbnail_supreme(image, ring_bbox=None, target_size=(1000, 1300)):
+    """
+    Create thumbnail with supreme border removal and ring detection
+    """
+    logger.info("Creating supreme thumbnail")
+    
+    # Apply same supreme border removal as main image
+    image_clean = detect_and_remove_black_border_supreme(image.copy())
+    
+    # If no bbox provided, detect it
+    if ring_bbox is None:
+        ring_bbox = detect_ring_opencv(image_clean)
+    
+    if ring_bbox is not None:
+        x, y, w, h = ring_bbox
         # Minimal padding (1%)
-        padding = int(max(x_max - x_min, y_max - y_min) * 0.01)
-        x_min = max(0, x_min - padding)
-        y_min = max(0, y_min - padding)
-        x_max = min(w, x_max + padding)
-        y_max = min(h, y_max + padding)
+        padding = int(max(w, h) * 0.01)
+        x = max(0, x - padding)
+        y = max(0, y - padding)
+        w = min(image_clean.shape[1] - x, w + 2 * padding)
+        h = min(image_clean.shape[0] - y, h + 2 * padding)
         
         # Crop to ring area
-        ring_crop = image_clean[y_min:y_max, x_min:x_max]
+        ring_crop = image_clean[y:y+h, x:x+w]
     else:
-        log("No contours found, using cleaned image directly")
+        logger.warning("No ring detected, using full cleaned image")
         ring_crop = image_clean
     
     # Create white background
@@ -281,7 +406,7 @@ def create_thumbnail_supreme(image, target_size=(1000, 1300)):
     # Resize with high quality
     ring_resized = cv2.resize(ring_crop, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
     
-    # Enhance the thumbnail
+    # Apply enhancement
     ring_resized = enhance_wedding_ring(ring_resized)
     
     # Center on background
@@ -290,12 +415,19 @@ def create_thumbnail_supreme(image, target_size=(1000, 1300)):
     
     background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = ring_resized
     
-    log(f"Thumbnail created: {new_width}x{new_height} ring in {target_size[0]}x{target_size[1]} canvas")
-    return background
+    logger.info(f"Thumbnail created: {new_width}x{new_height} ring in {target_size[0]}x{target_size[1]} canvas")
+    
+    # Convert to PIL for final polish
+    thumbnail = Image.fromarray(cv2.cvtColor(background, cv2.COLOR_BGR2RGB))
+    
+    # Add subtle sharpening
+    thumbnail = thumbnail.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=3))
+    
+    return thumbnail
 
 def handler(job):
-    """RunPod handler function"""
-    log("Starting v71 Supreme processing")
+    """RunPod handler function with full v70 features + v71 supreme border removal"""
+    logger.info("Starting v71 Supreme processing")
     
     try:
         job_input = job['input']
@@ -324,51 +456,91 @@ def handler(job):
         if image is None:
             raise ValueError("Failed to decode image")
         
-        log(f"Image loaded: {image.shape}")
+        logger.info(f"Image loaded: {image.shape}")
         
-        # Apply supreme black border removal
-        image_clean = detect_and_remove_black_border_supreme(image)
-        log(f"After border removal: {image_clean.shape}")
+        # Step 1: Apply supreme black border removal
+        logger.info("Applying supreme border removal...")
+        processed_image = detect_and_remove_black_border_supreme(image)
+        logger.info(f"After border removal: {processed_image.shape}")
         
-        # Enhance the cleaned image
-        enhanced = enhance_wedding_ring(image_clean)
+        # Step 2: Detect ring for better processing
+        logger.info("Detecting wedding ring...")
+        ring_bbox = detect_ring_opencv(processed_image)
         
-        # Convert main image to base64
-        _, buffer = cv2.imencode('.png', enhanced, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-        enhanced_base64 = base64.b64encode(buffer).decode('utf-8')
-        enhanced_base64 = enhanced_base64.rstrip('=')  # Remove padding
+        # Step 3: Enhance with metal and lighting parameters
+        metal_type = job_input.get("metal_type", "white_gold")
+        lighting = job_input.get("lighting", "balanced")
         
-        # Create thumbnail with same supreme border removal
-        thumbnail = create_thumbnail_supreme(image, target_size=(1000, 1300))
+        logger.info(f"Enhancing ring - Metal: {metal_type}, Lighting: {lighting}")
+        enhanced_image = enhance_wedding_ring(processed_image, metal_type, lighting)
         
-        # Convert thumbnail to base64
-        _, thumb_buffer = cv2.imencode('.png', thumbnail, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-        thumbnail_base64 = base64.b64encode(thumb_buffer).decode('utf-8')
-        thumbnail_base64 = thumbnail_base64.rstrip('=')  # Remove padding
+        # Step 4: Create professional background
+        final_image = create_professional_background(enhanced_image)
         
-        log("Processing complete - v71 Supreme")
+        # Step 5: Create supreme thumbnail
+        logger.info("Creating supreme thumbnail...")
+        thumbnail = create_thumbnail_supreme(image, ring_bbox, target_size=(1000, 1300))
         
-        # Return with correct structure for Make.com
+        # Convert images to base64
+        # Main image
+        main_buffer = BytesIO()
+        # Convert numpy array to PIL if needed
+        if isinstance(final_image, np.ndarray):
+            final_image = Image.fromarray(cv2.cvtColor(final_image, cv2.COLOR_BGR2RGB))
+        final_image.save(main_buffer, format='PNG', optimize=True)
+        main_base64 = base64.b64encode(main_buffer.getvalue()).decode('utf-8')
+        main_base64 = main_base64.rstrip('=')  # Remove padding for Make.com
+        
+        # Thumbnail
+        thumb_buffer = BytesIO()
+        thumbnail.save(thumb_buffer, format='PNG', optimize=True)
+        thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
+        thumb_base64 = thumb_base64.rstrip('=')  # Remove padding
+        
+        logger.info("Processing completed successfully - v71 Supreme")
+        
+        # Return with proper structure for Make.com
         return {
             "output": {
-                "enhanced_image": enhanced_base64,
-                "thumbnail": thumbnail_base64,
+                "enhanced_image": main_base64,
+                "thumbnail": thumb_base64,
                 "processing_info": {
                     "version": "v71_supreme",
+                    "metal_type": metal_type,
+                    "lighting": lighting,
                     "original_size": list(image.shape[:2]),
-                    "cleaned_size": list(image_clean.shape[:2]),
+                    "processed_size": list(processed_image.shape[:2]),
+                    "thumbnail_size": [1000, 1300],
                     "border_removed": True,
+                    "removal_passes": 3,
+                    "ring_detected": ring_bbox is not None,
+                    "ring_bbox": list(ring_bbox) if ring_bbox else None,
+                    "enhancements_applied": [
+                        "supreme_border_removal",
+                        "metal_specific_correction",
+                        "lighting_adjustment",
+                        "professional_background",
+                        "highlight_enhancement",
+                        "color_temperature_adjustment"
+                    ],
                     "status": "success"
                 }
             }
         }
         
     except Exception as e:
-        log(f"Error: {str(e)}")
+        logger.error(f"Handler error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {
             "output": {
                 "error": str(e),
-                "status": "error"
+                "status": "error",
+                "processing_info": {
+                    "version": "v71_supreme",
+                    "error_type": type(e).__name__,
+                    "traceback": traceback.format_exc()
+                }
             }
         }
 
