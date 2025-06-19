@@ -47,6 +47,11 @@ class WeddingRingProcessor:
             if ',' in base64_str:
                 base64_str = base64_str.split(',')[1]
             
+            # Add padding if missing (for proper decode)
+            missing_padding = len(base64_str) % 4
+            if missing_padding:
+                base64_str += '=' * (4 - missing_padding)
+            
             # Decode base64
             img_bytes = base64.b64decode(base64_str)
             img = Image.open(io.BytesIO(img_bytes))
@@ -327,15 +332,13 @@ class WeddingRingProcessor:
             
             # Return with correct structure for Make.com
             return {
-                "output": {
-                    "enhanced_image": enhanced_base64,
-                    "thumbnail": thumbnail_base64,
-                    "processing_info": {
-                        "had_masking": has_masking,
-                        "metal_type": metal_type,
-                        "original_size": f"{image.shape[1]}x{image.shape[0]}",
-                        "thumbnail_size": "1000x1300"
-                    }
+                "enhanced_image": enhanced_base64,
+                "thumbnail": thumbnail_base64,
+                "processing_info": {
+                    "had_masking": has_masking,
+                    "metal_type": metal_type,
+                    "original_size": f"{image.shape[1]}x{image.shape[0]}",
+                    "thumbnail_size": "1000x1300"
                 }
             }
             
@@ -343,23 +346,7 @@ class WeddingRingProcessor:
             logger.error(f"Error processing image: {e}")
             raise
 
-def handler(event):
-    """RunPod handler function"""
-    try:
-        logger.info("Starting handler...")
-        
-        # Extract input
-        input_data = event.get("input", {})
-        image_base64 = input_data.get("image_base64", "")
-        
-        if not image_base64:
-            raise ValueError("No image_base64 provided in input")
-        
-        # Process image
-        processor = WeddingRingProcessor()
-        result = processor.process_image(image_base64)
-        
-        logger.info("Processing completed successfully")
+info(f"Result keys: {list(result.keys())}")
         
         # Return result - RunPod will wrap this in {"output": ...}
         return result
