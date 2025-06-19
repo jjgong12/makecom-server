@@ -367,8 +367,9 @@ def handler(job):
     """RunPod handler function"""
     job_input = job["input"]
     
-    if "image" not in job_input:
-        return {"error": "No image provided in input"}
+    image_data = job_input.get("image") or job_input.get("image_base64")
+if not image_data:
+    return {"error": "No image provided in input"}
     
     try:
         enhancer = RingImageEnhancer()
