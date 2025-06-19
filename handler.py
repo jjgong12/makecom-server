@@ -5,8 +5,8 @@ from PIL import Image
 import base64
 import io
 
-def handler(event):  # event 사용, job 아님
-    """RunPod handler for wedding ring enhancement"""
+def handler(event):
+    """RunPod handler for wedding ring enhancement v82"""
     try:
         # Get input
         image_input = event.get("input", {})
@@ -165,24 +165,55 @@ def handler(event):  # event 사용, job 아님
         kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
         enhanced = cv2.filter2D(enhanced, -1, kernel)
         
-        # Background processing
-        mask = np.zeros(gray.shape, dtype=np.uint8)
-        edges = cv2.Canny(gray, 50, 150)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
+        # NEW: Progressive black edge detection
         h, w = img_array.shape[:2]
-        edge_margin = 50
+        mask = np.zeros(gray.shape, dtype=np.uint8)
         
-        for contour in contours:
-            x, y, w_c, h_c = cv2.boundingRect(contour)
-            if (x < edge_margin or y < edge_margin or 
-                x + w_c > w - edge_margin or y + h_c > h - edge_margin):
-                if cv2.contourArea(contour) > 100:
-                    cv2.drawContours(mask, [contour], -1, 255, -1)
+        # Detect black edges progressively from 10px to 150px
+        edge_coords = []
+        for edge_width in range(10, 151, 10):  # 10, 20, 30, ... 150
+            # Top edge
+            for y in range(min(edge_width, h)):
+                for x in range(w):
+                    if gray[y, x] < 40:  # Black threshold
+                        edge_coords.append((y, x))
+            
+            # Bottom edge
+            for y in range(max(0, h - edge_width), h):
+                for x in range(w):
+                    if gray[y, x] < 40:
+                        edge_coords.append((y, x))
+            
+            # Left edge
+            for x in range(min(edge_width, w)):
+                for y in range(h):
+                    if gray[y, x] < 40:
+                        edge_coords.append((y, x))
+            
+            # Right edge
+            for x in range(max(0, w - edge_width), w):
+                for y in range(h):
+                    if gray[y, x] < 40:
+                        edge_coords.append((y, x))
         
+        # Apply mask only to detected black pixels
+        for y, x in edge_coords:
+            mask[y, x] = 255
+        
+        # Dilate to ensure complete removal
         if np.any(mask):
-            kernel = np.ones((15, 15), np.uint8)
-            mask = cv2.dilate(mask, kernel, iterations=2)
+            kernel = np.ones((5, 5), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=1)
+            
+            # Protect wedding ring area (center 60%)
+            center_protection = 0.3  # 30% margin on each side
+            protected_x1 = int(w * center_protection)
+            protected_x2 = int(w * (1 - center_protection))
+            protected_y1 = int(h * center_protection)
+            protected_y2 = int(h * (1 - center_protection))
+            mask[protected_y1:protected_y2, protected_x1:protected_x2] = 0
+            
+            # Apply background replacement
             mask_float = mask.astype(float) / 255
             mask_blurred = cv2.GaussianBlur(mask_float, (31, 31), 10)
             
@@ -191,19 +222,69 @@ def handler(event):  # event 사용, job 아님
                 enhanced[:, :, c] = (enhanced[:, :, c] * (1 - mask_blurred) + 
                                      target_color[c] * mask_blurred).astype(np.uint8)
         
-        # Create thumbnail
+        # Create thumbnail with improved ring detection
         pil_enhanced = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
-        aspect = pil_enhanced.width / pil_enhanced.height
         
+        # Find wedding ring for thumbnail
+        gray_enhanced = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+        
+        # Find bright regions (wedding rings are usually bright)
+        center_region = gray_enhanced[h//4:3*h//4, w//4:3*w//4]
+        threshold = np.mean(center_region) + np.std(center_region) * 0.5
+        _, binary = cv2.threshold(gray_enhanced, min(threshold, 200), 255, cv2.THRESH_BINARY)
+        
+        # Find contours
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Find the largest contour in center region (likely the ring)
+        best_contour = None
+        max_area = 0
+        for contour in contours:
+            x, y, cw, ch = cv2.boundingRect(contour)
+            center_x = x + cw // 2
+            center_y = y + ch // 2
+            # Check if contour center is in middle region
+            if (w * 0.2 < center_x < w * 0.8 and h * 0.2 < center_y < h * 0.8):
+                area = cv2.contourArea(contour)
+                if area > max_area:
+                    max_area = area
+                    best_contour = contour
+        
+        # Crop based on ring detection
+        if best_contour is not None:
+            x, y, cw, ch = cv2.boundingRect(best_contour)
+            
+            # Expand bounding box by 20% for context
+            expand = 0.2
+            x = max(0, int(x - cw * expand))
+            y = max(0, int(y - ch * expand))
+            cw = min(w - x, int(cw * (1 + 2 * expand)))
+            ch = min(h - y, int(ch * (1 + 2 * expand)))
+            
+            # Ensure minimum size
+            if cw > 100 and ch > 100:
+                crop = pil_enhanced.crop((x, y, x + cw, y + ch))
+            else:
+                crop = pil_enhanced
+        else:
+            # Fallback: use center crop
+            crop_size = min(w, h) * 0.8
+            x = (w - crop_size) // 2
+            y = (h - crop_size) // 2
+            crop = pil_enhanced.crop((x, y, x + crop_size, y + crop_size))
+        
+        # Resize to fill 95% of thumbnail
+        aspect = crop.width / crop.height
         if aspect > 1000/1300:
-            new_width = 1000
+            new_width = 950  # 95% of 1000
             new_height = int(new_width / aspect)
         else:
-            new_height = 1300
+            new_height = 1235  # 95% of 1300
             new_width = int(new_height * aspect)
         
-        resized = pil_enhanced.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        resized = crop.resize((new_width, new_height), Image.Resampling.LANCZOS)
         
+        # Create thumbnail with minimal padding
         thumbnail = Image.new('RGB', (1000, 1300), (245, 243, 240))
         x_offset = (1000 - new_width) // 2
         y_offset = (1300 - new_height) // 2
@@ -228,7 +309,7 @@ def handler(event):  # event 사용, job 아님
                     "metal_type": metal_type,
                     "lighting": lighting,
                     "status": "success",
-                    "version": "v81"
+                    "version": "v82"
                 }
             }
         }
