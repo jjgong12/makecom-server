@@ -29,107 +29,127 @@ def detect_ring_metal_type(image):
     else:
         return 'white_gold'  # Default
 
-def enhance_ring_details(image):
-    """Enhance wedding ring details with multiple techniques"""
-    # 1. Denoise while preserving edges
-    denoised = cv2.fastNlMeansDenoisingColored(image, None, 3, 3, 7, 21)
+def enhance_ring_details_ultra(image):
+    """Ultra-strong enhancement for ring details"""
+    # 1. Strong denoise while preserving edges
+    denoised = cv2.fastNlMeansDenoisingColored(image, None, 5, 5, 7, 21)
     
-    # 2. Unsharp mask for detail enhancement
-    gaussian = cv2.GaussianBlur(denoised, (0, 0), 2.0)
-    sharpened = cv2.addWeighted(denoised, 1.8, gaussian, -0.8, 0)
+    # 2. Ultra unsharp mask (2.2x strength)
+    gaussian = cv2.GaussianBlur(denoised, (0, 0), 3.0)
+    sharpened = cv2.addWeighted(denoised, 2.2, gaussian, -1.2, 0)
     
-    # 3. Local contrast enhancement using CLAHE
+    # 3. CLAHE with higher clip limit
     lab = cv2.cvtColor(sharpened, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     
-    # Apply CLAHE to L channel for better local contrast
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
     l = clahe.apply(l)
     
     enhanced = cv2.merge([l, a, b])
     enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
     
-    # 4. Edge enhancement
-    edges = cv2.Canny(cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY), 50, 150)
+    # 4. Strong edge enhancement
+    edges = cv2.Canny(cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY), 30, 100)
     edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
     
-    # Blend edges back
-    detail_enhanced = cv2.addWeighted(enhanced, 1.0, edges_colored, 0.1, 0)
+    # Blend edges back strongly
+    detail_enhanced = cv2.addWeighted(enhanced, 1.0, edges_colored, 0.15, 0)
     
     return detail_enhanced
 
-def apply_metal_specific_enhancement(image, metal_type):
-    """Apply metal-specific color and brightness adjustments"""
+def apply_metal_specific_enhancement_ultra(image, metal_type):
+    """Ultra-strong metal-specific adjustments"""
     enhanced = image.copy()
     
     # Convert to float for precise adjustments
     enhanced = enhanced.astype(np.float32)
     
     if metal_type == 'champagne_gold':
-        # Make champagne gold much more white (like image 5)
-        # Strongly reduce yellow/gold tones
-        enhanced[:, :, 0] = np.clip(enhanced[:, :, 0] * 1.20, 0, 255)  # Blue channel up more
-        enhanced[:, :, 1] = np.clip(enhanced[:, :, 1] * 1.12, 0, 255)  # Green channel slightly up
-        enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * 1.02, 0, 255)  # Red channel minimal change
+        # Make champagne gold VERY white (like image 5)
+        enhanced[:, :, 0] = np.clip(enhanced[:, :, 0] * 1.25, 0, 255)  # Blue channel up 25%
+        enhanced[:, :, 1] = np.clip(enhanced[:, :, 1] * 1.15, 0, 255)  # Green channel 15%
+        enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * 1.0, 0, 255)   # Red channel unchanged
         
-        # Add stronger white overlay to make it much closer to white gold
+        # 35% white overlay for strong whitening
         white_overlay = np.full_like(enhanced, 255)
-        enhanced = cv2.addWeighted(enhanced, 0.75, white_overlay, 0.25, 0)
+        enhanced = cv2.addWeighted(enhanced, 0.65, white_overlay, 0.35, 0)
         
     elif metal_type == 'rose_gold':
         # Enhance pink tones while keeping brightness
-        enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * 1.1, 0, 255)  # Red channel
+        enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * 1.15, 0, 255)  # Red channel
+        # Slight white overlay
+        white_overlay = np.full_like(enhanced, 255)
+        enhanced = cv2.addWeighted(enhanced, 0.85, white_overlay, 0.15, 0)
         
     elif metal_type == 'yellow_gold':
         # Enhance yellow tones
-        enhanced[:, :, 1] = np.clip(enhanced[:, :, 1] * 1.08, 0, 255)  # Green
-        enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * 1.12, 0, 255)  # Red
+        enhanced[:, :, 1] = np.clip(enhanced[:, :, 1] * 1.1, 0, 255)   # Green
+        enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * 1.15, 0, 255)  # Red
         
     else:  # white_gold
         # Cool tones, high brightness
-        enhanced[:, :, 0] = np.clip(enhanced[:, :, 0] * 1.08, 0, 255)  # Blue
+        enhanced[:, :, 0] = np.clip(enhanced[:, :, 0] * 1.1, 0, 255)   # Blue
+        # Slight white overlay
+        white_overlay = np.full_like(enhanced, 255)
+        enhanced = cv2.addWeighted(enhanced, 0.9, white_overlay, 0.1, 0)
     
     # Overall brightness boost for all metals
-    enhanced = np.clip(enhanced * 1.15, 0, 255)
+    enhanced = np.clip(enhanced * 1.25, 0, 255)
     
     return enhanced.astype(np.uint8)
 
-def create_clean_background(image):
-    """Create clean, bright background while preserving the ring"""
-    # Create mask for the ring using multiple methods
+def create_natural_bright_background(image):
+    """Create natural bright background like the AFTER files"""
+    # Create mask for the ring
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Method 1: Threshold for metallic objects
-    _, thresh1 = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Threshold to separate ring from background
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # Method 2: Adaptive threshold
-    thresh2 = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                    cv2.THRESH_BINARY, 11, 2)
+    # Find ring contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Combine masks
-    ring_mask = cv2.bitwise_or(thresh1, thresh2)
-    
-    # Clean up mask
-    kernel = np.ones((5,5), np.uint8)
-    ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_CLOSE, kernel)
-    ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_OPEN, kernel)
+    # Create ring mask
+    ring_mask = np.zeros_like(gray)
+    if contours:
+        # Draw all significant contours (for multiple rings)
+        for contour in contours:
+            if cv2.contourArea(contour) > 500:
+                cv2.drawContours(ring_mask, [contour], -1, 255, -1)
     
     # Dilate to include ring edges
+    kernel = np.ones((7,7), np.uint8)
     ring_mask = cv2.dilate(ring_mask, kernel, iterations=2)
     
-    # Create bright background like after files (235-245 range)
-    bright_bg = np.full_like(image, (245, 242, 238))  # Slight warm tone like after files
+    # Create natural gradient background (like AFTER files)
+    h, w = image.shape[:2]
     
-    # Apply mask - keep ring, replace background
-    result = np.where(ring_mask[..., None] > 0, image, bright_bg)
+    # Sample colors from edges of the image
+    top_color = np.mean(image[:50, :], axis=(0,1))
+    bottom_color = np.mean(image[-50:, :], axis=(0,1))
     
-    # Smooth edges
+    # Target bright beige/gray (from AFTER files)
+    target_top = np.array([242, 240, 238])     # Slight blue-gray
+    target_bottom = np.array([245, 243, 240])  # Warm beige
+    
+    # Create gradient
+    gradient_bg = np.zeros_like(image, dtype=np.float32)
+    for y in range(h):
+        weight = y / h
+        gradient_bg[y] = (1 - weight) * target_top + weight * target_bottom
+    
+    gradient_bg = gradient_bg.astype(np.uint8)
+    
+    # Apply mask - keep ring, use gradient for background
+    result = np.where(ring_mask[..., None] > 0, image, gradient_bg)
+    
+    # Smooth transition
     result = cv2.bilateralFilter(result, 9, 75, 75)
     
     return result
 
-def create_thumbnail(image, target_size=(1000, 1300)):
-    """Create thumbnail with ring filling most of the frame"""
+def create_thumbnail_ultra_tight(image, target_size=(1000, 1300)):
+    """Create thumbnail with ring filling almost entire frame"""
     # Find ring contours
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -137,12 +157,12 @@ def create_thumbnail(image, target_size=(1000, 1300)):
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if contours:
-        # Get bounding box of all contours (for multiple rings)
+        # Get bounding box of all significant contours
         x_min, y_min = image.shape[1], image.shape[0]
         x_max, y_max = 0, 0
         
         for contour in contours:
-            if cv2.contourArea(contour) > 500:  # Filter small noise
+            if cv2.contourArea(contour) > 500:  # Filter noise
                 x, y, w, h = cv2.boundingRect(contour)
                 x_min = min(x_min, x)
                 y_min = min(y_min, y)
@@ -150,8 +170,8 @@ def create_thumbnail(image, target_size=(1000, 1300)):
                 y_max = max(y_max, y + h)
         
         if x_max > x_min and y_max > y_min:
-            # Add small padding (3% instead of larger padding)
-            pad = int(max(x_max - x_min, y_max - y_min) * 0.03)
+            # MINIMAL padding (1% only)
+            pad = int(max(x_max - x_min, y_max - y_min) * 0.01)
             x_min = max(0, x_min - pad)
             y_min = max(0, y_min - pad)
             x_max = min(image.shape[1], x_max + pad)
@@ -162,26 +182,29 @@ def create_thumbnail(image, target_size=(1000, 1300)):
         else:
             cropped = image
     else:
-        # If no contours found, use center crop
+        # If no contours, use center 80%
         h, w = image.shape[:2]
-        size = min(h, w) // 2
-        center_x, center_y = w // 2, h // 2
-        cropped = image[center_y-size:center_y+size, center_x-size:center_x+size]
+        margin = 0.1
+        x_min = int(w * margin)
+        y_min = int(h * margin)
+        x_max = int(w * (1 - margin))
+        y_max = int(h * (1 - margin))
+        cropped = image[y_min:y_max, x_min:x_max]
     
-    # Calculate scaling to fit target size
+    # Scale to fill 98% of target (almost full)
     h, w = cropped.shape[:2]
-    scale_x = target_size[0] / w
-    scale_y = target_size[1] / h
-    scale = min(scale_x, scale_y) * 0.95  # 95% to leave tiny margin
+    scale_x = (target_size[0] * 0.98) / w
+    scale_y = (target_size[1] * 0.98) / h
+    scale = min(scale_x, scale_y)
     
     new_w = int(w * scale)
     new_h = int(h * scale)
     
-    # Resize
+    # Resize with highest quality
     resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     
-    # Create background matching after files
-    thumbnail = np.full((target_size[1], target_size[0], 3), (245, 242, 238), dtype=np.uint8)
+    # Create natural background (like AFTER files)
+    thumbnail = np.full((target_size[1], target_size[0], 3), (243, 241, 238), dtype=np.uint8)
     
     # Center the resized image
     x_offset = (target_size[0] - new_w) // 2
@@ -191,36 +214,39 @@ def create_thumbnail(image, target_size=(1000, 1300)):
     
     return thumbnail
 
-def enhance_wedding_ring(image):
-    """Main enhancement pipeline"""
+def enhance_wedding_ring_v74(image):
+    """Main enhancement pipeline v74 - Ultra strong"""
     # 1. Detect metal type
     metal_type = detect_ring_metal_type(image)
     
-    # 2. Initial detail enhancement
-    detailed = enhance_ring_details(image)
+    # 2. Ultra detail enhancement
+    detailed = enhance_ring_details_ultra(image)
     
-    # 3. Apply metal-specific adjustments
-    metal_enhanced = apply_metal_specific_enhancement(detailed, metal_type)
+    # 3. Ultra metal-specific adjustments
+    metal_enhanced = apply_metal_specific_enhancement_ultra(detailed, metal_type)
     
-    # 4. Create clean, bright background
-    clean_bg = create_clean_background(metal_enhanced)
+    # 4. Create natural bright background (like AFTER files)
+    natural_bg = create_natural_bright_background(metal_enhanced)
     
-    # 5. Final brightness and contrast adjustment using PIL
-    pil_image = Image.fromarray(cv2.cvtColor(clean_bg, cv2.COLOR_BGR2RGB))
+    # 5. Final ultra brightness and contrast using PIL
+    pil_image = Image.fromarray(cv2.cvtColor(natural_bg, cv2.COLOR_BGR2RGB))
     
-    # Enhance brightness
+    # Strong enhancements
     enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(1.2)
+    pil_image = enhancer.enhance(1.35)  # 35% brighter
     
-    # Enhance contrast
     enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.15)
+    pil_image = enhancer.enhance(1.25)  # 25% more contrast
     
-    # Enhance sharpness
     enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.3)
+    pil_image = enhancer.enhance(1.5)   # 50% sharper
     
-    # Convert back to OpenCV format
+    # If champagne gold, one more white boost
+    if metal_type == 'champagne_gold':
+        enhancer = ImageEnhance.Brightness(pil_image)
+        pil_image = enhancer.enhance(1.1)  # Extra 10% for champagne
+    
+    # Convert back
     final_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     
     return final_image, metal_type
@@ -228,11 +254,11 @@ def enhance_wedding_ring(image):
 def handler(event):
     """RunPod handler function"""
     try:
-        # Get image from event
+        # Get base64 image from event
         image_input = event.get("input", {})
-        image_base64 = image_input.get("image") or image_input.get("image_base64")
+        base64_image = image_input.get("image") or image_input.get("image_base64")
         
-        if not image_base64:
+        if not base64_image:
             return {
                 "output": {
                     "error": "No image data provided",
@@ -241,11 +267,11 @@ def handler(event):
             }
         
         # Handle base64 prefix if present
-        if ',' in image_base64:
-            image_base64 = image_base64.split(',')[1]
+        if ',' in base64_image:
+            base64_image = base64_image.split(',')[1]
         
         # Decode base64 to image
-        image_data = base64.b64decode(image_base64)
+        image_data = base64.b64decode(base64_image)
         nparr = np.frombuffer(image_data, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
@@ -258,17 +284,17 @@ def handler(event):
             }
         
         # Process the image
-        enhanced_image, metal_type = enhance_wedding_ring(image)
+        enhanced_image, metal_type = enhance_wedding_ring_v74(image)
         
-        # Create thumbnail
-        thumbnail = create_thumbnail(enhanced_image)
+        # Create ultra tight thumbnail
+        thumbnail = create_thumbnail_ultra_tight(enhanced_image)
         
-        # Convert results to base64
+        # Convert to base64
         # Main image
         _, main_buffer = cv2.imencode('.jpg', enhanced_image, 
                                       [cv2.IMWRITE_JPEG_QUALITY, 98])
         main_base64 = base64.b64encode(main_buffer).decode('utf-8')
-        main_base64 = main_base64.rstrip('=')  # Remove padding for Make.com
+        main_base64 = main_base64.rstrip('=')  # Remove padding
         
         # Thumbnail
         _, thumb_buffer = cv2.imencode('.jpg', thumbnail,
@@ -282,12 +308,12 @@ def handler(event):
                 "thumbnail": thumb_base64,
                 "processing_info": {
                     "metal_type": metal_type,
-                    "version": "v73",
+                    "version": "v74_ultra_strong",
                     "enhancements": [
-                        "detail_enhancement",
-                        "metal_specific_color",
-                        "bright_clean_background",
-                        "optimal_thumbnail_crop"
+                        "ultra_detail_enhancement",
+                        "metal_specific_ultra",
+                        "natural_bright_background",
+                        "ultra_tight_thumbnail"
                     ]
                 }
             }
