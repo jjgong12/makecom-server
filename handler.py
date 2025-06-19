@@ -6,7 +6,7 @@ import base64
 import io
 
 def handler(event):
-    """Wedding Ring AI v77 - Black Masking Removal"""
+    """Wedding Ring AI v78 - Ultra Border Removal with Enhanced Processing"""
     try:
         # Get image from event
         image_input = event.get("input", {})
@@ -37,17 +37,17 @@ def handler(event):
                 }
             }
         
-        # Step 1: Remove black masking border
-        image_no_border = remove_black_masking_ultimate(image)
+        # Step 1: Ultra aggressive black border removal
+        image_no_border = remove_black_border_ultra(image)
         
         # Step 2: Detect metal type
         metal_type = detect_metal_type(image_no_border)
         
-        # Step 3: Apply powerful enhancement
-        enhanced_image = enhance_wedding_ring_powerful(image_no_border, metal_type)
+        # Step 3: Apply enhanced wedding ring processing (based on before/after data)
+        enhanced_image = enhance_wedding_ring_v78(image_no_border, metal_type)
         
-        # Step 4: Create perfect thumbnail
-        thumbnail = create_perfect_thumbnail(enhanced_image)
+        # Step 4: Create perfect thumbnail with NO margins
+        thumbnail = create_thumbnail_no_margins(enhanced_image)
         
         # Convert to base64 (WITHOUT padding for Make.com)
         # Main image
@@ -66,7 +66,7 @@ def handler(event):
                 "thumbnail": thumb_base64,
                 "processing_info": {
                     "metal_type": metal_type,
-                    "version": "v77",
+                    "version": "v78_ultra",
                     "border_removed": True,
                     "status": "success"
                 }
@@ -81,74 +81,81 @@ def handler(event):
             }
         }
 
-def remove_black_masking_ultimate(image):
-    """Remove black masking border with 100% success rate"""
+def remove_black_border_ultra(image):
+    """Ultra aggressive black border removal"""
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Use multiple thresholds for pure black masking (#000000)
-    # Since it's painted black, threshold can be very low
-    threshold = 50  # Covers black to very dark gray
+    # More aggressive thresholds for black detection
+    black_threshold = 30  # Lower threshold to catch more black
     
-    # Find borders from all directions
+    # Scan from edges with larger scan area
+    max_scan = int(min(h, w) * 0.4)  # Scan up to 40% from each edge
+    
+    # Find actual borders by scanning inward
     # Top border
     top = 0
-    for y in range(h // 2):  # Scan up to middle
+    for y in range(max_scan):
         row = gray[y, :]
-        if np.mean(row) > threshold:  # Found non-black
-            top = max(0, y - 10)  # 10px safety margin
-            break
+        if np.mean(row) > black_threshold and np.max(row) > 50:
+            # Check if we have consistent non-black content
+            if y > 5 and np.mean(gray[y:y+10, :]) > black_threshold:
+                top = max(0, y - 5)
+                break
     
     # Bottom border
     bottom = h
-    for y in range(h - 1, h // 2, -1):  # Scan from bottom to middle
+    for y in range(h - 1, h - max_scan, -1):
         row = gray[y, :]
-        if np.mean(row) > threshold:
-            bottom = min(h, y + 10)  # 10px safety margin
-            break
+        if np.mean(row) > black_threshold and np.max(row) > 50:
+            if y < h - 5 and np.mean(gray[y-10:y, :]) > black_threshold:
+                bottom = min(h, y + 5)
+                break
     
     # Left border
     left = 0
-    for x in range(w // 2):  # Scan up to middle
+    for x in range(max_scan):
         col = gray[:, x]
-        if np.mean(col) > threshold:
-            left = max(0, x - 10)  # 10px safety margin
-            break
+        if np.mean(col) > black_threshold and np.max(col) > 50:
+            if x > 5 and np.mean(gray[:, x:x+10]) > black_threshold:
+                left = max(0, x - 5)
+                break
     
     # Right border
     right = w
-    for x in range(w - 1, w // 2, -1):  # Scan from right to middle
+    for x in range(w - 1, w - max_scan, -1):
         col = gray[:, x]
-        if np.mean(col) > threshold:
-            right = min(w, x + 10)  # 10px safety margin
-            break
+        if np.mean(col) > black_threshold and np.max(col) > 50:
+            if x < w - 5 and np.mean(gray[:, x-10:x]) > black_threshold:
+                right = min(w, x + 5)
+                break
     
     # Crop the image
     cropped = image[top:bottom, left:right]
     
-    # Double-check: if still has black edges, remove more aggressively
+    # Second pass - check if edges are still black
     h2, w2 = cropped.shape[:2]
-    gray2 = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-    
-    # Check edges again
-    edge_size = 30
-    if np.mean(gray2[:edge_size, :]) < threshold:  # Top edge still dark
-        cropped = cropped[edge_size:, :]
-    if np.mean(gray2[-edge_size:, :]) < threshold:  # Bottom edge still dark
-        cropped = cropped[:-edge_size, :]
-    if np.mean(gray2[:, :edge_size]) < threshold:  # Left edge still dark
-        cropped = cropped[:, edge_size:]
-    if np.mean(gray2[:, -edge_size:]) < threshold:  # Right edge still dark
-        cropped = cropped[:, :-edge_size]
+    if h2 > 100 and w2 > 100:
+        gray2 = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+        
+        # Additional edge removal if needed
+        edge_check = 20
+        if np.mean(gray2[:edge_check, :]) < 40:
+            cropped = cropped[edge_check:, :]
+        if np.mean(gray2[-edge_check:, :]) < 40:
+            cropped = cropped[:-edge_check, :]
+        if np.mean(gray2[:, :edge_check]) < 40:
+            cropped = cropped[:, edge_check:]
+        if np.mean(gray2[:, -edge_check:]) < 40:
+            cropped = cropped[:, :-edge_check]
     
     return cropped
 
 def detect_metal_type(image):
     """Detect wedding ring metal type"""
-    # Convert to HSV for better color detection
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
-    # Get center region where ring likely is
+    # Get center region where ring is
     h, w = image.shape[:2]
     center_y, center_x = h // 2, w // 2
     roi_size = min(h, w) // 3
@@ -161,100 +168,116 @@ def detect_metal_type(image):
     avg_sat = np.mean(roi[:, :, 1])
     avg_val = np.mean(roi[:, :, 2])
     
-    # Determine metal type
-    if avg_sat < 30:  # Low saturation = white/silver
+    # Determine metal type based on color characteristics
+    if avg_sat < 25 and avg_val > 200:  # Very bright, low saturation
         return "white_gold"
-    elif 15 <= avg_hue <= 25 and avg_sat > 40:  # Yellow range
-        return "yellow_gold"
-    elif 10 <= avg_hue <= 20 and avg_sat > 30:  # Pink/rose range
-        return "rose_gold"
-    else:  # Default to champagne
+    elif avg_sat < 40 and avg_val > 180:  # Bright, low-medium saturation
         return "champagne_gold"
+    elif 10 <= avg_hue <= 20 and avg_sat > 30:  # Rose tone
+        return "rose_gold"
+    elif 15 <= avg_hue <= 30 and avg_sat > 40:  # Yellow tone
+        return "yellow_gold"
+    else:
+        return "champagne_gold"  # Default
 
-def enhance_wedding_ring_powerful(image, metal_type):
-    """Apply powerful enhancement to match target images"""
-    # 1. Denoise
-    denoised = cv2.fastNlMeansDenoisingColored(image, None, 10, 10, 7, 21)
+def enhance_wedding_ring_v78(image, metal_type):
+    """Enhanced wedding ring processing based on before/after analysis"""
     
-    # 2. Increase brightness significantly
-    # Convert to LAB for better brightness control
+    # 1. Strong denoising while preserving edges
+    denoised = cv2.fastNlMeansDenoisingColored(image, None, 5, 5, 7, 21)
+    
+    # 2. Powerful brightness and contrast enhancement
+    # Convert to LAB for better control
     lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     
-    # Increase L channel (brightness)
-    l = cv2.add(l, 40)  # Significant brightness increase
+    # Significant brightness increase (based on before/after analysis)
+    l = cv2.add(l, 45)  # Strong brightness boost
     
-    # Adjust color channels based on metal type
+    # Apply CLAHE for better local contrast
+    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8,8))
+    l = clahe.apply(l)
+    
+    # Metal-specific color adjustments
     if metal_type == "champagne_gold":
-        # Make it more white (like target images)
-        a = cv2.subtract(a, 3)  # Less red
-        b = cv2.subtract(b, 5)  # Less yellow
+        # Make it much whiter (like white gold)
+        a = cv2.subtract(a, 5)  # Reduce red
+        b = cv2.subtract(b, 8)  # Reduce yellow significantly
     elif metal_type == "rose_gold":
-        # Keep warm tones but brighten
-        a = cv2.add(a, 2)
+        # Brighten while keeping some warmth
+        a = cv2.add(a, 3)
+        b = cv2.subtract(b, 2)
     elif metal_type == "yellow_gold":
         # Reduce yellow saturation
+        b = cv2.subtract(b, 5)
+    elif metal_type == "white_gold":
+        # Cool tones
+        a = cv2.subtract(a, 2)
         b = cv2.subtract(b, 3)
     
     # Merge back
     enhanced = cv2.merge([l, a, b])
     enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
     
-    # 3. Apply strong sharpening
-    kernel = np.array([[-1,-1,-1],
-                       [-1, 9,-1],
-                       [-1,-1,-1]])
-    sharpened = cv2.filter2D(enhanced, -1, kernel)
+    # 3. Strong sharpening for details
+    # Unsharp mask with high strength
+    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
+    sharpened = cv2.addWeighted(enhanced, 1.8, gaussian, -0.8, 0)
     
-    # 4. Increase contrast using CLAHE
-    lab = cv2.cvtColor(sharpened, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    l = clahe.apply(l)
-    enhanced = cv2.merge([l, a, b])
-    enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+    # 4. Edge enhancement for ring details
+    edges = cv2.Canny(cv2.cvtColor(sharpened, cv2.COLOR_BGR2GRAY), 30, 100)
+    edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    detail_enhanced = cv2.addWeighted(sharpened, 1.0, edges_colored, 0.15, 0)
     
-    # 5. Final brightness/contrast adjustment with PIL
-    pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+    # 5. Final adjustments with PIL
+    pil_image = Image.fromarray(cv2.cvtColor(detail_enhanced, cv2.COLOR_BGR2RGB))
     
     # Strong brightness increase
     enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(1.3)
+    pil_image = enhancer.enhance(1.25)
     
-    # Strong contrast increase
+    # High contrast
     enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.2)
+    pil_image = enhancer.enhance(1.25)
     
-    # Color adjustment (reduce saturation for cleaner look)
+    # Extra sharpness
+    enhancer = ImageEnhance.Sharpness(pil_image)
+    pil_image = enhancer.enhance(1.4)
+    
+    # Reduce saturation for cleaner look
     enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(0.9)
+    pil_image = enhancer.enhance(0.85)
     
-    # Convert back to OpenCV
+    # Convert back
     final = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     
-    # 6. Create clean white background
-    # Detect ring area
+    # 6. Create bright, clean background
     gray = cv2.cvtColor(final, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
     
-    # Clean up mask
+    # Create mask for ring
+    _, ring_mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+    
+    # Clean mask
     kernel = np.ones((5,5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_CLOSE, kernel)
+    ring_mask = cv2.morphologyEx(ring_mask, cv2.MORPH_OPEN, kernel)
     
-    # Create white background
-    white_bg = np.full_like(final, 248)
+    # Dilate to include ring edges
+    ring_mask = cv2.dilate(ring_mask, kernel, iterations=2)
     
-    # Blend
-    result = np.where(mask[..., None] > 0, final, white_bg)
+    # Create bright background (matching after samples)
+    bright_bg = np.full_like(final, (245, 243, 240), dtype=np.uint8)
     
-    # Smooth edges
+    # Apply mask
+    result = np.where(ring_mask[..., None] > 0, final, bright_bg)
+    
+    # Smooth transitions
     result = cv2.bilateralFilter(result, 9, 75, 75)
     
     return result
 
-def create_perfect_thumbnail(image):
-    """Create 1000x1300 thumbnail with ring filling most of frame"""
+def create_thumbnail_no_margins(image):
+    """Create 1000x1300 thumbnail with ring filling entire frame"""
     target_w, target_h = 1000, 1300
     
     # Find ring bounds
@@ -265,12 +288,12 @@ def create_perfect_thumbnail(image):
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if contours:
-        # Get bounding box of all contours
+        # Get combined bounding box
         x_min, y_min = image.shape[1], image.shape[0]
         x_max, y_max = 0, 0
         
         for contour in contours:
-            if cv2.contourArea(contour) > 100:  # Filter noise
+            if cv2.contourArea(contour) > 100:
                 x, y, w, h = cv2.boundingRect(contour)
                 x_min = min(x_min, x)
                 y_min = min(y_min, y)
@@ -278,43 +301,43 @@ def create_perfect_thumbnail(image):
                 y_max = max(y_max, y + h)
         
         if x_max > x_min and y_max > y_min:
-            # Add minimal padding (2%)
-            pad = int(max(x_max - x_min, y_max - y_min) * 0.02)
-            x_min = max(0, x_min - pad)
-            y_min = max(0, y_min - pad)
-            x_max = min(image.shape[1], x_max + pad)
-            y_max = min(image.shape[0], y_max + pad)
-            
-            # Crop to ring area
+            # NO PADDING - crop exactly to ring bounds
             ring_crop = image[y_min:y_max, x_min:x_max]
         else:
             ring_crop = image
     else:
-        # Fallback: use center crop
+        # Use aggressive center crop
         h, w = image.shape[:2]
-        size = int(min(h, w) * 0.8)
+        size = int(min(h, w) * 0.9)
         center_y, center_x = h // 2, w // 2
         ring_crop = image[center_y-size//2:center_y+size//2,
                           center_x-size//2:center_x+size//2]
     
-    # Calculate scale to fill thumbnail
+    # Resize to fill entire thumbnail
     crop_h, crop_w = ring_crop.shape[:2]
-    scale = min(target_w / crop_w, target_h / crop_h) * 0.95  # 95% to leave tiny margin
+    
+    # Calculate scale to fill 1000x1300 completely
+    scale_w = target_w / crop_w
+    scale_h = target_h / crop_h
+    scale = max(scale_w, scale_h)  # Use max to ensure full coverage
     
     new_w = int(crop_w * scale)
     new_h = int(crop_h * scale)
     
-    # Resize with high quality
+    # Resize
     resized = cv2.resize(ring_crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     
-    # Create white canvas
-    thumbnail = np.full((target_h, target_w, 3), 248, dtype=np.uint8)
-    
-    # Center the ring
-    y_offset = (target_h - new_h) // 2
-    x_offset = (target_w - new_w) // 2
-    
-    thumbnail[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+    # If oversized, crop from center
+    if new_w > target_w or new_h > target_h:
+        y_start = (new_h - target_h) // 2
+        x_start = (new_w - target_w) // 2
+        thumbnail = resized[y_start:y_start+target_h, x_start:x_start+target_w]
+    else:
+        # This shouldn't happen with max scale, but just in case
+        thumbnail = np.full((target_h, target_w, 3), (245, 243, 240), dtype=np.uint8)
+        y_offset = (target_h - new_h) // 2
+        x_offset = (target_w - new_w) // 2
+        thumbnail[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
     
     return thumbnail
 
