@@ -70,22 +70,22 @@ COMPLETE_PARAMETERS = {
     },
     'champagne_gold': {
         'natural': {
-            'brightness': 1.18, 'contrast': 1.08, 'exposure': 0.06,
+            'brightness': 1.30, 'contrast': 1.08, 'exposure': 0.06,
             'highlights': -0.12, 'shadows': 0.18, 'vibrance': 1.15,
-            'saturation': 1.05, 'clarity': 14, 'color_temp': -2,
-            'white_overlay': 0.08
+            'saturation': 0.90, 'clarity': 14, 'color_temp': -6,
+            'white_overlay': 0.15
         },
         'bright': {
-            'brightness': 1.15, 'contrast': 1.06, 'exposure': 0.03,
+            'brightness': 1.28, 'contrast': 1.06, 'exposure': 0.03,
             'highlights': -0.18, 'shadows': 0.12, 'vibrance': 1.10,
-            'saturation': 1.03, 'clarity': 11, 'color_temp': -3,
-            'white_overlay': 0.07
+            'saturation': 0.88, 'clarity': 11, 'color_temp': -7,
+            'white_overlay': 0.18
         },
         'shadow': {
-            'brightness': 1.30, 'contrast': 1.10, 'exposure': 0.10,
+            'brightness': 1.35, 'contrast': 1.10, 'exposure': 0.10,
             'highlights': -0.06, 'shadows': 0.28, 'vibrance': 1.20,
-            'saturation': 1.08, 'clarity': 17, 'color_temp': -6,
-            'white_overlay': 0.15
+            'saturation': 0.85, 'clarity': 17, 'color_temp': -8,
+            'white_overlay': 0.20
         }
     }
 }
@@ -137,61 +137,77 @@ def detect_lighting(image):
         return 'natural'
 
 def remove_black_borders(image):
-    """Remove black borders - scan up to 40% from edges"""
+    """Remove black borders - EXTREME version with direct replacement"""
     h, w = image.shape[:2]
     max_scan = int(min(h, w) * 0.4)  # 40% scan
     
-    # Find borders
-    top, bottom, left, right = 0, h, 0, w
+    # Find borders with lower threshold for better detection
+    threshold = 15  # Lower threshold for black detection
     
     # Top border - check center 50% for better accuracy
+    top = 0
     center_start = w // 4
     center_end = 3 * w // 4
     for i in range(max_scan):
         row_center = image[i, center_start:center_end]
-        if np.mean(row_center) > 20:
+        if np.mean(row_center) > threshold:
             top = i
             break
     
     # Bottom border
+    bottom = h
     for i in range(h-1, h-max_scan-1, -1):
         row_center = image[i, center_start:center_end]
-        if np.mean(row_center) > 20:
+        if np.mean(row_center) > threshold:
             bottom = i + 1
             break
     
     # Left border - check center 50%
+    left = 0
     center_start = h // 4
     center_end = 3 * h // 4
     for i in range(max_scan):
         col_center = image[center_start:center_end, i]
-        if np.mean(col_center) > 20:
+        if np.mean(col_center) > threshold:
             left = i
             break
     
     # Right border
+    right = w
     for i in range(w-1, w-max_scan-1, -1):
         col_center = image[center_start:center_end, i]
-        if np.mean(col_center) > 20:
+        if np.mean(col_center) > threshold:
             right = i + 1
             break
     
-    # Add safety margin
-    margin = 5
-    top = max(0, top - margin)
-    bottom = min(h, bottom + margin)
-    left = max(0, left - margin)
-    right = min(w, right + margin)
+    # Get background color from edges (after borders)
+    bg_samples = []
+    if top > 0:
+        bg_samples.append(image[top+5:top+15, center_start:center_end])
+    if bottom < h:
+        bg_samples.append(image[bottom-15:bottom-5, center_start:center_end])
+    if left > 0:
+        bg_samples.append(image[center_start:center_end, left+5:left+15])
+    if right < w:
+        bg_samples.append(image[center_start:center_end, right-15:right-5])
     
-    # Crop image
+    if bg_samples:
+        bg_color = np.median([np.median(s, axis=(0,1)) for s in bg_samples], axis=0).astype(np.uint8)
+    else:
+        bg_color = np.array([248, 248, 248], dtype=np.uint8)  # Default white
+    
+    # Create clean image with background color
+    result = np.full_like(image, bg_color)
+    
+    # Copy the non-border region
     if top < bottom and left < right:
-        cropped = image[top:bottom, left:right]
+        result[top:bottom, left:right] = image[top:bottom, left:right]
         removed = True
     else:
-        cropped = image
+        result = image
         removed = False
     
-    return cropped, removed
+    return result, removed
 
 def enhance_image(image, params):
     """Apply v13.3 enhancement with safe PIL operations"""
@@ -220,36 +236,71 @@ def enhance_image(image, params):
     if params['color_temp'] > 0:  # Warmer
         img_array[:, :, 0] = np.clip(img_array[:, :, 0] * 1.05, 0, 255)  # More red
         img_array[:, :, 2] = np.clip(img_array[:, :, 2] * 0.95, 0, 255)  # Less blue
-    elif params['color_temp'] < 0:  # Cooler
-        img_array[:, :, 0] = np.clip(img_array[:, :, 0] * 0.95, 0, 255)  # Less red
-        img_array[:, :, 2] = np.clip(img_array[:, :, 2] * 1.05, 0, 255)  # More blue
+    elif params['color_temp'] < 0:  # Cooler (for champagne gold)
+        cool_factor = 1 + (abs(params['color_temp']) * 0.02)  # Stronger cooling
+        img_array[:, :, 0] = np.clip(img_array[:, :, 0] / cool_factor, 0, 255)  # Much less red
+        img_array[:, :, 2] = np.clip(img_array[:, :, 2] * cool_factor, 0, 255)  # Much more blue
     
-    # Step 9: White overlay
+    # Step 9: White overlay - STRONGER for champagne gold
     if params['white_overlay'] > 0:
         white = np.ones_like(img_array) * 255
-        img_array = (1 - params['white_overlay']) * img_array + params['white_overlay'] * white
+        # Apply stronger overlay for champagne gold
+        overlay_strength = params['white_overlay'] * 1.5 if 'champagne' in str(params) else params['white_overlay']
+        img_array = (1 - overlay_strength) * img_array + overlay_strength * white
     
     # Convert back to uint8
     result = np.clip(img_array, 0, 255).astype(np.uint8)
     return cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
 
 def create_thumbnail(image):
-    """Create 1000x1300 thumbnail with 90% size"""
+    """Create 1000x1300 thumbnail with ring centered and enlarged"""
     h, w = image.shape[:2]
     target_w, target_h = 1000, 1300
     
-    # Calculate scale for 90% of frame
-    scale = min(target_w * 0.9 / w, target_h * 0.9 / h)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    # Find the ring area (bright region in center)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    center_y, center_x = h // 2, w // 2
+    
+    # Use binary threshold to find ring
+    _, binary = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+    
+    # Find contours
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        # Find the largest contour (likely the ring)
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, ring_w, ring_h = cv2.boundingRect(largest_contour)
+        
+        # Add padding around the ring
+        pad = int(max(ring_w, ring_h) * 0.3)
+        x = max(0, x - pad)
+        y = max(0, y - pad)
+        ring_w = min(w - x, ring_w + 2 * pad)
+        ring_h = min(h - y, ring_h + 2 * pad)
+        
+        # Crop to ring area
+        cropped = image[y:y+ring_h, x:x+ring_w]
+    else:
+        # Fallback: use center crop
+        crop_size = min(h, w) // 2
+        start_y = max(0, center_y - crop_size)
+        start_x = max(0, center_x - crop_size)
+        cropped = image[start_y:start_y+crop_size*2, start_x:start_x+crop_size*2]
+    
+    # Scale to fit thumbnail with ring taking 95% of space
+    crop_h, crop_w = cropped.shape[:2]
+    scale = min(target_w * 0.95 / crop_w, target_h * 0.95 / crop_h)
+    new_w = int(crop_w * scale)
+    new_h = int(crop_h * scale)
     
     # Resize
-    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+    resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     
-    # Create white background (248 for slight off-white)
+    # Create white background
     thumb = np.full((target_h, target_w, 3), 248, dtype=np.uint8)
     
-    # Center the image
+    # Center the ring
     y_offset = (target_h - new_h) // 2
     x_offset = (target_w - new_w) // 2
     thumb[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
@@ -257,7 +308,7 @@ def create_thumbnail(image):
     return thumb
 
 def handler(job):
-    """Wedding Ring AI v57 Handler - Complete with all fixes"""
+    """Wedding Ring AI v58 Handler - Extreme White Champagne Gold + Better Borders"""
     start_time = time.time()
     
     try:
@@ -267,7 +318,7 @@ def handler(job):
         image_data = job_input.get("image") or job_input.get("image_base64")
         
         if not image_data:
-            return {"output": {"error": "No image provided", "status": "error", "version": "v57"}}
+            return {"output": {"error": "No image provided", "status": "error", "version": "v58"}}
         
         # Decode base64 image
         try:
@@ -278,7 +329,7 @@ def handler(job):
             if image is None:
                 raise ValueError("Failed to decode image")
         except Exception as e:
-            return {"output": {"error": f"Image decode error: {str(e)}", "status": "error", "version": "v57"}}
+            return {"output": {"error": f"Image decode error: {str(e)}", "status": "error", "version": "v58"}}
         
         # Step 1: Remove black borders
         image, border_removed = remove_black_borders(image)
@@ -319,7 +370,7 @@ def handler(job):
                     "lighting": lighting,
                     "border_removed": border_removed,
                     "processing_time": time.time() - start_time,
-                    "version": "v57",
+                    "version": "v58",
                     "status": "success"
                 }
             }
@@ -330,7 +381,7 @@ def handler(job):
             "output": {
                 "error": f"Processing error: {str(e)}",
                 "status": "error",
-                "version": "v57"
+                "version": "v58"
             }
         }
 
