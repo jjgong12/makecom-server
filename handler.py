@@ -11,10 +11,279 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def detect_wedding_ring_area(image):
+    """
+    Detect and protect wedding ring area before border removal
+    Returns a mask where ring areas are marked
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Multiple detection methods for safety
+    # Method 1: Color-based detection (metallic tones)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    
+    # Gold/Rose gold range
+    lower_gold = np.array([10, 30, 100])
+    upper_gold = np.array([25, 255, 255])
+    mask_gold = cv2.inRange(hsv, lower_gold, upper_gold)
+    
+    # Silver/White gold range
+    lower_silver = np.array([0, 0, 150])
+    upper_silver = np.array([180, 30, 255])
+    mask_silver = cv2.inRange(hsv, lower_silver, upper_silver)
+    
+    # Combine masks
+    ring_mask = cv2.bitwise_or(mask_gold, mask_silver)
+    
+    # Method 2: Edge-based detection (circular patterns)
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Detect circles (rings are often circular)
+    circles = cv2.HoughCircles(
+        gray,
+        cv2.HOUGH_GRADIENT,
+        dp=1,
+        minDist=50,
+        param1=50,
+        param2=30,
+        minRadius=20,
+        maxRadius=500
+    )
+    
+    if circles is not None:
+        circles = np.uint16(np.around(circles))
+        for circle in circles[0, :]:
+            cv2.circle(ring_mask, (circle[0], circle[1]), circle[2] + 30, 255, -1)
+    
+    # Method 3: Texture-based (smooth metallic surfaces)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    laplacian = cv2.Laplacian(blur, cv2.CV_64F)
+    texture_mask = (np.abs(laplacian) < 10).astype(np.uint8) * 255
+    
+    # Combine all methods
+    ring_mask = cv2.bitwise_or(ring_mask, texture_mask)
+    
+    # Dilate to ensure full ring coverage
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (50, 50))
+    ring_mask = cv2.dilate(ring_mask, kernel, iterations=2)
+    
+    return ring_mask
+
+def verify_border_removal(image, original_shape):
+    """
+    Verify if border was properly removed
+    Returns confidence score (0-1) and issues found
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    oh, ow = original_shape[:2]
+    
+    issues = []
+    scores = []
+    
+    # Check 1: Size reduction ratio
+    size_reduction = (h * w) / (oh * ow)
+    if size_reduction > 0.9:
+        issues.append("Minimal size reduction - border might remain")
+        scores.append(0.3)
+    elif size_reduction < 0.3:
+        issues.append("Excessive cropping - might have removed content")
+        scores.append(0.5)
+    else:
+        scores.append(1.0)
+    
+    # Check 2: Edge darkness
+    edge_size = 20
+    edges_mean = [
+        gray[:edge_size, :].mean(),      # top
+        gray[-edge_size:, :].mean(),     # bottom
+        gray[:, :edge_size].mean(),      # left
+        gray[:, -edge_size:].mean()      # right
+    ]
+    
+    dark_edges = sum(1 for edge in edges_mean if edge < 100)
+    if dark_edges >= 2:
+        issues.append(f"{dark_edges} dark edges detected")
+        scores.append(0.4)
+    elif dark_edges == 1:
+        issues.append("1 dark edge detected")
+        scores.append(0.7)
+    else:
+        scores.append(1.0)
+    
+    # Check 3: Black pixel ratio at borders
+    border_strip = 30
+    border_pixels = np.concatenate([
+        gray[:border_strip, :].flatten(),
+        gray[-border_strip:, :].flatten(),
+        gray[:, :border_strip].flatten(),
+        gray[:, -border_strip:].flatten()
+    ])
+    
+    black_ratio = np.sum(border_pixels < 50) / len(border_pixels)
+    if black_ratio > 0.3:
+        issues.append(f"High black pixel ratio at borders: {black_ratio:.2f}")
+        scores.append(0.3)
+    elif black_ratio > 0.1:
+        issues.append(f"Some black pixels at borders: {black_ratio:.2f}")
+        scores.append(0.7)
+    else:
+        scores.append(1.0)
+    
+    confidence = np.mean(scores)
+    return confidence, issues
+
+def remove_border_safe_multi_method(image, ring_mask=None):
+    """
+    Multi-method border removal with ring protection
+    Tries multiple approaches and selects the best result
+    """
+    h, w = image.shape[:2]
+    results = []
+    
+    # Method 1: Enhanced gradient-based detection
+    def method_gradient():
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Compute gradients
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        gradient = np.sqrt(sobelx**2 + sobely**2)
+        
+        # Find content boundaries
+        threshold = np.percentile(gradient, 90)
+        content_mask = gradient > threshold
+        
+        # Find bounding box
+        coords = np.column_stack(np.where(content_mask))
+        if len(coords) > 0:
+            y_min, x_min = coords.min(axis=0)
+            y_max, x_max = coords.max(axis=0)
+            
+            # Add safety margin
+            margin = 10
+            y_min = max(0, y_min - margin)
+            x_min = max(0, x_min - margin)
+            y_max = min(h, y_max + margin)
+            x_max = min(w, x_max + margin)
+            
+            return image[y_min:y_max, x_min:x_max]
+        return image
+    
+    # Method 2: Variance-based detection
+    def method_variance():
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate local variance
+        window_size = 20
+        mean = cv2.blur(gray, (window_size, window_size))
+        sqr_mean = cv2.blur(gray**2, (window_size, window_size))
+        variance = sqr_mean - mean**2
+        
+        # High variance = content, low variance = border
+        content_mask = variance > np.percentile(variance, 10)
+        
+        # Morphological operations
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 50))
+        content_mask = cv2.morphologyEx(content_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+        
+        # Find bounding box
+        coords = cv2.findNonZero(content_mask)
+        if coords is not None:
+            x, y, w, h = cv2.boundingRect(coords)
+            return image[y:y+h, x:x+w]
+        return image
+    
+    # Method 3: Improved line-by-line scan
+    def method_smart_scan():
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        
+        # Protect ring area if provided
+        if ring_mask is not None:
+            protected_gray = gray.copy()
+            protected_gray[ring_mask > 0] = 255
+        else:
+            protected_gray = gray
+        
+        # Smart scan with multiple criteria
+        def find_content_start(line, reverse=False):
+            if reverse:
+                line = line[::-1]
+            
+            for i in range(len(line)):
+                # Multiple criteria for content detection
+                window = line[i:i+50] if i+50 < len(line) else line[i:]
+                if len(window) > 0:
+                    # Criteria 1: Mean brightness
+                    if np.mean(window) > 100:
+                        return i if not reverse else len(line) - i
+                    # Criteria 2: Variance (texture)
+                    if np.std(window) > 20:
+                        return i if not reverse else len(line) - i
+                    # Criteria 3: Max value (any bright pixel)
+                    if np.max(window) > 200:
+                        return i if not reverse else len(line) - i
+            
+            return 0 if not reverse else len(line)
+        
+        # Find borders
+        top = min(find_content_start(protected_gray[i, :]) for i in range(0, h, 10))
+        bottom = max(find_content_start(protected_gray[i, :], reverse=True) for i in range(h-1, 0, -10))
+        left = min(find_content_start(protected_gray[:, i]) for i in range(0, w, 10))
+        right = max(find_content_start(protected_gray[:, i], reverse=True) for i in range(w-1, 0, -10))
+        
+        # Safety checks
+        if bottom <= top + 100 or right <= left + 100:
+            return image
+        
+        return image[top:bottom, left:right]
+    
+    # Try all methods
+    try:
+        results.append(('gradient', method_gradient()))
+    except:
+        logger.warning("Gradient method failed")
+    
+    try:
+        results.append(('variance', method_variance()))
+    except:
+        logger.warning("Variance method failed")
+    
+    try:
+        results.append(('smart_scan', method_smart_scan()))
+    except:
+        logger.warning("Smart scan method failed")
+    
+    # Add original ultra method as fallback
+    try:
+        from_ultra = detect_and_remove_black_border_ultimate(image)
+        results.append(('ultra', from_ultra))
+    except:
+        logger.warning("Ultra method failed")
+    
+    # Select best result
+    best_result = image
+    best_score = 0
+    best_method = 'none'
+    
+    for method_name, result in results:
+        if result is not None and result.size > 0:
+            score, issues = verify_border_removal(result, image.shape)
+            logger.info(f"Method {method_name}: score={score:.2f}, issues={issues}")
+            
+            if score > best_score:
+                best_score = score
+                best_result = result
+                best_method = method_name
+    
+    logger.info(f"Selected method: {best_method} with score {best_score:.2f}")
+    return best_result
+
 def detect_and_remove_black_border_ultimate(image):
     """
-    Ultimate black border removal - v72 Super Supreme Ultra Perfect
-    Based on all successful methods from v23.1 ULTRA + v52 + v61
+    Ultimate black border removal - v73 Final
+    Enhanced with safety checks and validation
     """
     if len(image.shape) == 2:
         gray = image
@@ -28,50 +297,74 @@ def detect_and_remove_black_border_ultimate(image):
     logger.info("PASS 1: Maximum aggressive border scan - 60% area")
     max_border = min(int(h * 0.6), int(w * 0.6), 600)
     
-    # Top border - ultra aggressive
+    # Enhanced detection with multiple criteria
+    def is_border_line(line, threshold_mean=100, threshold_dark_ratio=0.85):
+        if len(line) == 0:
+            return False
+        
+        # Criteria 1: Mean value
+        if np.mean(line) < threshold_mean:
+            return True
+        
+        # Criteria 2: Dark pixel ratio
+        dark_ratio = np.sum(line < threshold_mean) / len(line)
+        if dark_ratio > threshold_dark_ratio:
+            return True
+        
+        # Criteria 3: Maximum value (no bright pixels)
+        if np.max(line) < 120:
+            return True
+        
+        # Criteria 4: Variance (uniform darkness)
+        if np.std(line) < 10 and np.mean(line) < 150:
+            return True
+        
+        return False
+    
+    # Top border
     top_crop = 0
     for y in range(max_border):
-        row = gray[y, :]
-        # Multiple conditions for detection
-        if np.mean(row) < 100 or np.median(row) < 90 or np.max(row) < 120:
-            top_crop = y + 1
-        elif np.sum(row < 100) > len(row) * 0.85:  # 85% dark pixels
+        if is_border_line(gray[y, :]):
             top_crop = y + 1
         else:
-            break
+            # Check next few lines to confirm
+            if y + 5 < max_border:
+                confirm = sum(1 for dy in range(1, 6) if is_border_line(gray[y + dy, :]))
+                if confirm < 3:  # Most lines are content
+                    break
     
     # Bottom border
     bottom_crop = h
     for y in range(h - 1, h - max_border, -1):
-        row = gray[y, :]
-        if np.mean(row) < 100 or np.median(row) < 90 or np.max(row) < 120:
-            bottom_crop = y
-        elif np.sum(row < 100) > len(row) * 0.85:
+        if is_border_line(gray[y, :]):
             bottom_crop = y
         else:
-            break
+            if y - 5 > h - max_border:
+                confirm = sum(1 for dy in range(1, 6) if is_border_line(gray[y - dy, :]))
+                if confirm < 3:
+                    break
     
     # Left border
     left_crop = 0
     for x in range(max_border):
-        col = gray[:, x]
-        if np.mean(col) < 100 or np.median(col) < 90 or np.max(col) < 120:
-            left_crop = x + 1
-        elif np.sum(col < 100) > len(col) * 0.85:
+        if is_border_line(gray[:, x]):
             left_crop = x + 1
         else:
-            break
+            if x + 5 < max_border:
+                confirm = sum(1 for dx in range(1, 6) if is_border_line(gray[:, x + dx]))
+                if confirm < 3:
+                    break
     
     # Right border
     right_crop = w
     for x in range(w - 1, w - max_border, -1):
-        col = gray[:, x]
-        if np.mean(col) < 100 or np.median(col) < 90 or np.max(col) < 120:
-            right_crop = x
-        elif np.sum(col < 100) > len(col) * 0.85:
+        if is_border_line(gray[:, x]):
             right_crop = x
         else:
-            break
+            if x - 5 > w - max_border:
+                confirm = sum(1 for dx in range(1, 6) if is_border_line(gray[:, x - dx]))
+                if confirm < 3:
+                    break
     
     # Apply PASS 1
     if top_crop > 0 or bottom_crop < h or left_crop > 0 or right_crop < w:
@@ -80,7 +373,7 @@ def detect_and_remove_black_border_ultimate(image):
         gray = gray[top_crop:bottom_crop, left_crop:right_crop]
         h, w = gray.shape
     
-    # PASS 2: Edge gradient detection (find where content starts)
+    # PASS 2: Edge gradient detection
     logger.info("PASS 2: Edge gradient detection")
     
     # Sobel edge detection
@@ -92,82 +385,73 @@ def detect_and_remove_black_border_ultimate(image):
     edge_threshold = 50
     check_depth = min(50, h//4, w//4)
     
-    # Top
+    # Additional cropping based on edges
+    extra_crop = {'top': 0, 'bottom': 0, 'left': 0, 'right': 0}
+    
+    # Top edge
     for y in range(check_depth):
         if np.max(edges[y, :]) > edge_threshold:
             if y > 5:
-                image = image[y-5:, :]
-                gray = gray[y-5:, :]
-                edges = edges[y-5:, :]
-                logger.info(f"PASS 2: Removed {y-5}px from top based on edges")
+                extra_crop['top'] = y - 5
             break
     
-    # Update dimensions
-    h, w = gray.shape
-    
-    # Bottom
+    # Bottom edge
     for y in range(h-1, h-check_depth, -1):
         if np.max(edges[y, :]) > edge_threshold:
-            if y < h-5:
-                image = image[:y+5, :]
-                gray = gray[:y+5, :]
-                edges = edges[:y+5, :]
-                logger.info(f"PASS 2: Removed {h-y-5}px from bottom based on edges")
+            if y < h - 5:
+                extra_crop['bottom'] = h - y - 5
             break
     
-    # Update dimensions
-    h, w = gray.shape
-    
-    # Left
-    for x in range(check_depth):
-        if np.max(edges[:, x]) > edge_threshold:
-            if x > 5:
-                image = image[:, x-5:]
-                gray = gray[:, x-5:]
-                logger.info(f"PASS 2: Removed {x-5}px from left based on edges")
-            break
-    
-    # Right
-    for x in range(w-1, w-check_depth, -1):
-        if np.max(edges[:, x]) > edge_threshold:
-            if x < w-5:
-                image = image[:, :x+5]
-                gray = gray[:, :x+5]
-                logger.info(f"PASS 2: Removed {w-x-5}px from right based on edges")
-            break
+    # Apply PASS 2 crops
+    if any(extra_crop.values()):
+        logger.info(f"PASS 2 extra crop: {extra_crop}")
+        image = image[extra_crop['top']:h-extra_crop['bottom'], 
+                     extra_crop['left']:w-extra_crop['right']]
+        gray = gray[extra_crop['top']:h-extra_crop['bottom'], 
+                   extra_crop['left']:w-extra_crop['right']]
+        h, w = gray.shape
     
     # PASS 3: Final precision cleanup
     logger.info("PASS 3: Final precision cleanup")
-    h, w = gray.shape
     
-    # Very aggressive final pass
+    # Very aggressive final pass with validation
     final_check = 20
     
-    # Check each edge and remove if mostly dark
-    if h > final_check * 2:
+    if h > final_check * 2 and w > final_check * 2:
+        # Check each edge
+        final_crops = {'top': 0, 'bottom': 0, 'left': 0, 'right': 0}
+        
         if np.percentile(gray[:final_check, :], 90) < 100:
-            image = image[final_check:, :]
-            gray = gray[final_check:, :]
-            logger.info(f"PASS 3: Removed {final_check}px from top")
+            final_crops['top'] = final_check
         
         if np.percentile(gray[-final_check:, :], 90) < 100:
-            image = image[:-final_check, :]
-            gray = gray[:-final_check, :]
-            logger.info(f"PASS 3: Removed {final_check}px from bottom")
-    
-    if w > final_check * 2:
+            final_crops['bottom'] = final_check
+        
         if np.percentile(gray[:, :final_check], 90) < 100:
-            image = image[:, final_check:]
-            gray = gray[:, final_check:]
-            logger.info(f"PASS 3: Removed {final_check}px from left")
+            final_crops['left'] = final_check
         
         if np.percentile(gray[:, -final_check:], 90) < 100:
-            image = image[:, :-final_check]
-            logger.info(f"PASS 3: Removed {final_check}px from right")
+            final_crops['right'] = final_check
+        
+        # Apply final crops
+        if any(final_crops.values()):
+            logger.info(f"PASS 3 final crops: {final_crops}")
+            image = image[final_crops['top']:h-final_crops['bottom'],
+                         final_crops['left']:w-final_crops['right']]
     
     final_h, final_w = image.shape[:2]
-    logger.info(f"Ultimate border removal complete: {original_h}x{original_w} -> {final_h}x{final_w}")
     
+    # Safety check - if we removed too much, be more conservative
+    if final_h < original_h * 0.3 or final_w < original_w * 0.3:
+        logger.warning("Removed too much, returning more conservative crop")
+        # Return a more conservative crop
+        safe_top = min(top_crop, original_h // 4)
+        safe_bottom = max(bottom_crop, 3 * original_h // 4)
+        safe_left = min(left_crop, original_w // 4)
+        safe_right = max(right_crop, 3 * original_w // 4)
+        return image[safe_top:safe_bottom, safe_left:safe_right]
+    
+    logger.info(f"Ultimate border removal complete: {original_h}x{original_w} -> {final_h}x{final_w}")
     return image
 
 def detect_ring_advanced(image):
@@ -197,11 +481,20 @@ def detect_ring_advanced(image):
     if not contours:
         return None
     
-    # Filter contours by area
-    valid_contours = [c for c in contours if cv2.contourArea(c) > 500]
+    # Filter contours by area and circularity
+    valid_contours = []
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > 500:  # Minimum area
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter * perimeter)
+                if circularity > 0.3:  # Some circularity
+                    valid_contours.append(contour)
     
     if not valid_contours:
-        return None
+        # Fallback to largest contour
+        valid_contours = [max(contours, key=cv2.contourArea)]
     
     # Get overall bounding box
     x_min, y_min = float('inf'), float('inf')
@@ -303,11 +596,8 @@ def enhance_wedding_ring_perfect(image, metal_type='white_gold', lighting='balan
     enhanced = cv2.addWeighted(enhanced, 1.5, gaussian, -0.5, 0)
     
     # Ensure pure white background (248, 248, 248)
-    # Create mask for very bright areas
     gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
     _, white_mask = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY)
-    
-    # Apply white background
     enhanced[white_mask == 255] = [248, 248, 248]
     
     return enhanced
@@ -360,8 +650,16 @@ def create_thumbnail_ultimate(image, ring_bbox=None, target_size=(1000, 1300)):
     """
     logger.info("Creating ultimate thumbnail")
     
-    # Apply same ultimate border removal as main image
-    image_clean = detect_and_remove_black_border_ultimate(image.copy())
+    # Apply same border removal as main image
+    ring_mask = detect_wedding_ring_area(image)
+    image_clean = remove_border_safe_multi_method(image.copy(), ring_mask)
+    
+    # Verify border removal
+    confidence, issues = verify_border_removal(image_clean, image.shape)
+    if confidence < 0.7:
+        logger.warning(f"Low confidence border removal: {confidence}, issues: {issues}")
+        # Try fallback method
+        image_clean = detect_and_remove_black_border_ultimate(image.copy())
     
     # Detect ring if not provided
     if ring_bbox is None:
@@ -416,8 +714,8 @@ def create_thumbnail_ultimate(image, ring_bbox=None, target_size=(1000, 1300)):
     return thumbnail
 
 def handler(job):
-    """RunPod handler - v72 Super Supreme Ultra Perfect"""
-    logger.info("Starting v72 Super Supreme Ultra Perfect processing")
+    """RunPod handler - v73 Final with Ultimate Safe Border Removal"""
+    logger.info("Starting v73 Final processing")
     
     try:
         job_input = job['input']
@@ -448,26 +746,40 @@ def handler(job):
         
         logger.info(f"Image loaded: {image.shape}")
         
-        # Step 1: Apply ultimate black border removal
-        logger.info("Applying ultimate border removal...")
-        processed_image = detect_and_remove_black_border_ultimate(image)
+        # Step 1: Detect and protect ring area
+        logger.info("Detecting wedding ring area for protection...")
+        ring_mask = detect_wedding_ring_area(image)
+        
+        # Step 2: Apply safe multi-method border removal
+        logger.info("Applying safe multi-method border removal...")
+        processed_image = remove_border_safe_multi_method(image, ring_mask)
+        
+        # Step 3: Verify border removal quality
+        confidence, issues = verify_border_removal(processed_image, image.shape)
+        logger.info(f"Border removal confidence: {confidence:.2f}")
+        
+        if confidence < 0.7:
+            logger.warning(f"Low confidence, issues: {issues}")
+            # Try ultimate method as fallback
+            processed_image = detect_and_remove_black_border_ultimate(image)
+        
         logger.info(f"After border removal: {processed_image.shape}")
         
-        # Step 2: Detect ring for better processing
-        logger.info("Detecting wedding ring...")
+        # Step 4: Detect ring for better processing
+        logger.info("Detecting wedding ring in cleaned image...")
         ring_bbox = detect_ring_advanced(processed_image)
         
-        # Step 3: Enhance with metal and lighting (no color distortion)
+        # Step 5: Enhance with metal and lighting (no color distortion)
         metal_type = job_input.get("metal_type", "white_gold")
         lighting = job_input.get("lighting", "balanced")
         
         logger.info(f"Enhancing ring - Metal: {metal_type}, Lighting: {lighting}")
         enhanced_image = enhance_wedding_ring_perfect(processed_image, metal_type, lighting)
         
-        # Step 4: Create professional background
+        # Step 6: Create professional background
         final_image = create_professional_background_perfect(enhanced_image)
         
-        # Step 5: Create ultimate thumbnail
+        # Step 7: Create ultimate thumbnail
         logger.info("Creating ultimate thumbnail...")
         thumbnail = create_thumbnail_ultimate(image, ring_bbox, target_size=(1000, 1300))
         
@@ -487,7 +799,7 @@ def handler(job):
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         thumb_base64 = thumb_base64.rstrip('=')  # Remove padding
         
-        logger.info("Processing completed successfully - v72 Super Supreme Ultra Perfect")
+        logger.info("Processing completed successfully - v73 Final")
         
         # Return with proper structure for Make.com
         return {
@@ -495,19 +807,27 @@ def handler(job):
                 "enhanced_image": main_base64,
                 "thumbnail": thumb_base64,
                 "processing_info": {
-                    "version": "v72_super_supreme_ultra_perfect",
+                    "version": "v73_final_safe",
                     "metal_type": metal_type,
                     "lighting": lighting,
                     "original_size": list(image.shape[:2]),
                     "processed_size": list(processed_image.shape[:2]),
                     "thumbnail_size": [1000, 1300],
                     "border_removed": True,
-                    "removal_passes": 3,
+                    "border_confidence": float(confidence),
+                    "border_issues": issues,
                     "ring_detected": ring_bbox is not None,
+                    "ring_protected": True,
                     "ring_bbox": list(ring_bbox) if ring_bbox else None,
+                    "methods_used": [
+                        "ring_area_protection",
+                        "multi_method_border_removal",
+                        "gradient_detection",
+                        "variance_detection", 
+                        "smart_scan",
+                        "verification_system"
+                    ],
                     "enhancements_applied": [
-                        "ultimate_border_removal_3pass",
-                        "edge_gradient_detection",
                         "metal_specific_correction",
                         "lighting_adjustment",
                         "professional_background",
@@ -529,7 +849,7 @@ def handler(job):
                 "error": str(e),
                 "status": "error",
                 "processing_info": {
-                    "version": "v72_super_supreme_ultra_perfect",
+                    "version": "v73_final_safe",
                     "error_type": type(e).__name__,
                     "traceback": traceback.format_exc()
                 }
