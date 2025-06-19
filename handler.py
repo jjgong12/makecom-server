@@ -88,98 +88,97 @@ class WeddingRingProcessor:
             logger.error(f"Error converting image to base64: {e}")
             raise
 
-    def detect_masking(self, image: np.ndarray) -> Tuple[bool, np.ndarray, Dict]:
-        """Detect black masking in image"""
+    def detect_black_frame(self, image: np.ndarray) -> Tuple[bool, Dict]:
+        """Detect black frame around the image"""
         try:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            h, w = gray.shape
             
-            # Multi-threshold approach
-            masks = []
-            for threshold in [30, 40, 50, 60, 70, 80]:
-                mask = gray < threshold
-                masks.append(mask)
+            # Check for black frame by examining edges
+            edge_threshold = 50
+            frame_detected = False
             
-            # Combine all masks
-            combined_mask = np.logical_or.reduce(masks)
+            # Check top edge
+            top_edge = gray[:100, :]
+            if np.mean(top_edge) < edge_threshold:
+                frame_detected = True
+                
+            # Check bottom edge
+            bottom_edge = gray[-100:, :]
+            if np.mean(bottom_edge) < edge_threshold:
+                frame_detected = True
+                
+            # Check left edge
+            left_edge = gray[:, :100]
+            if np.mean(left_edge) < edge_threshold:
+                frame_detected = True
+                
+            # Check right edge
+            right_edge = gray[:, -100:]
+            if np.mean(right_edge) < edge_threshold:
+                frame_detected = True
             
-            # Clean up mask
-            kernel = np.ones((3, 3), np.uint8)
-            combined_mask = cv2.morphologyEx(combined_mask.astype(np.uint8), 
-                                            cv2.MORPH_CLOSE, kernel)
-            combined_mask = cv2.morphologyEx(combined_mask, 
-                                            cv2.MORPH_OPEN, kernel)
+            if not frame_detected:
+                return False, {}
             
-            # Find contours
-            contours, _ = cv2.findContours(combined_mask, 
-                                         cv2.RETR_EXTERNAL, 
-                                         cv2.CHAIN_APPROX_SIMPLE)
-            
-            if not contours:
-                return False, None, {}
-            
-            # Find largest contour
-            largest_contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
-            
-            # Check if significant masking
-            total_area = image.shape[0] * image.shape[1]
-            if area < total_area * 0.01:  # Less than 1%
-                return False, None, {}
-            
-            # Get bounding box
-            x, y, w, h = cv2.boundingRect(largest_contour)
-            
-            # Create detailed mask including edges
-            detailed_mask = np.zeros_like(gray, dtype=np.uint8)
-            cv2.drawContours(detailed_mask, [largest_contour], -1, 255, -1)
-            
-            # Expand mask to catch edges
-            dilated_mask = cv2.dilate(detailed_mask, kernel, iterations=2)
+            # Find the inner content boundaries
+            # Scan from edges inward to find where black frame ends
+            top = 0
+            for i in range(h // 2):
+                if np.mean(gray[i, w//4:3*w//4]) > edge_threshold:
+                    top = i
+                    break
+                    
+            bottom = h
+            for i in range(h - 1, h // 2, -1):
+                if np.mean(gray[i, w//4:3*w//4]) > edge_threshold:
+                    bottom = i + 1
+                    break
+                    
+            left = 0
+            for i in range(w // 2):
+                if np.mean(gray[h//4:3*h//4, i]) > edge_threshold:
+                    left = i
+                    break
+                    
+            right = w
+            for i in range(w - 1, w // 2, -1):
+                if np.mean(gray[h//4:3*h//4, i]) > edge_threshold:
+                    right = i + 1
+                    break
             
             info = {
-                'bbox': (x, y, w, h),
-                'area': area,
-                'mask_ratio': area / total_area
+                'has_frame': True,
+                'inner_bbox': (left, top, right - left, bottom - top),
+                'frame_thickness': {
+                    'top': top,
+                    'bottom': h - bottom,
+                    'left': left,
+                    'right': w - right
+                }
             }
             
-            return True, dilated_mask, info
+            return True, info
             
         except Exception as e:
-            logger.error(f"Error in detect_masking: {e}")
-            return False, None, {}
+            logger.error(f"Error detecting frame: {e}")
+            return False, {}
 
-    def remove_black_masking(self, image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Remove black masking and replace with appropriate background"""
+    def remove_black_frame(self, image: np.ndarray, frame_info: Dict) -> np.ndarray:
+        """Remove black frame and keep only the inner content"""
         try:
-            result = image.copy()
+            if 'inner_bbox' not in frame_info:
+                return image
+                
+            x, y, w, h = frame_info['inner_bbox']
             
-            # Detect metal type
-            metal_type = self.detect_metal_type(image)
+            # Crop to inner content
+            cropped = image[y:y+h, x:x+w]
             
-            # Get appropriate background color
-            bg_color = self.after_bg_colors[metal_type]['studio']
-            
-            # Apply background color to masked areas
-            result[mask > 0] = bg_color
-            
-            # Smooth edges
-            # Create edge mask
-            kernel = np.ones((5, 5), np.uint8)
-            dilated = cv2.dilate(mask, kernel, iterations=1)
-            edge_mask = dilated - mask
-            
-            # Blend edges
-            for c in range(3):
-                result[:, :, c] = np.where(
-                    edge_mask > 0,
-                    image[:, :, c] * 0.3 + bg_color[c] * 0.7,
-                    result[:, :, c]
-                )
-            
-            return result
+            return cropped
             
         except Exception as e:
-            logger.error(f"Error removing masking: {e}")
+            logger.error(f"Error removing frame: {e}")
             return image
 
     def detect_metal_type(self, image: np.ndarray) -> str:
@@ -234,47 +233,66 @@ class WeddingRingProcessor:
             logger.error(f"Error enhancing image: {e}")
             return image
 
-    def create_thumbnail(self, image: np.ndarray, bbox: Tuple[int, int, int, int]) -> np.ndarray:
-        """Create perfect thumbnail like in project knowledge"""
+    def create_thumbnail(self, image: np.ndarray) -> np.ndarray:
+        """Create perfect thumbnail with extended background"""
         try:
-            x, y, w, h = bbox
+            h, w = image.shape[:2]
             
-            # Calculate crop area with margin
-            margin = 0.3  # 30% margin around ring
-            cx = x + w // 2
-            cy = y + h // 2
+            # Detect ring region by finding non-background pixels
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
             
-            # Make square crop first
-            size = int(max(w, h) * (1 + margin * 2))
-            x1 = max(0, cx - size // 2)
-            y1 = max(0, cy - size // 2)
-            x2 = min(image.shape[1], x1 + size)
-            y2 = min(image.shape[0], y1 + size)
+            # Get background color from image edges
+            bg_samples = []
+            # Top edge
+            bg_samples.extend(image[0:10, :].reshape(-1, 3))
+            # Bottom edge
+            bg_samples.extend(image[-10:, :].reshape(-1, 3))
+            # Left edge
+            bg_samples.extend(image[:, 0:10].reshape(-1, 3))
+            # Right edge
+            bg_samples.extend(image[:, -10:].reshape(-1, 3))
             
-            # Crop
-            cropped = image[y1:y2, x1:x2]
+            bg_color = np.median(bg_samples, axis=0).astype(np.uint8)
+            
+            # Find ring bounds
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                         cv2.THRESH_BINARY_INV, 11, 2)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # Find largest contour (should be the ring)
+                largest_contour = max(contours, key=cv2.contourArea)
+                x, y, cw, ch = cv2.boundingRect(largest_contour)
+                
+                # Add margin
+                margin = int(max(cw, ch) * 0.3)
+                x = max(0, x - margin)
+                y = max(0, y - margin)
+                cw = min(w - x, cw + 2 * margin)
+                ch = min(h - y, ch + 2 * margin)
+            else:
+                # Fallback to center crop
+                x, y = w // 4, h // 4
+                cw, ch = w // 2, h // 2
             
             # Target dimensions
             target_w, target_h = 1000, 1300
             
-            # Create canvas with bright background
-            canvas = np.full((target_h, target_w, 3), (253, 251, 249), dtype=np.uint8)
+            # Create canvas with detected background color
+            canvas = np.full((target_h, target_w, 3), bg_color, dtype=np.uint8)
             
-            # Calculate placement
-            # Ring should occupy about 60% of width
+            # Calculate scale to fit ring nicely (60% of width)
             desired_ring_width = int(target_w * 0.6)
-            scale = desired_ring_width / w
+            scale = desired_ring_width / cw
             
-            new_w = int(cropped.shape[1] * scale)
-            new_h = int(cropped.shape[0] * scale)
+            # Check if height fits
+            if ch * scale > target_h * 0.8:
+                scale = (target_h * 0.8) / ch
             
-            # Ensure it fits
-            if new_h > target_h * 0.8:
-                scale = (target_h * 0.8) / cropped.shape[0]
-                new_w = int(cropped.shape[1] * scale)
-                new_h = int(cropped.shape[0] * scale)
-            
-            # Resize
+            # Resize the cropped region
+            cropped = image[y:y+ch, x:x+cw]
+            new_w = int(cw * scale)
+            new_h = int(ch * scale)
             resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
             
             # Center placement
@@ -284,7 +302,19 @@ class WeddingRingProcessor:
             # Place on canvas
             canvas[start_y:start_y+new_h, start_x:start_x+new_w] = resized
             
-            # Subtle brightness boost for thumbnail
+            # Apply subtle brightness to match AFTER style
+            metal_type = self.detect_metal_type(image)
+            target_bg = self.after_bg_colors[metal_type]['studio']
+            
+            # Adjust background to target color
+            for c in range(3):
+                canvas[:, :, c] = np.where(
+                    np.all(canvas == bg_color, axis=2),
+                    target_bg[c],
+                    canvas[:, :, c]
+                )
+            
+            # Subtle brightness boost
             canvas = np.clip(canvas * 1.05, 0, 255).astype(np.uint8)
             
             return canvas
@@ -301,19 +331,13 @@ class WeddingRingProcessor:
             image = self.base64_to_image(base64_image)
             logger.info(f"Loaded image: {image.shape}")
             
-            # Detect masking
-            has_masking, mask, masking_info = self.detect_masking(image)
+            # Detect and remove black frame
+            has_frame, frame_info = self.detect_black_frame(image)
             
-            if has_masking:
-                logger.info("Black masking detected, removing...")
-                image = self.remove_black_masking(image, mask)
-                bbox = masking_info['bbox']
-            else:
-                # Use center crop if no masking
-                h, w = image.shape[:2]
-                size = min(h, w) // 2
-                cx, cy = w // 2, h // 2
-                bbox = (cx - size // 2, cy - size // 2, size, size)
+            if has_frame:
+                logger.info("Black frame detected, removing...")
+                image = self.remove_black_frame(image, frame_info)
+                logger.info(f"After frame removal: {image.shape}")
             
             # Detect metal type
             metal_type = self.detect_metal_type(image)
@@ -323,7 +347,7 @@ class WeddingRingProcessor:
             enhanced = self.enhance_image(image, metal_type)
             
             # Create thumbnail
-            thumbnail = self.create_thumbnail(enhanced, bbox)
+            thumbnail = self.create_thumbnail(enhanced)
             logger.info(f"Created thumbnail: {thumbnail.shape}")
             
             # Convert to base64 without padding
@@ -335,7 +359,7 @@ class WeddingRingProcessor:
                 "enhanced_image": enhanced_base64,
                 "thumbnail": thumbnail_base64,
                 "processing_info": {
-                    "had_masking": has_masking,
+                    "had_frame": has_frame,
                     "metal_type": metal_type,
                     "original_size": f"{image.shape[1]}x{image.shape[0]}",
                     "thumbnail_size": "1000x1300"
@@ -346,7 +370,23 @@ class WeddingRingProcessor:
             logger.error(f"Error processing image: {e}")
             raise
 
-info(f"Result keys: {list(result.keys())}")
+def handler(event):
+    """RunPod handler function"""
+    try:
+        logger.info("Starting handler...")
+        
+        # Simple extraction like v64
+        input_data = event.get("input", {})
+        image_base64 = input_data.get("image_base64", "")
+        
+        if not image_base64:
+            raise ValueError("No image_base64 provided in input")
+        
+        # Process image
+        processor = WeddingRingProcessor()
+        result = processor.process_image(image_base64)
+        
+        logger.info("Processing completed successfully")
         
         # Return result - RunPod will wrap this in {"output": ...}
         return result
