@@ -11,68 +11,134 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def remove_black_borders_pixel_perfect(img_array):
-    """픽셀 단위 정밀 검은색 제거"""
+def remove_black_borders_adaptive_canny(img_array):
+    """단계적 threshold + Canny Edge Detection 결합"""
     height, width = img_array.shape[:2]
     
-    # RGB로 작업 (정확한 검은색 감지)
+    # RGB로 작업
     if len(img_array.shape) == 2:
         img_rgb = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
+        gray = img_array
     else:
         img_rgb = img_array.copy()
+        gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
     
     logger.info(f"Original size: {width}x{height}")
     
-    # 순수 검은색 픽셀 찾기 - RGB(0,0,0) ~ RGB(10,10,10)
-    BLACK_THRESHOLD = 10
+    # 방법 1: Canny Edge Detection
+    def get_canny_borders():
+        # 가우시안 블러로 노이즈 제거
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Canny edge detection
+        edges = cv2.Canny(blurred, 50, 150)
+        
+        # 엣지 찾기
+        canny_edges = {'top': 0, 'bottom': height, 'left': 0, 'right': width}
+        
+        # 위에서 아래로
+        for y in range(height // 2):
+            if np.sum(edges[y, :]) > width * 0.1:  # 10% 이상 엣지 있으면
+                canny_edges['top'] = max(0, y - 5)  # 5픽셀 여유
+                break
+        
+        # 아래에서 위로
+        for y in range(height - 1, height // 2, -1):
+            if np.sum(edges[y, :]) > width * 0.1:
+                canny_edges['bottom'] = min(height, y + 5)
+                break
+        
+        # 왼쪽에서 오른쪽으로
+        for x in range(width // 2):
+            if np.sum(edges[:, x]) > height * 0.1:
+                canny_edges['left'] = max(0, x - 5)
+                break
+        
+        # 오른쪽에서 왼쪽으로
+        for x in range(width - 1, width // 2, -1):
+            if np.sum(edges[:, x]) > height * 0.1:
+                canny_edges['right'] = min(width, x + 5)
+                break
+        
+        return canny_edges
     
-    # 위쪽에서 아래로 스캔
-    top_crop = 0
-    for y in range(height // 3):  # 상위 1/3만 스캔
-        row = img_rgb[y, :]
-        # 행의 90% 이상이 검은색이면 제거 대상
-        black_pixels = np.sum(np.all(row <= BLACK_THRESHOLD, axis=1))
-        if black_pixels > width * 0.9:
-            top_crop = y + 1
-        else:
-            break
+    # 방법 2: 단계적 Threshold
+    def get_adaptive_borders():
+        threshold_edges = None
+        detected_threshold = None
+        
+        # 10부터 50까지 단계적 시도
+        for threshold in [10, 20, 30, 40, 50]:
+            edges = {'top': 0, 'bottom': height, 'left': 0, 'right': width}
+            found = False
+            
+            # 위쪽 스캔
+            for y in range(height // 2):
+                row = img_rgb[y, :]
+                # 모든 픽셀이 threshold 이하인지 체크
+                if np.all(np.max(row, axis=1) <= threshold):
+                    edges['top'] = y + 1
+                    found = True
+                else:
+                    break
+            
+            # 검은색 감지되면 이 threshold로 나머지 방향도 스캔
+            if found:
+                # 아래쪽
+                for y in range(height - 1, height // 2, -1):
+                    row = img_rgb[y, :]
+                    if np.all(np.max(row, axis=1) <= threshold):
+                        edges['bottom'] = y
+                    else:
+                        break
+                
+                # 왼쪽
+                for x in range(width // 2):
+                    col = img_rgb[:, x]
+                    if np.all(np.max(col, axis=1) <= threshold):
+                        edges['left'] = x + 1
+                    else:
+                        break
+                
+                # 오른쪽
+                for x in range(width - 1, width // 2, -1):
+                    col = img_rgb[:, x]
+                    if np.all(np.max(col, axis=1) <= threshold):
+                        edges['right'] = x
+                    else:
+                        break
+                
+                threshold_edges = edges
+                detected_threshold = threshold
+                logger.info(f"Black borders detected with threshold {threshold}")
+                break
+        
+        return threshold_edges, detected_threshold
     
-    # 아래에서 위로 스캔
-    bottom_crop = height
-    for y in range(height - 1, 2 * height // 3, -1):  # 하위 1/3만 스캔
-        row = img_rgb[y, :]
-        black_pixels = np.sum(np.all(row <= BLACK_THRESHOLD, axis=1))
-        if black_pixels > width * 0.9:
-            bottom_crop = y
-        else:
-            break
+    # 두 방법 실행
+    canny_borders = get_canny_borders()
+    threshold_borders, used_threshold = get_adaptive_borders()
     
-    # 왼쪽에서 오른쪽으로 스캔
-    left_crop = 0
-    for x in range(width // 3):
-        col = img_rgb[:, x]
-        black_pixels = np.sum(np.all(col <= BLACK_THRESHOLD, axis=1))
-        if black_pixels > height * 0.9:
-            left_crop = x + 1
-        else:
-            break
-    
-    # 오른쪽에서 왼쪽으로 스캔
-    right_crop = width
-    for x in range(width - 1, 2 * width // 3, -1):
-        col = img_rgb[:, x]
-        black_pixels = np.sum(np.all(col <= BLACK_THRESHOLD, axis=1))
-        if black_pixels > height * 0.9:
-            right_crop = x
-        else:
-            break
-    
-    logger.info(f"Black borders detected - Top: {top_crop}, Bottom: {height-bottom_crop}, Left: {left_crop}, Right: {width-right_crop}")
+    # 두 방법 중 더 보수적인 값 선택 (더 많이 자르는 쪽)
+    if threshold_borders:
+        final_edges = {
+            'top': max(canny_borders['top'], threshold_borders['top']),
+            'bottom': min(canny_borders['bottom'], threshold_borders['bottom']),
+            'left': max(canny_borders['left'], threshold_borders['left']),
+            'right': min(canny_borders['right'], threshold_borders['right'])
+        }
+        logger.info(f"Combined borders - Threshold({used_threshold}): {threshold_borders}, Canny: {canny_borders}")
+    else:
+        final_edges = canny_borders
+        logger.info(f"Using only Canny borders: {canny_borders}")
     
     # 크롭 실행
-    if top_crop > 0 or bottom_crop < height or left_crop > 0 or right_crop < width:
-        cropped = img_array[top_crop:bottom_crop, left_crop:right_crop]
-        logger.info(f"Cropped to: {cropped.shape[1]}x{cropped.shape[0]}")
+    top, bottom = final_edges['top'], final_edges['bottom']
+    left, right = final_edges['left'], final_edges['right']
+    
+    if top > 0 or bottom < height or left > 0 or right < width:
+        cropped = img_array[top:bottom, left:right]
+        logger.info(f"Cropped from {width}x{height} to {cropped.shape[1]}x{cropped.shape[0]}")
         return cropped
     
     return img_array
@@ -80,20 +146,20 @@ def remove_black_borders_pixel_perfect(img_array):
 def process_wedding_ring(img_array, metal_type="gold", lighting="studio"):
     """웨딩링 전문 보정 - 28쌍 학습데이터 + 10쌍 보정전/후 데이터 기반"""
     
-    # 1. 먼저 검은색 테두리 제거
-    img_array = remove_black_borders_pixel_perfect(img_array)
+    # 1. 먼저 검은색 테두리 제거 (Adaptive + Canny)
+    img_array = remove_black_borders_adaptive_canny(img_array)
     
     # 2. 메탈 타입별 보정
     def enhance_metal(img, metal):
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         
-        if metal == "gold":
-            # 골드 향상
+        if metal == "gold" or metal == "yellow_gold":
+            # 골드/옐로우골드 향상
             l = cv2.add(l, 15)
             b = cv2.add(b, 10)
-        elif metal == "silver":
-            # 실버 향상
+        elif metal == "silver" or metal == "white_gold" or metal == "white":
+            # 실버/화이트골드 향상
             l = cv2.add(l, 20)
             a = cv2.subtract(a, 5)
         elif metal == "rose_gold":
@@ -149,14 +215,19 @@ def process_wedding_ring(img_array, metal_type="gold", lighting="studio"):
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 def create_thumbnail_ultra(img_array, target_size=(800, 800)):
-    """웨딩링 자동 감지 + 꽉찬 썸네일"""
+    """웨딩링 자동 감지 + 꽉찬 썸네일 (threshold 60)"""
     height, width = img_array.shape[:2]
     
     # 이미지를 grayscale로 변환하여 링 감지
     gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
     
-    # 이진화로 링 영역 찾기 (밝은 부분이 링)
-    _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
+    # threshold 60으로 링 영역 찾기 (어두운 배경 제외)
+    _, binary = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
+    
+    # 모폴로지 연산으로 노이즈 제거
+    kernel = np.ones((5, 5), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
     
     # 컨투어 찾기
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -166,8 +237,8 @@ def create_thumbnail_ultra(img_array, target_size=(800, 800)):
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest_contour)
         
-        # 15% 패딩 추가 (98% 차지하도록)
-        padding = int(max(w, h) * 0.15)
+        # 10% 패딩 추가 (더 꽉 차게)
+        padding = int(max(w, h) * 0.1)
         x = max(0, x - padding)
         y = max(0, y - padding)
         w = min(width - x, w + 2 * padding)
@@ -186,13 +257,14 @@ def create_thumbnail_ultra(img_array, target_size=(800, 800)):
         # 크롭
         cropped = img_array[y:y2, x:x2]
         
-        logger.info(f"Ring detected and cropped: {cropped.shape}")
+        logger.info(f"Ring detected and cropped: {cropped.shape} (threshold=60)")
     else:
         # 링을 못 찾으면 중앙 크롭
         size = min(width, height)
         x = (width - size) // 2
         y = (height - size) // 2
         cropped = img_array[y:y+size, x:x+size]
+        logger.info("Ring not detected, using center crop")
     
     # 리사이즈
     pil_img = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
@@ -204,9 +276,9 @@ def create_thumbnail_ultra(img_array, target_size=(800, 800)):
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 def handler(event):
-    """RunPod 핸들러"""
+    """RunPod 핸들러 v90"""
     try:
-        logger.info("Handler started - v72 Pixel Perfect")
+        logger.info("Handler started - v90 Adaptive+Canny")
         
         # 입력 데이터 추출
         input_data = event.get("input", {})
@@ -238,7 +310,7 @@ def handler(event):
         # 웨딩링 처리
         enhanced = process_wedding_ring(img_array, metal_type, lighting)
         
-        # 썸네일 생성 (꽉찬 버전)
+        # 썸네일 생성 (threshold 60)
         thumbnail = create_thumbnail_ultra(enhanced)
         
         # Base64 인코딩 (padding 제거)
@@ -262,7 +334,7 @@ def handler(event):
                     "enhanced_size": f"{enhanced.shape[1]}x{enhanced.shape[0]}",
                     "thumbnail_size": f"{thumbnail.shape[1]}x{thumbnail.shape[0]}",
                     "status": "success",
-                    "version": "v72-pixel-perfect"
+                    "version": "v90-adaptive-canny"
                 }
             }
         }
@@ -273,7 +345,7 @@ def handler(event):
             "output": {
                 "error": str(e),
                 "status": "failed",
-                "version": "v72-pixel-perfect"
+                "version": "v90-adaptive-canny"
             }
         }
 
