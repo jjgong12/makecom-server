@@ -91,15 +91,15 @@ COMPLETE_PARAMETERS = {
 }
 
 def remove_black_borders(image):
-    """v62: 100픽셀 두께 검은색 테두리도 완전 제거"""
+    """v63: 더 강력한 검은색 테두리 제거"""
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # v60 → v62: threshold 120 → 150 (더 밝은 회색도 테두리로 인식)
-    threshold = 150  # ← 이것만 변경!
+    # v63: threshold 180으로 대폭 상향 (거의 흰색만 통과)
+    threshold = 180
     
-    # v60: 최대 200픽셀까지 스캔 (100픽셀 테두리 + 여유)
-    max_scan = min(200, h // 3, w // 3)
+    # v63: 최대 300픽셀까지 스캔 (두꺼운 테두리 대응)
+    max_scan = min(300, h // 3, w // 3)
     
     # Find borders - 전체 라인의 평균값으로 판단
     top = 0
@@ -130,8 +130,8 @@ def remove_black_borders(image):
         else:
             break
     
-    # v62: 추가 안전 마진 (35픽셀)
-    safety_margin = 35
+    # v63: 추가 안전 마진 50픽셀로 증가
+    safety_margin = 50
     top = min(top + safety_margin, h // 4)
     bottom = min(bottom + safety_margin, h // 4)
     left = min(left + safety_margin, w // 4)
@@ -140,7 +140,7 @@ def remove_black_borders(image):
     # Crop the image
     if top + bottom < h and left + right < w:
         cropped = image[top:h-bottom, left:w-right]
-        border_removed = (top > 35 or bottom > 35 or left > 35 or right > 35)
+        border_removed = (top > 50 or bottom > 50 or left > 50 or right > 50)
         return cropped, border_removed
     else:
         return image, False
@@ -246,8 +246,8 @@ def create_thumbnail(image, target_w=1000, target_h=1300):
     if points is not None:
         x, y, edge_w, edge_h = cv2.boundingRect(points)
         
-        # v60: 더 타이트한 크롭 (padding 5%)
-        pad = int(max(edge_w, edge_h) * 0.05)
+        # v63: 아주 타이트한 크롭 (padding 2%)
+        pad = int(max(edge_w, edge_h) * 0.02)
         x = max(0, x - pad)
         y = max(0, y - pad)
         edge_w = min(w - x, edge_w + 2 * pad)
@@ -269,8 +269,8 @@ def create_thumbnail(image, target_w=1000, target_h=1300):
             largest_contour = max(contours, key=cv2.contourArea)
             x, y, ring_w, ring_h = cv2.boundingRect(largest_contour)
             
-            # v60: 최소한의 padding (10%)
-            pad = int(max(ring_w, ring_h) * 0.1)
+            # v63: 최소한의 padding (5%)
+            pad = int(max(ring_w, ring_h) * 0.05)
             x = max(0, x - pad)
             y = max(0, y - pad)
             ring_w = min(w - x, ring_w + 2 * pad)
@@ -282,9 +282,9 @@ def create_thumbnail(image, target_w=1000, target_h=1300):
             # Fallback: 이미지 전체 사용 (이미 검은 테두리 제거됨)
             cropped = image
     
-    # v60: ring이 썸네일의 99%를 차지하도록
+    # v63: ring이 썸네일의 100%를 차지하도록 (완전 꽉 차게)
     crop_h, crop_w = cropped.shape[:2]
-    scale = min(target_w * 0.99 / crop_w, target_h * 0.99 / crop_h)
+    scale = min(target_w / crop_w, target_h / crop_h)
     new_w = int(crop_w * scale)
     new_h = int(crop_h * scale)
     
@@ -302,7 +302,7 @@ def create_thumbnail(image, target_w=1000, target_h=1300):
     return thumb
 
 def handler(job):
-    """Wedding Ring AI v62 Handler - 100픽셀 검은 테두리 완전 제거"""
+    """Wedding Ring AI v63 Handler - 강력한 검은 테두리 제거"""
     start_time = time.time()
     
     try:
@@ -312,9 +312,9 @@ def handler(job):
         image_data = job_input.get("image") or job_input.get("image_base64")
         
         if not image_data:
-            return {"output": {"error": "No image provided", "status": "error", "version": "v62"}}
+            return {"output": {"error": "No image provided", "status": "error", "version": "v63"}}
         
-        # Decode base64 image
+        # Decode base64 image (padding 처리 없음!)
         try:
             image_bytes = base64.b64decode(image_data)
             nparr = np.frombuffer(image_bytes, np.uint8)
@@ -323,9 +323,9 @@ def handler(job):
             if image is None:
                 raise ValueError("Failed to decode image")
         except Exception as e:
-            return {"output": {"error": f"Image decode error: {str(e)}", "status": "error", "version": "v62"}}
+            return {"output": {"error": f"Image decode error: {str(e)}", "status": "error", "version": "v63"}}
         
-        # Step 1: Remove black borders (v62 - 100픽셀 대응)
+        # Step 1: Remove black borders (v63 - 더 강력하게)
         image, border_removed = remove_black_borders(image)
         
         # Step 2: Detect metal and lighting
@@ -342,7 +342,7 @@ def handler(job):
         params = COMPLETE_PARAMETERS.get(metal_type, {}).get(lighting, COMPLETE_PARAMETERS['white_gold']['natural'])
         enhanced = enhance_image(image, params)
         
-        # Step 4: Create thumbnail (v62 - 최대화)
+        # Step 4: Create thumbnail (v63 - 완전 확대)
         thumbnail = create_thumbnail(enhanced)
         
         # Step 5: Convert to base64
@@ -364,7 +364,7 @@ def handler(job):
                     "lighting": lighting,
                     "border_removed": border_removed,
                     "processing_time": time.time() - start_time,
-                    "version": "v62",
+                    "version": "v63",
                     "status": "success"
                 }
             }
@@ -375,7 +375,7 @@ def handler(job):
             "output": {
                 "error": f"Processing error: {str(e)}",
                 "status": "error",
-                "version": "v62"
+                "version": "v63"
             }
         }
 
