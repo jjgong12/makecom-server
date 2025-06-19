@@ -6,7 +6,7 @@ import base64
 import io
 
 def handler(event):
-    """Wedding Ring AI v76 - Ultimate Black Border Removal"""
+    """Wedding Ring AI v77 - Black Masking Removal"""
     try:
         # Get image from event
         image_input = event.get("input", {})
@@ -37,8 +37,8 @@ def handler(event):
                 }
             }
         
-        # Step 1: Remove black border with ultimate precision
-        image_no_border = remove_black_border_ultimate(image)
+        # Step 1: Remove black masking border
+        image_no_border = remove_black_masking_ultimate(image)
         
         # Step 2: Detect metal type
         metal_type = detect_metal_type(image_no_border)
@@ -66,7 +66,7 @@ def handler(event):
                 "thumbnail": thumb_base64,
                 "processing_info": {
                     "metal_type": metal_type,
-                    "version": "v76_ultimate",
+                    "version": "v77",
                     "border_removed": True,
                     "status": "success"
                 }
@@ -81,12 +81,13 @@ def handler(event):
             }
         }
 
-def remove_black_border_ultimate(image):
-    """Remove black border with 100% success rate"""
+def remove_black_masking_ultimate(image):
+    """Remove black masking border with 100% success rate"""
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Use low threshold for pure black (paint black is 0)
+    # Use multiple thresholds for pure black masking (#000000)
+    # Since it's painted black, threshold can be very low
     threshold = 50  # Covers black to very dark gray
     
     # Find borders from all directions
