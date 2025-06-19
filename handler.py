@@ -14,13 +14,26 @@ def handler(event):
     start_time = time.time()
     
     try:
+        # 디버깅: 전체 이벤트 출력
+        print(f"=== FULL EVENT DEBUG ===")
+        print(f"Event: {event}")
+        print(f"Event keys: {list(event.keys())}")
+        
+        if "input" in event:
+            print(f"Input: {event['input']}")
+            if isinstance(event['input'], dict):
+                print(f"Input keys: {list(event['input'].keys())}")
+                for key, value in event['input'].items():
+                    print(f"  {key}: {str(value)[:100]}...")
+        
         # Base64 이미지 추출
         base64_image = event.get("input", {}).get("image") or event.get("input", {}).get("image_base64")
         if not base64_image:
             return {
                 "output": {
                     "error": "No image provided",
-                    "status": "failed"
+                    "status": "failed",
+                    "debug": event  # 전체 event 반환
                 }
             }
         
@@ -28,7 +41,24 @@ def handler(event):
         if base64_image.startswith('data:'):
             base64_image = base64_image.split(',')[1]
         
-        image_data = base64.b64decode(base64_image)
+        # Padding 문제 해결
+        # base64 문자열 길이가 4의 배수가 되도록 패딩 추가
+        missing_padding = len(base64_image) % 4
+        if missing_padding:
+            base64_image += '=' * (4 - missing_padding)
+        
+        try:
+            image_data = base64.b64decode(base64_image)
+        except Exception as e:
+            print(f"Base64 decode error: {str(e)}")
+            print(f"Base64 preview: {base64_image[:100]}...")
+            return {
+                "output": {
+                    "error": f"Failed to decode base64: {str(e)}",
+                    "status": "failed"
+                }
+            }
+        
         nparr = np.frombuffer(image_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
