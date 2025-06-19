@@ -8,32 +8,19 @@ import traceback
 
 def handler(event):
     """
-    Wedding Ring AI v61 - Ultimate Black Border Removal
-    대화 59번 최종 버전: 검은색 테두리 완전 제거
+    Wedding Ring AI v61 - Enhanced Border Removal
+    v60 문제점 개선 + 작동 안정성 확보
     """
     start_time = time.time()
     
     try:
-        # 디버깅: 전체 이벤트 출력
-        print(f"=== FULL EVENT DEBUG ===")
-        print(f"Event: {event}")
-        print(f"Event keys: {list(event.keys())}")
-        
-        if "input" in event:
-            print(f"Input: {event['input']}")
-            if isinstance(event['input'], dict):
-                print(f"Input keys: {list(event['input'].keys())}")
-                for key, value in event['input'].items():
-                    print(f"  {key}: {str(value)[:100]}...")
-        
-        # Base64 이미지 추출
+        # Base64 이미지 추출 (원래 방식으로)
         base64_image = event.get("input", {}).get("image") or event.get("input", {}).get("image_base64")
         if not base64_image:
             return {
                 "output": {
                     "error": "No image provided",
-                    "status": "failed",
-                    "debug": event  # 전체 event 반환
+                    "status": "failed"
                 }
             }
         
@@ -41,24 +28,7 @@ def handler(event):
         if base64_image.startswith('data:'):
             base64_image = base64_image.split(',')[1]
         
-        # Padding 문제 해결
-        # base64 문자열 길이가 4의 배수가 되도록 패딩 추가
-        missing_padding = len(base64_image) % 4
-        if missing_padding:
-            base64_image += '=' * (4 - missing_padding)
-        
-        try:
-            image_data = base64.b64decode(base64_image)
-        except Exception as e:
-            print(f"Base64 decode error: {str(e)}")
-            print(f"Base64 preview: {base64_image[:100]}...")
-            return {
-                "output": {
-                    "error": f"Failed to decode base64: {str(e)}",
-                    "status": "failed"
-                }
-            }
-        
+        image_data = base64.b64decode(base64_image)
         nparr = np.frombuffer(image_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
@@ -72,8 +42,8 @@ def handler(event):
         
         print(f"Original image size: {img.shape}")
         
-        # ========= PHASE 1: ULTRA BLACK BORDER REMOVAL =========
-        # 대화 58번 + 59번 최강 버전
+        # ========= PHASE 1: ENHANCED BLACK BORDER REMOVAL =========
+        # v60 개선: threshold 150, scan 50%, margin 50
         img_removed = remove_black_border_ultra(img.copy())
         print(f"After border removal: {img_removed.shape}")
         
@@ -84,15 +54,11 @@ def handler(event):
         # ========= PHASE 3: V13.3 ENHANCEMENT =========
         enhanced = apply_v13_3_enhancement(img_removed, metal_type, lighting)
         
-        # ========= PHASE 4: ENSURE PURE WHITE BACKGROUND =========
-        final = ensure_white_background(enhanced)
-        
-        # ========= PHASE 5: CREATE PERFECT THUMBNAIL =========
-        # 검은색 제거된 이미지로 썸네일 생성
-        thumbnail = create_perfect_thumbnail(final)
+        # ========= PHASE 3: CREATE THUMBNAIL =========
+        thumbnail = create_perfect_thumbnail(enhanced)
         
         # Convert to base64
-        _, main_buffer = cv2.imencode('.jpg', final, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        _, main_buffer = cv2.imencode('.jpg', enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
         main_base64 = base64.b64encode(main_buffer).decode('utf-8')
         
         _, thumb_buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -107,7 +73,7 @@ def handler(event):
                     "lighting": lighting,
                     "border_removed": True,
                     "processing_time": time.time() - start_time,
-                    "version": "v61_ultimate"
+                    "version": "v61_enhanced"
                 }
             }
         }
@@ -124,30 +90,53 @@ def handler(event):
 
 def remove_black_border_ultra(img):
     """
-    대화 59번 최강 검은색 테두리 제거
-    - 더 높은 threshold (150)
-    - 더 넓은 스캔 범위 (50%)
-    - 다단계 제거 프로세스
+    검은색 테두리 제거 - v60 개선 버전
+    v61의 개선사항은 유지하되 문제 부분만 제거
     """
     h, w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # 1차: 초강력 검은색 감지 (threshold 150)
-    borders = find_borders_ultra(gray, threshold=150, max_scan_ratio=0.5)
+    # 1차: 강력한 검은색 감지 (threshold 150으로 상향)
+    threshold = 150  # v60의 120 → 150
+    max_scan = int(min(h, w) * 0.5)  # v60의 40% → 50%
+    
+    # 각 방향에서 테두리 두께 측정
+    top = 0
+    for y in range(min(max_scan, h)):
+        if np.mean(gray[y, :]) > threshold:
+            top = y
+            break
+    
+    bottom = 0
+    for y in range(min(max_scan, h)):
+        if np.mean(gray[h-1-y, :]) > threshold:
+            bottom = y
+            break
+    
+    left = 0
+    for x in range(min(max_scan, w)):
+        if np.mean(gray[:, x]) > threshold:
+            left = x
+            break
+    
+    right = 0
+    for x in range(min(max_scan, w)):
+        if np.mean(gray[:, w-1-x]) > threshold:
+            right = x
+            break
     
     # 2차: 추가 안전 마진 (50픽셀)
-    borders = {
-        'top': borders['top'] + 50,
-        'bottom': borders['bottom'] + 50,
-        'left': borders['left'] + 50,
-        'right': borders['right'] + 50
-    }
+    safety_margin = 50  # v60의 35 → 50
+    top += safety_margin
+    bottom += safety_margin
+    left += safety_margin
+    right += safety_margin
     
     # 크롭
-    y1 = borders['top']
-    y2 = h - borders['bottom']
-    x1 = borders['left']
-    x2 = w - borders['right']
+    y1 = top
+    y2 = h - bottom
+    x1 = left
+    x2 = w - right
     
     if y2 > y1 and x2 > x1:
         cropped = img[y1:y2, x1:x2]
@@ -209,39 +198,17 @@ def find_borders_ultra(gray, threshold=150, max_scan_ratio=0.5):
     print(f"Detected borders: {borders}")
     return borders
 
-def ensure_white_background(img):
-    """
-    완전한 흰색 배경 보장
-    """
-    # HSV로 변환
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    
-    # 회색/베이지색 배경을 흰색으로
-    # Saturation이 낮고 Value가 높은 픽셀을 찾아 흰색으로
-    mask = (hsv[:,:,1] < 30) & (hsv[:,:,2] > 180)
-    
-    # 흰색으로 변경
-    img[mask] = [255, 255, 255]
-    
-    return img
-
 def create_perfect_thumbnail(img):
     """
-    완벽한 1000x1300 썸네일 생성
-    - 여백 완전 제거
-    - 웨딩링이 화면의 85% 차지
+    1000x1300 썸네일 생성 - 여백 최소화 버전
     """
     h, w = img.shape[:2]
     
-    # 웨딩링 영역 찾기 (더 민감하게)
+    # 웨딩링 영역 찾기
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # 배경이 아닌 영역 찾기 (threshold 낮춤)
+    # 배경이 아닌 영역 찾기 (threshold 240)
     _, binary = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-    
-    # 모폴로지 연산으로 웨딩링 영역 확장
-    kernel = np.ones((10, 10), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     
     # 컨투어 찾기
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -269,27 +236,25 @@ def create_perfect_thumbnail(img):
         ring_area = img[y_min:y_max, x_min:x_max]
         
         # 1000x1300으로 리사이즈
-        # 비율 유지하면서 최대한 크게
         rh, rw = ring_area.shape[:2]
-        scale = min(1000/rw, 1300/rh) * 0.85  # 85% 크기
+        scale = min(1000/rw, 1300/rh) * 0.9  # 90% 크기로 여백 확보
         
         new_w = int(rw * scale)
         new_h = int(rh * scale)
         
-        # 고품질 리사이즈
-        pil_ring = Image.fromarray(cv2.cvtColor(ring_area, cv2.COLOR_BGR2RGB))
-        pil_ring = pil_ring.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        # 리사이즈
+        resized = cv2.resize(ring_area, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
         
-        # 흰 배경에 중앙 배치
-        thumbnail = Image.new('RGB', (1000, 1300), (255, 255, 255))
-        x_offset = (1000 - new_w) // 2
+        # 1000x1300 캔버스에 중앙 배치
+        canvas = np.full((1300, 1000, 3), 255, dtype=np.uint8)
         y_offset = (1300 - new_h) // 2
-        thumbnail.paste(pil_ring, (x_offset, y_offset))
+        x_offset = (1000 - new_w) // 2
+        canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
         
-        return cv2.cvtColor(np.array(thumbnail), cv2.COLOR_RGB2BGR)
+        return canvas
     
     # 실패 시 기본 리사이즈
-    return cv2.resize(img, (1000, 1300))
+    return cv2.resize(img, (1000, 1300), interpolation=cv2.INTER_LANCZOS4)
 
 def detect_metal_and_lighting(img):
     """금속 타입과 조명 감지"""
