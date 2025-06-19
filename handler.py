@@ -91,17 +91,17 @@ COMPLETE_PARAMETERS = {
 }
 
 def remove_black_borders(image):
-    """v59: 매우 강력한 검은색 테두리 제거"""
+    """v60: 100픽셀 두께 검은색 테두리도 완전 제거"""
     h, w = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # v59: 더 높은 threshold (50 → 100) 사용
-    threshold = 100
+    # v60: threshold 조정 (밝은 회색도 테두리로 인식)
+    threshold = 120
     
-    # v59: 더 넓은 영역 스캔 (20% → 40%)
-    max_scan = int(min(h, w) * 0.4)
+    # v60: 최대 200픽셀까지 스캔 (100픽셀 테두리 + 여유)
+    max_scan = min(200, h // 3, w // 3)
     
-    # Find borders
+    # Find borders - 전체 라인의 평균값으로 판단
     top = 0
     for y in range(max_scan):
         if np.mean(gray[y, :]) < threshold:
@@ -110,7 +110,7 @@ def remove_black_borders(image):
             break
     
     bottom = 0
-    for y in range(h-1, h-max_scan-1, -1):
+    for y in range(h-1, max(h-max_scan-1, h//2), -1):
         if np.mean(gray[y, :]) < threshold:
             bottom = h - y
         else:
@@ -124,14 +124,14 @@ def remove_black_borders(image):
             break
     
     right = 0
-    for x in range(w-1, w-max_scan-1, -1):
+    for x in range(w-1, max(w-max_scan-1, w//2), -1):
         if np.mean(gray[:, x]) < threshold:
             right = w - x
         else:
             break
     
-    # v59: 더 큰 safety margin (20 → 35)
-    safety_margin = 35
+    # v60: safety margin 추가 (검은 테두리 잔여물 제거)
+    safety_margin = 20
     
     # Apply borders with safety margin
     top = min(top + safety_margin, h // 3)
@@ -144,9 +144,10 @@ def remove_black_borders(image):
     
     # Check if we removed too much
     if cropped.shape[0] < 100 or cropped.shape[1] < 100:
+        # 너무 많이 잘렸으면 원본 반환
         return image, False
     
-    border_removed = (top > 0 or bottom > 0 or left > 0 or right > 0)
+    border_removed = (top > 10 or bottom > 10 or left > 10 or right > 10)
     return cropped, border_removed
 
 def detect_metal_type(image):
@@ -232,18 +233,18 @@ def enhance_image(image, params):
     return enhanced
 
 def create_thumbnail(image):
-    """v59: 더 aggressive한 썸네일 생성"""
+    """v60: 강력한 썸네일 생성 - 검은 테두리 제거된 이미지에서 ring 최대화"""
     h, w = image.shape[:2]
     target_w, target_h = 1000, 1300
     
     # Find the ring area using stronger detection
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # v59: 더 낮은 threshold로 ring 감지 (100 → 80)
-    _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY)
+    # v60: ring 감지를 위한 이진화
+    _, binary = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
     
     # Clean up the binary image
-    kernel = np.ones((5, 5), np.uint8)
+    kernel = np.ones((7, 7), np.uint8)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
     
@@ -255,8 +256,8 @@ def create_thumbnail(image):
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, ring_w, ring_h = cv2.boundingRect(largest_contour)
         
-        # v59: 더 작은 padding (0.3 → 0.15)
-        pad = int(max(ring_w, ring_h) * 0.15)
+        # v60: 최소한의 padding (10%)
+        pad = int(max(ring_w, ring_h) * 0.1)
         x = max(0, x - pad)
         y = max(0, y - pad)
         ring_w = min(w - x, ring_w + 2 * pad)
@@ -265,20 +266,16 @@ def create_thumbnail(image):
         # Crop to ring area
         cropped = image[y:y+ring_h, x:x+ring_w]
     else:
-        # Fallback: use center crop
-        crop_size = min(h, w) // 2
-        center_y, center_x = h // 2, w // 2
-        start_y = max(0, center_y - crop_size)
-        start_x = max(0, center_x - crop_size)
-        cropped = image[start_y:start_y+crop_size*2, start_x:start_x+crop_size*2]
+        # Fallback: 이미지 전체 사용 (이미 검은 테두리 제거됨)
+        cropped = image
     
-    # v59: ring이 썸네일의 98%를 차지하도록 (95% → 98%)
+    # v60: ring이 썸네일의 99%를 차지하도록
     crop_h, crop_w = cropped.shape[:2]
-    scale = min(target_w * 0.98 / crop_w, target_h * 0.98 / crop_h)
+    scale = min(target_w * 0.99 / crop_w, target_h * 0.99 / crop_h)
     new_w = int(crop_w * scale)
     new_h = int(crop_h * scale)
     
-    # Resize
+    # Resize with high quality
     resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
     
     # Create white background
@@ -292,7 +289,7 @@ def create_thumbnail(image):
     return thumb
 
 def handler(job):
-    """Wedding Ring AI v59 Handler - 강력한 검은 테두리 제거"""
+    """Wedding Ring AI v60 Handler - 100픽셀 검은 테두리 완전 제거"""
     start_time = time.time()
     
     try:
@@ -302,7 +299,7 @@ def handler(job):
         image_data = job_input.get("image") or job_input.get("image_base64")
         
         if not image_data:
-            return {"output": {"error": "No image provided", "status": "error", "version": "v59"}}
+            return {"output": {"error": "No image provided", "status": "error", "version": "v60"}}
         
         # Decode base64 image
         try:
@@ -313,9 +310,9 @@ def handler(job):
             if image is None:
                 raise ValueError("Failed to decode image")
         except Exception as e:
-            return {"output": {"error": f"Image decode error: {str(e)}", "status": "error", "version": "v59"}}
+            return {"output": {"error": f"Image decode error: {str(e)}", "status": "error", "version": "v60"}}
         
-        # Step 1: Remove black borders (v59 강화)
+        # Step 1: Remove black borders (v60 - 100픽셀 대응)
         image, border_removed = remove_black_borders(image)
         
         # Step 2: Detect metal and lighting
@@ -332,7 +329,7 @@ def handler(job):
         params = COMPLETE_PARAMETERS.get(metal_type, {}).get(lighting, COMPLETE_PARAMETERS['white_gold']['natural'])
         enhanced = enhance_image(image, params)
         
-        # Step 4: Create thumbnail (v59 강화)
+        # Step 4: Create thumbnail (v60 - 최대화)
         thumbnail = create_thumbnail(enhanced)
         
         # Step 5: Convert to base64
@@ -354,7 +351,7 @@ def handler(job):
                     "lighting": lighting,
                     "border_removed": border_removed,
                     "processing_time": time.time() - start_time,
-                    "version": "v59",
+                    "version": "v60",
                     "status": "success"
                 }
             }
@@ -365,7 +362,7 @@ def handler(job):
             "output": {
                 "error": f"Processing error: {str(e)}",
                 "status": "error",
-                "version": "v59"
+                "version": "v60"
             }
         }
 
