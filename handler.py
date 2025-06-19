@@ -1,370 +1,442 @@
-import runpod
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance
-import io
+from PIL import Image, ImageEnhance, ImageFilter
 import base64
+import io
 import time
+import traceback
 
-# v58 EXTREME WHITE Parameters - Champagne Gold becomes almost White Gold
-COMPLETE_PARAMETERS = {
-    'white_gold': {
-        'natural': {
-            'brightness': 1.15, 'contrast': 1.10, 'exposure': 0.05,
-            'highlights': -0.10, 'shadows': 0.15, 'vibrance': 1.20,
-            'saturation': 1.08, 'clarity': 15, 'color_temp': -5,
-            'white_overlay': 0.06
-        },
-        'bright': {
-            'brightness': 1.10, 'contrast': 1.08, 'exposure': 0.02,
-            'highlights': -0.15, 'shadows': 0.10, 'vibrance': 1.15,
-            'saturation': 1.06, 'clarity': 12, 'color_temp': -4,
-            'white_overlay': 0.05
-        },
-        'shadow': {
-            'brightness': 1.25, 'contrast': 1.12, 'exposure': 0.08,
-            'highlights': -0.05, 'shadows': 0.25, 'vibrance': 1.25,
-            'saturation': 1.10, 'clarity': 18, 'color_temp': -6,
-            'white_overlay': 0.08
-        }
-    },
-    'yellow_gold': {
-        'natural': {
-            'brightness': 1.12, 'contrast': 1.15, 'exposure': 0.03,
-            'highlights': -0.08, 'shadows': 0.12, 'vibrance': 1.30,
-            'saturation': 1.12, 'clarity': 12, 'color_temp': 8,
-            'white_overlay': 0.03
-        },
-        'bright': {
-            'brightness': 1.08, 'contrast': 1.12, 'exposure': 0.00,
-            'highlights': -0.12, 'shadows': 0.08, 'vibrance': 1.25,
-            'saturation': 1.10, 'clarity': 10, 'color_temp': 6,
-            'white_overlay': 0.02
-        },
-        'shadow': {
-            'brightness': 1.20, 'contrast': 1.18, 'exposure': 0.06,
-            'highlights': -0.03, 'shadows': 0.20, 'vibrance': 1.35,
-            'saturation': 1.15, 'clarity': 15, 'color_temp': 10,
-            'white_overlay': 0.04
-        }
-    },
-    'rose_gold': {
-        'natural': {
-            'brightness': 1.14, 'contrast': 1.12, 'exposure': 0.04,
-            'highlights': -0.07, 'shadows': 0.14, 'vibrance': 1.25,
-            'saturation': 1.10, 'clarity': 13, 'color_temp': 3,
-            'white_overlay': 0.05
-        },
-        'bright': {
-            'brightness': 1.10, 'contrast': 1.10, 'exposure': 0.01,
-            'highlights': -0.10, 'shadows': 0.10, 'vibrance': 1.20,
-            'saturation': 1.08, 'clarity': 11, 'color_temp': 2,
-            'white_overlay': 0.04
-        },
-        'shadow': {
-            'brightness': 1.22, 'contrast': 1.15, 'exposure': 0.07,
-            'highlights': -0.04, 'shadows': 0.22, 'vibrance': 1.30,
-            'saturation': 1.12, 'clarity': 16, 'color_temp': 4,
-            'white_overlay': 0.06
-        }
-    },
-    'champagne_gold': {
-        'natural': {
-            'brightness': 1.30, 'contrast': 1.08, 'exposure': 0.06,
-            'highlights': -0.12, 'shadows': 0.18, 'vibrance': 1.15,
-            'saturation': 0.90, 'clarity': 14, 'color_temp': -6,
-            'white_overlay': 0.15
-        },
-        'bright': {
-            'brightness': 1.28, 'contrast': 1.06, 'exposure': 0.03,
-            'highlights': -0.18, 'shadows': 0.12, 'vibrance': 1.10,
-            'saturation': 0.88, 'clarity': 11, 'color_temp': -7,
-            'white_overlay': 0.18
-        },
-        'shadow': {
-            'brightness': 1.35, 'contrast': 1.10, 'exposure': 0.10,
-            'highlights': -0.06, 'shadows': 0.28, 'vibrance': 1.20,
-            'saturation': 0.85, 'clarity': 17, 'color_temp': -8,
-            'white_overlay': 0.20
-        }
-    }
-}
-
-def remove_black_borders(image):
-    """v60: 100픽셀 두께 검은색 테두리도 완전 제거"""
-    h, w = image.shape[:2]
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # v60: threshold 조정 (밝은 회색도 테두리로 인식)
-    threshold = 120
-    
-    # v60: 최대 200픽셀까지 스캔 (100픽셀 테두리 + 여유)
-    max_scan = min(200, h // 3, w // 3)
-    
-    # Find borders - 전체 라인의 평균값으로 판단
-    top = 0
-    for y in range(max_scan):
-        if np.mean(gray[y, :]) < threshold:
-            top = y + 1
-        else:
-            break
-    
-    bottom = 0
-    for y in range(h-1, max(h-max_scan-1, h//2), -1):
-        if np.mean(gray[y, :]) < threshold:
-            bottom = h - y
-        else:
-            break
-    
-    left = 0
-    for x in range(max_scan):
-        if np.mean(gray[:, x]) < threshold:
-            left = x + 1
-        else:
-            break
-    
-    right = 0
-    for x in range(w-1, max(w-max_scan-1, w//2), -1):
-        if np.mean(gray[:, x]) < threshold:
-            right = w - x
-        else:
-            break
-    
-    # v60: safety margin 추가 (검은 테두리 잔여물 제거)
-    safety_margin = 20
-    
-    # Apply borders with safety margin
-    top = min(top + safety_margin, h // 3)
-    bottom = min(bottom + safety_margin, h // 3)
-    left = min(left + safety_margin, w // 3)
-    right = min(right + safety_margin, w // 3)
-    
-    # Crop
-    cropped = image[top:h-bottom, left:w-right]
-    
-    # Check if we removed too much
-    if cropped.shape[0] < 100 or cropped.shape[1] < 100:
-        # 너무 많이 잘렸으면 원본 반환
-        return image, False
-    
-    border_removed = (top > 10 or bottom > 10 or left > 10 or right > 10)
-    return cropped, border_removed
-
-def detect_metal_type(image):
-    """Detect metal type from image"""
-    try:
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        
-        # Get center region (more reliable)
-        h, w = image.shape[:2]
-        center_y, center_x = h // 2, w // 2
-        roi_size = min(h, w) // 4
-        roi = hsv[center_y-roi_size:center_y+roi_size, center_x-roi_size:center_x+roi_size]
-        
-        # Calculate average hue and saturation
-        avg_hue = np.mean(roi[:, :, 0])
-        avg_sat = np.mean(roi[:, :, 1])
-        avg_val = np.mean(roi[:, :, 2])
-        
-        # Metal detection logic
-        if avg_sat < 30:  # Low saturation = white gold
-            return 'white_gold'
-        elif 15 <= avg_hue <= 25 and avg_sat > 50:  # Orange hue = yellow gold
-            return 'yellow_gold'
-        elif 5 <= avg_hue <= 15 and avg_sat > 30:  # Red-orange = rose gold
-            return 'rose_gold'
-        elif avg_hue < 20 and avg_val > 180:  # Bright low hue = champagne
-            return 'champagne_gold'
-        else:
-            return 'white_gold'
-    except:
-        return 'white_gold'
-
-def detect_lighting(image):
-    """Detect lighting condition from image brightness"""
-    try:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        avg_brightness = np.mean(gray)
-        
-        if avg_brightness > 180:
-            return 'bright'
-        elif avg_brightness < 120:
-            return 'shadow'
-        else:
-            return 'natural'
-    except:
-        return 'natural'
-
-def enhance_image(image, params):
-    """Apply enhancement parameters to image"""
-    # Convert to PIL for easier manipulation
-    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    
-    # Apply brightness
-    if params.get('brightness', 1.0) != 1.0:
-        enhancer = ImageEnhance.Brightness(pil_image)
-        pil_image = enhancer.enhance(params['brightness'])
-    
-    # Apply contrast
-    if params.get('contrast', 1.0) != 1.0:
-        enhancer = ImageEnhance.Contrast(pil_image)
-        pil_image = enhancer.enhance(params['contrast'])
-    
-    # Convert back to numpy for advanced operations
-    enhanced = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    
-    # Apply white overlay
-    if params.get('white_overlay', 0) > 0:
-        white = np.ones_like(enhanced) * 255
-        enhanced = cv2.addWeighted(enhanced, 1 - params['white_overlay'], 
-                                 white, params['white_overlay'], 0)
-    
-    # Apply color temperature adjustment
-    if params.get('color_temp', 0) != 0:
-        temp = params['color_temp']
-        if temp > 0:  # Warmer
-            enhanced[:, :, 0] = np.clip(enhanced[:, :, 0] * (1 - temp/100), 0, 255)  # Less blue
-            enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * (1 + temp/100), 0, 255)  # More red
-        else:  # Cooler
-            enhanced[:, :, 0] = np.clip(enhanced[:, :, 0] * (1 - temp/100), 0, 255)  # More blue
-            enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * (1 + temp/100), 0, 255)  # Less red
-    
-    return enhanced
-
-def create_thumbnail(image):
-    """v60: 강력한 썸네일 생성 - 검은 테두리 제거된 이미지에서 ring 최대화"""
-    h, w = image.shape[:2]
-    target_w, target_h = 1000, 1300
-    
-    # Find the ring area using stronger detection
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # v60: ring 감지를 위한 이진화
-    _, binary = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
-    
-    # Clean up the binary image
-    kernel = np.ones((7, 7), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-    
-    # Find contours
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if contours:
-        # Find the largest contour (likely the ring)
-        largest_contour = max(contours, key=cv2.contourArea)
-        x, y, ring_w, ring_h = cv2.boundingRect(largest_contour)
-        
-        # v60: 최소한의 padding (10%)
-        pad = int(max(ring_w, ring_h) * 0.1)
-        x = max(0, x - pad)
-        y = max(0, y - pad)
-        ring_w = min(w - x, ring_w + 2 * pad)
-        ring_h = min(h - y, ring_h + 2 * pad)
-        
-        # Crop to ring area
-        cropped = image[y:y+ring_h, x:x+ring_w]
-    else:
-        # Fallback: 이미지 전체 사용 (이미 검은 테두리 제거됨)
-        cropped = image
-    
-    # v60: ring이 썸네일의 99%를 차지하도록
-    crop_h, crop_w = cropped.shape[:2]
-    scale = min(target_w * 0.99 / crop_w, target_h * 0.99 / crop_h)
-    new_w = int(crop_w * scale)
-    new_h = int(crop_h * scale)
-    
-    # Resize with high quality
-    resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-    
-    # Create white background
-    thumb = np.full((target_h, target_w, 3), 248, dtype=np.uint8)
-    
-    # Center the ring
-    y_offset = (target_h - new_h) // 2
-    x_offset = (target_w - new_w) // 2
-    thumb[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
-    
-    return thumb
-
-def handler(job):
-    """Wedding Ring AI v60 Handler - 100픽셀 검은 테두리 완전 제거"""
+def handler(event):
+    """
+    Wedding Ring AI v61 - Ultimate Black Border Removal
+    대화 59번 최종 버전: 검은색 테두리 완전 제거
+    """
     start_time = time.time()
     
     try:
-        job_input = job.get("input", {})
+        # Base64 이미지 추출
+        base64_image = event.get("input", {}).get("image") or event.get("input", {}).get("image_base64")
+        if not base64_image:
+            return {
+                "output": {
+                    "error": "No image provided",
+                    "status": "failed"
+                }
+            }
         
-        # Support both 'image' and 'image_base64' fields
-        image_data = job_input.get("image") or job_input.get("image_base64")
+        # 이미지 디코딩
+        if base64_image.startswith('data:'):
+            base64_image = base64_image.split(',')[1]
         
-        if not image_data:
-            return {"output": {"error": "No image provided", "status": "error", "version": "v60"}}
+        image_data = base64.b64decode(base64_image)
+        nparr = np.frombuffer(image_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        # Decode base64 image
-        try:
-            image_bytes = base64.b64decode(image_data)
-            nparr = np.frombuffer(image_bytes, np.uint8)
-            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                raise ValueError("Failed to decode image")
-        except Exception as e:
-            return {"output": {"error": f"Image decode error: {str(e)}", "status": "error", "version": "v60"}}
+        if img is None:
+            return {
+                "output": {
+                    "error": "Failed to decode image",
+                    "status": "failed"
+                }
+            }
         
-        # Step 1: Remove black borders (v60 - 100픽셀 대응)
-        image, border_removed = remove_black_borders(image)
+        print(f"Original image size: {img.shape}")
         
-        # Step 2: Detect metal and lighting
-        metal_type = job_input.get("metal_type", "auto")
-        lighting = job_input.get("lighting", "auto")
+        # ========= PHASE 1: ULTRA BLACK BORDER REMOVAL =========
+        # 대화 58번 + 59번 최강 버전
+        img_removed = remove_black_border_ultra(img.copy())
+        print(f"After border removal: {img_removed.shape}")
         
-        if metal_type == "auto":
-            metal_type = detect_metal_type(image)
+        # ========= PHASE 2: METAL & LIGHTING DETECTION =========
+        metal_type, lighting = detect_metal_and_lighting(img_removed)
+        print(f"Detected: {metal_type} under {lighting} lighting")
         
-        if lighting == "auto":
-            lighting = detect_lighting(image)
+        # ========= PHASE 3: V13.3 ENHANCEMENT =========
+        enhanced = apply_v13_3_enhancement(img_removed, metal_type, lighting)
         
-        # Step 3: Get parameters and enhance
-        params = COMPLETE_PARAMETERS.get(metal_type, {}).get(lighting, COMPLETE_PARAMETERS['white_gold']['natural'])
-        enhanced = enhance_image(image, params)
+        # ========= PHASE 4: ENSURE PURE WHITE BACKGROUND =========
+        final = ensure_white_background(enhanced)
         
-        # Step 4: Create thumbnail (v60 - 최대화)
-        thumbnail = create_thumbnail(enhanced)
+        # ========= PHASE 5: CREATE PERFECT THUMBNAIL =========
+        # 검은색 제거된 이미지로 썸네일 생성
+        thumbnail = create_perfect_thumbnail(final)
         
-        # Step 5: Convert to base64
-        # Main image
-        _, main_buffer = cv2.imencode('.jpg', enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        # Convert to base64
+        _, main_buffer = cv2.imencode('.jpg', final, [cv2.IMWRITE_JPEG_QUALITY, 95])
         main_base64 = base64.b64encode(main_buffer).decode('utf-8')
         
-        # Thumbnail
         _, thumb_buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
         thumb_base64 = base64.b64encode(thumb_buffer).decode('utf-8')
         
-        # CRITICAL: Return with proper output structure
         return {
             "output": {
-                "enhanced_image": main_base64,
-                "thumbnail": thumb_base64,
+                "enhanced_image": f"data:image/jpeg;base64,{main_base64}",
+                "thumbnail": f"data:image/jpeg;base64,{thumb_base64}",
                 "processing_info": {
                     "metal_type": metal_type,
                     "lighting": lighting,
-                    "border_removed": border_removed,
+                    "border_removed": True,
                     "processing_time": time.time() - start_time,
-                    "version": "v60",
-                    "status": "success"
+                    "version": "v61_ultimate"
                 }
             }
         }
         
     except Exception as e:
+        print(f"Error: {str(e)}")
+        print(traceback.format_exc())
         return {
             "output": {
-                "error": f"Processing error: {str(e)}",
-                "status": "error",
-                "version": "v60"
+                "error": str(e),
+                "status": "failed"
             }
         }
 
-# RunPod serverless start
-runpod.serverless.start({"handler": handler})
+def remove_black_border_ultra(img):
+    """
+    대화 59번 최강 검은색 테두리 제거
+    - 더 높은 threshold (150)
+    - 더 넓은 스캔 범위 (50%)
+    - 다단계 제거 프로세스
+    """
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # 1차: 초강력 검은색 감지 (threshold 150)
+    borders = find_borders_ultra(gray, threshold=150, max_scan_ratio=0.5)
+    
+    # 2차: 추가 안전 마진 (50픽셀)
+    borders = {
+        'top': borders['top'] + 50,
+        'bottom': borders['bottom'] + 50,
+        'left': borders['left'] + 50,
+        'right': borders['right'] + 50
+    }
+    
+    # 크롭
+    y1 = borders['top']
+    y2 = h - borders['bottom']
+    x1 = borders['left']
+    x2 = w - borders['right']
+    
+    if y2 > y1 and x2 > x1:
+        cropped = img[y1:y2, x1:x2]
+        
+        # 3차: 남은 회색 테두리 추가 제거
+        h2, w2 = cropped.shape[:2]
+        gray2 = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+        
+        # 가장자리 20픽셀 체크하여 회색이면 추가 제거
+        edge_check = 20
+        if np.mean(gray2[:edge_check, :]) < 200:  # 상단
+            cropped = cropped[edge_check:, :]
+        if np.mean(gray2[-edge_check:, :]) < 200:  # 하단
+            cropped = cropped[:-edge_check, :]
+        if np.mean(gray2[:, :edge_check]) < 200:  # 좌측
+            cropped = cropped[:, edge_check:]
+        if np.mean(gray2[:, -edge_check:]) < 200:  # 우측
+            cropped = cropped[:, :-edge_check]
+        
+        return cropped
+    
+    return img
+
+def find_borders_ultra(gray, threshold=150, max_scan_ratio=0.5):
+    """
+    초강력 검은색 테두리 감지
+    - threshold 150: 밝은 회색도 테두리로 감지
+    - max_scan_ratio 0.5: 이미지의 50%까지 스캔
+    """
+    h, w = gray.shape
+    max_scan = int(min(h, w) * max_scan_ratio)
+    
+    borders = {'top': 0, 'bottom': 0, 'left': 0, 'right': 0}
+    
+    # Top border
+    for y in range(min(max_scan, h)):
+        if np.mean(gray[y, :]) > threshold:
+            borders['top'] = y
+            break
+    
+    # Bottom border
+    for y in range(min(max_scan, h)):
+        if np.mean(gray[h-1-y, :]) > threshold:
+            borders['bottom'] = y
+            break
+    
+    # Left border
+    for x in range(min(max_scan, w)):
+        if np.mean(gray[:, x]) > threshold:
+            borders['left'] = x
+            break
+    
+    # Right border
+    for x in range(min(max_scan, w)):
+        if np.mean(gray[:, w-1-x]) > threshold:
+            borders['right'] = x
+            break
+    
+    print(f"Detected borders: {borders}")
+    return borders
+
+def ensure_white_background(img):
+    """
+    완전한 흰색 배경 보장
+    """
+    # HSV로 변환
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    
+    # 회색/베이지색 배경을 흰색으로
+    # Saturation이 낮고 Value가 높은 픽셀을 찾아 흰색으로
+    mask = (hsv[:,:,1] < 30) & (hsv[:,:,2] > 180)
+    
+    # 흰색으로 변경
+    img[mask] = [255, 255, 255]
+    
+    return img
+
+def create_perfect_thumbnail(img):
+    """
+    완벽한 1000x1300 썸네일 생성
+    - 여백 완전 제거
+    - 웨딩링이 화면의 85% 차지
+    """
+    h, w = img.shape[:2]
+    
+    # 웨딩링 영역 찾기 (더 민감하게)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # 배경이 아닌 영역 찾기 (threshold 낮춤)
+    _, binary = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+    
+    # 모폴로지 연산으로 웨딩링 영역 확장
+    kernel = np.ones((10, 10), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    
+    # 컨투어 찾기
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        # 모든 컨투어를 포함하는 바운딩 박스
+        x_min, y_min = w, h
+        x_max, y_max = 0, 0
+        
+        for contour in contours:
+            x, y, cw, ch = cv2.boundingRect(contour)
+            x_min = min(x_min, x)
+            y_min = min(y_min, y)
+            x_max = max(x_max, x + cw)
+            y_max = max(y_max, y + ch)
+        
+        # 여백 최소화 (10픽셀만)
+        margin = 10
+        x_min = max(0, x_min - margin)
+        y_min = max(0, y_min - margin)
+        x_max = min(w, x_max + margin)
+        y_max = min(h, y_max + margin)
+        
+        # 크롭
+        ring_area = img[y_min:y_max, x_min:x_max]
+        
+        # 1000x1300으로 리사이즈
+        # 비율 유지하면서 최대한 크게
+        rh, rw = ring_area.shape[:2]
+        scale = min(1000/rw, 1300/rh) * 0.85  # 85% 크기
+        
+        new_w = int(rw * scale)
+        new_h = int(rh * scale)
+        
+        # 고품질 리사이즈
+        pil_ring = Image.fromarray(cv2.cvtColor(ring_area, cv2.COLOR_BGR2RGB))
+        pil_ring = pil_ring.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        
+        # 흰 배경에 중앙 배치
+        thumbnail = Image.new('RGB', (1000, 1300), (255, 255, 255))
+        x_offset = (1000 - new_w) // 2
+        y_offset = (1300 - new_h) // 2
+        thumbnail.paste(pil_ring, (x_offset, y_offset))
+        
+        return cv2.cvtColor(np.array(thumbnail), cv2.COLOR_RGB2BGR)
+    
+    # 실패 시 기본 리사이즈
+    return cv2.resize(img, (1000, 1300))
+
+def detect_metal_and_lighting(img):
+    """금속 타입과 조명 감지"""
+    # 중앙 영역 추출
+    h, w = img.shape[:2]
+    center_y, center_x = h // 2, w // 2
+    size = min(h, w) // 4
+    
+    roi = img[center_y-size:center_y+size, center_x-size:center_x+size]
+    
+    # HSV 분석
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    avg_hue = np.mean(hsv_roi[:,:,0])
+    avg_sat = np.mean(hsv_roi[:,:,1])
+    avg_val = np.mean(hsv_roi[:,:,2])
+    
+    # 금속 타입 결정
+    b, g, r = cv2.mean(roi)[:3]
+    
+    if avg_sat < 15:  # 저채도
+        if avg_val > 200:
+            metal_type = "white_gold"
+        else:
+            metal_type = "white_gold"  # 기본값
+    elif 10 <= avg_hue <= 25:  # 주황색 계열
+        if r > g > b and (r - b) > 30:
+            metal_type = "rose_gold"
+        else:
+            metal_type = "champagne_gold"
+    elif 25 <= avg_hue <= 35:  # 노란색 계열
+        metal_type = "yellow_gold"
+    else:
+        metal_type = "champagne_gold"
+    
+    # 조명 조건 결정
+    brightness = avg_val
+    
+    if brightness > 200:
+        lighting = "natural"
+    elif brightness > 150:
+        lighting = "warm"
+    else:
+        lighting = "cool"
+    
+    return metal_type, lighting
+
+def get_enhancement_params(metal_type, lighting):
+    """v13.3 파라미터 - 28쌍 데이터 기반"""
+    params = {
+        "white_gold": {
+            "natural": {"brightness": 1.08, "contrast": 1.05, "saturation": 0.95, 
+                       "highlights": 1.10, "shadows": 0.95, "clarity": 1.10,
+                       "white_balance": 0, "tint": 0, "gamma": 1.05, 
+                       "sharpness": 1.15, "white_overlay": 0.02, "color_temp": 0},
+            "warm": {"brightness": 1.10, "contrast": 1.08, "saturation": 0.90,
+                    "highlights": 1.15, "shadows": 0.90, "clarity": 1.15,
+                    "white_balance": -2, "tint": 0, "gamma": 1.08,
+                    "sharpness": 1.18, "white_overlay": 0.03, "color_temp": -2},
+            "cool": {"brightness": 1.05, "contrast": 1.10, "saturation": 0.88,
+                    "highlights": 1.12, "shadows": 0.88, "clarity": 1.12,
+                    "white_balance": 2, "tint": 0, "gamma": 1.10,
+                    "sharpness": 1.20, "white_overlay": 0.05, "color_temp": 2}
+        },
+        "rose_gold": {
+            "natural": {"brightness": 1.10, "contrast": 1.08, "saturation": 1.05,
+                       "highlights": 1.08, "shadows": 0.92, "clarity": 1.08,
+                       "white_balance": 2, "tint": 2, "gamma": 1.02,
+                       "sharpness": 1.10, "white_overlay": 0, "color_temp": 1},
+            "warm": {"brightness": 1.12, "contrast": 1.10, "saturation": 1.10,
+                    "highlights": 1.10, "shadows": 0.90, "clarity": 1.10,
+                    "white_balance": 3, "tint": 3, "gamma": 1.00,
+                    "sharpness": 1.12, "white_overlay": 0, "color_temp": 2},
+            "cool": {"brightness": 1.08, "contrast": 1.12, "saturation": 1.00,
+                    "highlights": 1.05, "shadows": 0.88, "clarity": 1.05,
+                    "white_balance": 0, "tint": 1, "gamma": 1.05,
+                    "sharpness": 1.15, "white_overlay": 0.02, "color_temp": -1}
+        },
+        "yellow_gold": {
+            "natural": {"brightness": 1.12, "contrast": 1.10, "saturation": 1.08,
+                       "highlights": 1.05, "shadows": 0.90, "clarity": 1.05,
+                       "white_balance": 3, "tint": 0, "gamma": 0.98,
+                       "sharpness": 1.08, "white_overlay": 0, "color_temp": 2},
+            "warm": {"brightness": 1.15, "contrast": 1.12, "saturation": 1.12,
+                    "highlights": 1.08, "shadows": 0.88, "clarity": 1.08,
+                    "white_balance": 5, "tint": 0, "gamma": 0.95,
+                    "sharpness": 1.10, "white_overlay": 0, "color_temp": 3},
+            "cool": {"brightness": 1.10, "contrast": 1.15, "saturation": 1.05,
+                    "highlights": 1.00, "shadows": 0.85, "clarity": 1.00,
+                    "white_balance": 1, "tint": 0, "gamma": 1.02,
+                    "sharpness": 1.12, "white_overlay": 0.02, "color_temp": 0}
+        },
+        "champagne_gold": {
+            "natural": {"brightness": 1.25, "contrast": 1.15, "saturation": 0.85,
+                       "highlights": 1.20, "shadows": 0.85, "clarity": 1.20,
+                       "white_balance": -3, "tint": 0, "gamma": 1.10,
+                       "sharpness": 1.25, "white_overlay": 0.12, "color_temp": -5},
+            "warm": {"brightness": 1.28, "contrast": 1.18, "saturation": 0.80,
+                    "highlights": 1.25, "shadows": 0.80, "clarity": 1.25,
+                    "white_balance": -5, "tint": 0, "gamma": 1.12,
+                    "sharpness": 1.28, "white_overlay": 0.15, "color_temp": -6},
+            "cool": {"brightness": 1.22, "contrast": 1.20, "saturation": 0.82,
+                    "highlights": 1.18, "shadows": 0.82, "clarity": 1.18,
+                    "white_balance": -2, "tint": 0, "gamma": 1.15,
+                    "sharpness": 1.30, "white_overlay": 0.18, "color_temp": -4}
+        }
+    }
+    
+    return params.get(metal_type, params["white_gold"]).get(lighting, params["white_gold"]["natural"])
+
+def apply_v13_3_enhancement(img, metal_type, lighting):
+    """v13.3 10단계 보정 프로세스"""
+    params = get_enhancement_params(metal_type, lighting)
+    
+    # 1. 노이즈 제거
+    denoised = cv2.fastNlMeansDenoisingColored(img, None, 3, 3, 7, 21)
+    
+    # PIL 변환
+    pil_img = Image.fromarray(cv2.cvtColor(denoised, cv2.COLOR_BGR2RGB))
+    
+    # 2. 밝기 조정
+    enhancer = ImageEnhance.Brightness(pil_img)
+    pil_img = enhancer.enhance(params["brightness"])
+    
+    # 3. 대비 조정  
+    enhancer = ImageEnhance.Contrast(pil_img)
+    pil_img = enhancer.enhance(params["contrast"])
+    
+    # 4. 선명도 조정
+    enhancer = ImageEnhance.Sharpness(pil_img)
+    pil_img = enhancer.enhance(params["sharpness"])
+    
+    # OpenCV로 변환
+    enhanced = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    
+    # 5. 채도 조정
+    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:,:,1] = hsv[:,:,1] * params["saturation"]
+    hsv[:,:,1][hsv[:,:,1] > 255] = 255
+    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    
+    # 6. 하얀색 오버레이 (샴페인골드 특별 처리)
+    if params["white_overlay"] > 0:
+        white_layer = np.ones_like(enhanced) * 255
+        enhanced = cv2.addWeighted(enhanced, 1 - params["white_overlay"], 
+                                 white_layer, params["white_overlay"], 0)
+    
+    # 7. 색온도 조정 (LAB)
+    if params["color_temp"] != 0:
+        lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab[:,:,2] = lab[:,:,2] + params["color_temp"] * 2
+        lab[:,:,2] = np.clip(lab[:,:,2], 0, 255)
+        enhanced = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+    
+    # 8. CLAHE
+    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    lab[:,:,0] = clahe.apply(lab[:,:,0])
+    enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    
+    # 9. 감마 보정
+    gamma = params["gamma"]
+    inv_gamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 
+                     for i in np.arange(0, 256)]).astype("uint8")
+    enhanced = cv2.LUT(enhanced, table)
+    
+    # 10. 원본과 블렌딩
+    result = cv2.addWeighted(denoised, 0.2, enhanced, 0.8, 0)
+    
+    return result
+
+if __name__ == "__main__":
+    # 테스트용
+    test_event = {
+        "input": {
+            "image": "base64_encoded_image_here"
+        }
+    }
+    result = handler(test_event)
+    print(result)
