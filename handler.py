@@ -359,9 +359,13 @@ class WeddingRingProcessor:
                 "enhanced_image": enhanced_base64,
                 "thumbnail": thumbnail_base64,
                 "processing_info": {
-                    "had_frame": has_frame,
-                    "metal_type": metal_type,
-                    "original_size": f"{image.shape[1]}x{image.shape[0]}",
+                        "had_frame": has_frame,
+                        "metal_type": metal_type,
+                        "original_size": f"{image.shape[1]}x{image.shape[0]}",
+                        "thumbnail_size": "1000x1300"
+                    }
+                }
+            }
                     "thumbnail_size": "1000x1300"
                 }
             }
