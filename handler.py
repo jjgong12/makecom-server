@@ -6,7 +6,7 @@ import base64
 import io
 
 def handler(event):
-    """RunPod handler for wedding ring enhancement v82"""
+    """RunPod handler for wedding ring enhancement v83"""
     try:
         # Get input
         image_input = event.get("input", {})
@@ -39,24 +39,33 @@ def handler(event):
                 }
             }
         
-        # Metal type detection
+        # Metal type detection - ONLY 4 TYPES (NO SILVER)
         img_rgb = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
         center_y, center_x = img_array.shape[0] // 2, img_array.shape[1] // 2
         sample_size = min(img_array.shape[0], img_array.shape[1]) // 4
         center_region = img_rgb[center_y-sample_size:center_y+sample_size,
                                 center_x-sample_size:center_x+sample_size]
         
+        r_mean = np.mean(center_region[:, :, 0])
+        g_mean = np.mean(center_region[:, :, 1])
         b_mean = np.mean(center_region[:, :, 2])
-        rg_diff = np.mean(center_region[:, :, 0]) - np.mean(center_region[:, :, 1])
         
-        if b_mean > 180 and abs(rg_diff) < 20:
-            metal_type = "white_gold"
-        elif rg_diff > 10:
+        # Calculate color characteristics
+        rg_ratio = r_mean / (g_mean + 1)
+        rb_ratio = r_mean / (b_mean + 1)
+        gb_ratio = g_mean / (b_mean + 1)
+        brightness = np.mean(center_region)
+        
+        # Determine metal type
+        if rg_ratio > 1.12 and rb_ratio > 1.15:  # Pink/rose tint
             metal_type = "rose_gold"
-        elif rg_diff > 0:
+        elif rg_ratio > 1.05 and gb_ratio > 1.05:  # Yellow tint
             metal_type = "yellow_gold"
+        elif abs(r_mean - g_mean) < 10 and abs(g_mean - b_mean) < 10 and brightness > 160:
+            # Very neutral and bright = champagne gold
+            metal_type = "champagne_gold"
         else:
-            metal_type = "silver"
+            metal_type = "white_gold"
         
         # Lighting detection
         gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
@@ -70,8 +79,9 @@ def handler(event):
         else:
             lighting = "dark"
         
-        # Enhancement parameters
+        # Enhancement parameters - 4 metal types only
         params = {
+            # White Gold
             ("white_gold", "bright"): {
                 "denoise_h": 3, "enhance_strength": 1.15, "contrast": 1.02,
                 "brightness": 3, "shadows": 0.5, "highlights": 0.7,
@@ -90,6 +100,7 @@ def handler(event):
                 "temperature": -8, "saturation": 0.85, "whites": 0.8,
                 "sharpen": 2.2, "small_details": 0.9, "medium_details": 1.0
             },
+            # Yellow Gold
             ("yellow_gold", "bright"): {
                 "denoise_h": 4, "enhance_strength": 1.18, "contrast": 1.05,
                 "brightness": 5, "shadows": 0.5, "highlights": 0.7,
@@ -108,6 +119,7 @@ def handler(event):
                 "temperature": -20, "saturation": 0.7, "whites": 1.0,
                 "sharpen": 2.5, "small_details": 1.0, "medium_details": 1.1
             },
+            # Rose Gold
             ("rose_gold", "bright"): {
                 "denoise_h": 4, "enhance_strength": 1.2, "contrast": 1.05,
                 "brightness": 5, "shadows": 0.5, "highlights": 0.7,
@@ -126,23 +138,24 @@ def handler(event):
                 "temperature": -18, "saturation": 0.75, "whites": 0.9,
                 "sharpen": 2.3, "small_details": 1.0, "medium_details": 1.1
             },
-            ("silver", "bright"): {
-                "denoise_h": 3, "enhance_strength": 1.15, "contrast": 1.02,
-                "brightness": 3, "shadows": 0.5, "highlights": 0.7,
-                "temperature": -5, "saturation": 0.9, "whites": 0.4,
-                "sharpen": 1.6, "small_details": 0.7, "medium_details": 0.8
+            # Champagne Gold (무도금화이트)
+            ("champagne_gold", "bright"): {
+                "denoise_h": 3, "enhance_strength": 1.2, "contrast": 1.03,
+                "brightness": 5, "shadows": 0.5, "highlights": 0.7,
+                "temperature": -15, "saturation": 0.85, "whites": 0.7,
+                "sharpen": 1.8, "small_details": 0.8, "medium_details": 0.9
             },
-            ("silver", "normal"): {
-                "denoise_h": 5, "enhance_strength": 1.25, "contrast": 1.08,
-                "brightness": 8, "shadows": 0.6, "highlights": 0.8,
-                "temperature": -8, "saturation": 0.85, "whites": 0.6,
-                "sharpen": 1.9, "small_details": 0.8, "medium_details": 0.9
+            ("champagne_gold", "normal"): {
+                "denoise_h": 5, "enhance_strength": 1.3, "contrast": 1.1,
+                "brightness": 12, "shadows": 0.6, "highlights": 0.8,
+                "temperature": -20, "saturation": 0.8, "whites": 0.9,
+                "sharpen": 2.0, "small_details": 0.9, "medium_details": 1.0
             },
-            ("silver", "dark"): {
-                "denoise_h": 8, "enhance_strength": 1.35, "contrast": 1.12,
-                "brightness": 15, "shadows": 0.7, "highlights": 0.9,
-                "temperature": -12, "saturation": 0.8, "whites": 0.9,
-                "sharpen": 2.3, "small_details": 0.9, "medium_details": 1.0
+            ("champagne_gold", "dark"): {
+                "denoise_h": 8, "enhance_strength": 1.4, "contrast": 1.15,
+                "brightness": 20, "shadows": 0.7, "highlights": 0.9,
+                "temperature": -25, "saturation": 0.75, "whites": 1.0,
+                "sharpen": 2.3, "small_details": 1.0, "medium_details": 1.1
             }
         }
         
@@ -165,53 +178,89 @@ def handler(event):
         kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
         enhanced = cv2.filter2D(enhanced, -1, kernel)
         
-        # NEW: Progressive black edge detection
+        # AGGRESSIVE BLACK EDGE DETECTION - PIXEL BY PIXEL
         h, w = img_array.shape[:2]
         mask = np.zeros(gray.shape, dtype=np.uint8)
         
-        # Detect black edges progressively from 10px to 150px
-        edge_coords = []
-        for edge_width in range(10, 151, 10):  # 10, 20, 30, ... 150
-            # Top edge
-            for y in range(min(edge_width, h)):
+        # Multiple thresholds for black detection
+        thresholds = [20, 30, 40, 50, 60]
+        
+        # Scan every single pixel from edges
+        for threshold in thresholds:
+            # Top edge - scan line by line
+            for y in range(min(200, h)):  # Up to 200 pixels from top
                 for x in range(w):
-                    if gray[y, x] < 40:  # Black threshold
-                        edge_coords.append((y, x))
+                    if gray[y, x] < threshold:
+                        mask[y, x] = 255
+                        # If black pixel found, check if it continues
+                        if y < h - 1 and gray[y + 1, x] >= threshold:
+                            break  # Stop at this depth for this column
             
             # Bottom edge
-            for y in range(max(0, h - edge_width), h):
+            for y in range(max(0, h - 200), h):
                 for x in range(w):
-                    if gray[y, x] < 40:
-                        edge_coords.append((y, x))
+                    if gray[y, x] < threshold:
+                        mask[y, x] = 255
+                        if y > 0 and gray[y - 1, x] >= threshold:
+                            break
             
             # Left edge
-            for x in range(min(edge_width, w)):
+            for x in range(min(200, w)):
                 for y in range(h):
-                    if gray[y, x] < 40:
-                        edge_coords.append((y, x))
+                    if gray[y, x] < threshold:
+                        mask[y, x] = 255
+                        if x < w - 1 and gray[y, x + 1] >= threshold:
+                            break
             
             # Right edge
-            for x in range(max(0, w - edge_width), w):
+            for x in range(max(0, w - 200), w):
                 for y in range(h):
-                    if gray[y, x] < 40:
-                        edge_coords.append((y, x))
+                    if gray[y, x] < threshold:
+                        mask[y, x] = 255
+                        if x > 0 and gray[y, x - 1] >= threshold:
+                            break
         
-        # Apply mask only to detected black pixels
-        for y, x in edge_coords:
-            mask[y, x] = 255
+        # Also check for continuous black lines
+        # Horizontal lines
+        for y in range(h):
+            black_count = 0
+            for x in range(w):
+                if gray[y, x] < 50:
+                    black_count += 1
+                else:
+                    black_count = 0
+                
+                # If we find 50+ continuous black pixels, it's likely a border
+                if black_count > 50:
+                    for xx in range(max(0, x - black_count), x + 1):
+                        mask[y, xx] = 255
         
-        # Dilate to ensure complete removal
+        # Vertical lines
+        for x in range(w):
+            black_count = 0
+            for y in range(h):
+                if gray[y, x] < 50:
+                    black_count += 1
+                else:
+                    black_count = 0
+                
+                if black_count > 50:
+                    for yy in range(max(0, y - black_count), y + 1):
+                        mask[yy, x] = 255
+        
+        # Protect wedding ring area (center 50%)
+        center_protection = 0.25  # 25% margin on each side
+        protected_x1 = int(w * center_protection)
+        protected_x2 = int(w * (1 - center_protection))
+        protected_y1 = int(h * center_protection)
+        protected_y2 = int(h * (1 - center_protection))
+        mask[protected_y1:protected_y2, protected_x1:protected_x2] = 0
+        
+        # Apply mask
         if np.any(mask):
-            kernel = np.ones((5, 5), np.uint8)
+            # Dilate slightly to ensure complete removal
+            kernel = np.ones((3, 3), np.uint8)
             mask = cv2.dilate(mask, kernel, iterations=1)
-            
-            # Protect wedding ring area (center 60%)
-            center_protection = 0.3  # 30% margin on each side
-            protected_x1 = int(w * center_protection)
-            protected_x2 = int(w * (1 - center_protection))
-            protected_y1 = int(h * center_protection)
-            protected_y2 = int(h * (1 - center_protection))
-            mask[protected_y1:protected_y2, protected_x1:protected_x2] = 0
             
             # Apply background replacement
             mask_float = mask.astype(float) / 255
@@ -222,64 +271,93 @@ def handler(event):
                 enhanced[:, :, c] = (enhanced[:, :, c] * (1 - mask_blurred) + 
                                      target_color[c] * mask_blurred).astype(np.uint8)
         
-        # Create thumbnail with improved ring detection
+        # IMPROVED THUMBNAIL - FIND RING AND MAKE IT HUGE
         pil_enhanced = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
-        
-        # Find wedding ring for thumbnail
         gray_enhanced = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
         
-        # Find bright regions (wedding rings are usually bright)
-        center_region = gray_enhanced[h//4:3*h//4, w//4:3*w//4]
-        threshold = np.mean(center_region) + np.std(center_region) * 0.5
-        _, binary = cv2.threshold(gray_enhanced, min(threshold, 200), 255, cv2.THRESH_BINARY)
+        # Find wedding ring using multiple methods
+        # Method 1: Bright region detection
+        center_h = h // 2
+        center_w = w // 2
+        search_region = gray_enhanced[center_h - h//3:center_h + h//3, 
+                                      center_w - w//3:center_w + w//3]
+        
+        # Adaptive threshold based on center region
+        thresh_value = np.mean(search_region) + np.std(search_region) * 0.3
+        _, binary = cv2.threshold(gray_enhanced, min(thresh_value, 220), 255, cv2.THRESH_BINARY)
+        
+        # Method 2: Edge detection for ring shape
+        edges = cv2.Canny(gray_enhanced, 50, 150)
+        edges_dilated = cv2.dilate(edges, np.ones((5, 5), np.uint8), iterations=2)
+        
+        # Combine both methods
+        combined = cv2.bitwise_or(binary, edges_dilated)
         
         # Find contours
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Find the largest contour in center region (likely the ring)
+        # Find the best contour (ring)
         best_contour = None
-        max_area = 0
+        max_score = 0
+        
         for contour in contours:
             x, y, cw, ch = cv2.boundingRect(contour)
-            center_x = x + cw // 2
-            center_y = y + ch // 2
-            # Check if contour center is in middle region
-            if (w * 0.2 < center_x < w * 0.8 and h * 0.2 < center_y < h * 0.8):
-                area = cv2.contourArea(contour)
-                if area > max_area:
-                    max_area = area
-                    best_contour = contour
+            cx = x + cw // 2
+            cy = y + ch // 2
+            
+            # Score based on:
+            # 1. Distance from center (closer is better)
+            # 2. Size (bigger is better, but not too big)
+            # 3. Aspect ratio (rings are usually somewhat square)
+            
+            dist_from_center = np.sqrt((cx - center_w)**2 + (cy - center_h)**2)
+            center_score = 1.0 - (dist_from_center / (w + h))
+            
+            size_score = min(cw * ch / (w * h * 0.3), 1.0)  # Max 30% of image
+            
+            aspect_ratio = min(cw, ch) / max(cw, ch)
+            aspect_score = aspect_ratio  # Closer to 1 is better
+            
+            # Combined score
+            score = center_score * 0.5 + size_score * 0.3 + aspect_score * 0.2
+            
+            if score > max_score and cw > 50 and ch > 50:  # Minimum size
+                max_score = score
+                best_contour = contour
         
-        # Crop based on ring detection
+        # Crop based on best contour
         if best_contour is not None:
             x, y, cw, ch = cv2.boundingRect(best_contour)
             
-            # Expand bounding box by 20% for context
-            expand = 0.2
-            x = max(0, int(x - cw * expand))
-            y = max(0, int(y - ch * expand))
-            cw = min(w - x, int(cw * (1 + 2 * expand)))
-            ch = min(h - y, int(ch * (1 + 2 * expand)))
+            # Expand to square aspect ratio
+            max_dim = max(cw, ch)
+            cx = x + cw // 2
+            cy = y + ch // 2
             
-            # Ensure minimum size
-            if cw > 100 and ch > 100:
-                crop = pil_enhanced.crop((x, y, x + cw, y + ch))
-            else:
-                crop = pil_enhanced
+            # Expand by 10% for minimal padding
+            expand = 1.1
+            half_size = int(max_dim * expand / 2)
+            
+            x1 = max(0, cx - half_size)
+            y1 = max(0, cy - half_size)
+            x2 = min(w, cx + half_size)
+            y2 = min(h, cy + half_size)
+            
+            crop = pil_enhanced.crop((x1, y1, x2, y2))
         else:
-            # Fallback: use center crop
-            crop_size = min(w, h) * 0.8
-            x = (w - crop_size) // 2
-            y = (h - crop_size) // 2
-            crop = pil_enhanced.crop((x, y, x + crop_size, y + crop_size))
+            # Fallback: aggressive center crop
+            size = min(w, h) * 0.6
+            x1 = (w - size) // 2
+            y1 = (h - size) // 2
+            crop = pil_enhanced.crop((x1, y1, x1 + size, y1 + size))
         
-        # Resize to fill 95% of thumbnail
+        # Resize to fill 98% of thumbnail (almost no padding)
         aspect = crop.width / crop.height
-        if aspect > 1000/1300:
-            new_width = 950  # 95% of 1000
+        if aspect > 1000/1300:  # Wider than target
+            new_width = 980  # 98% of 1000
             new_height = int(new_width / aspect)
-        else:
-            new_height = 1235  # 95% of 1300
+        else:  # Taller than target
+            new_height = 1274  # 98% of 1300
             new_width = int(new_height * aspect)
         
         resized = crop.resize((new_width, new_height), Image.Resampling.LANCZOS)
@@ -294,12 +372,12 @@ def handler(event):
         enhanced_buffer = io.BytesIO()
         pil_enhanced.save(enhanced_buffer, format='PNG', quality=95)
         enhanced_base64 = base64.b64encode(enhanced_buffer.getvalue()).decode('utf-8')
-        enhanced_base64 = enhanced_base64.rstrip('=')  # Remove padding for Make.com
+        enhanced_base64 = enhanced_base64.rstrip('=')
         
         thumb_buffer = io.BytesIO()
         thumbnail.save(thumb_buffer, format='PNG', quality=95)
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
-        thumb_base64 = thumb_base64.rstrip('=')  # Remove padding for Make.com
+        thumb_base64 = thumb_base64.rstrip('=')
         
         return {
             "output": {
@@ -309,7 +387,7 @@ def handler(event):
                     "metal_type": metal_type,
                     "lighting": lighting,
                     "status": "success",
-                    "version": "v82"
+                    "version": "v83"
                 }
             }
         }
