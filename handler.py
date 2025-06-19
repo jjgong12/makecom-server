@@ -14,7 +14,7 @@ class WeddingRingEnhancer:
         """Initialize the wedding ring enhancement system"""
         self.min_area = 5000
         self.v13_3_params = {
-            'brightness': 1.24,
+            'brightness': 1.22,
             'contrast': 1.15,
             'saturation': 1.05,
             'sharpness': 1.2,
