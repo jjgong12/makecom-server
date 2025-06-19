@@ -15,159 +15,211 @@ class RingImageEnhancer:
         self.output_dir = "/workspace/outputs"
         os.makedirs(self.output_dir, exist_ok=True)
     
-    def detect_black_borders(self, img: np.ndarray, threshold: int = 40) -> List[Tuple[int, int, int, int]]:
-        """Detect rectangular black border regions"""
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-        h, w = gray.shape
-        borders = []
-        
-        # Detect continuous black regions from each edge
-        # Top edge
-        for y in range(min(150, h//4)):
-            if np.mean(gray[y, :]) < threshold:
-                # Check if entire row is black
-                black_pixels = np.sum(gray[y, :] < threshold)
-                if black_pixels > w * 0.9:  # 90% of row is black
-                    continue
-                else:
-                    if y > 10:  # Minimum 10 pixels
-                        borders.append(('top', 0, 0, w, y))
-                    break
-        
-        # Bottom edge
-        for y in range(min(150, h//4)):
-            if np.mean(gray[h-1-y, :]) < threshold:
-                black_pixels = np.sum(gray[h-1-y, :] < threshold)
-                if black_pixels > w * 0.9:
-                    continue
-                else:
-                    if y > 10:
-                        borders.append(('bottom', 0, h-y, w, h))
-                    break
-        
-        # Left edge
-        for x in range(min(150, w//4)):
-            if np.mean(gray[:, x]) < threshold:
-                black_pixels = np.sum(gray[:, x] < threshold)
-                if black_pixels > h * 0.9:
-                    continue
-                else:
-                    if x > 10:
-                        borders.append(('left', 0, 0, x, h))
-                    break
-        
-        # Right edge
-        for x in range(min(150, w//4)):
-            if np.mean(gray[:, w-1-x]) < threshold:
-                black_pixels = np.sum(gray[:, w-1-x] < threshold)
-                if black_pixels > h * 0.9:
-                    continue
-                else:
-                    if x > 10:
-                        borders.append(('right', w-x, 0, w, h))
-                    break
-        
-        return borders
-    
-    def remove_black_borders_smart(self, img: np.ndarray) -> np.ndarray:
-        """Smart black border removal with inpainting"""
-        borders = self.detect_black_borders(img, threshold=50)
-        
-        if not borders:
-            print("No black borders detected")
-            return img
-        
+    def multi_stage_black_detection(self, img: np.ndarray) -> np.ndarray:
+        """Multi-stage black border detection and removal"""
         result = img.copy()
-        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+        h, w = result.shape[:2]
         
-        # Create mask for all border regions
-        for border_type, x1, y1, x2, y2 in borders:
-            print(f"Detected {border_type} border: {x2-x1}x{y2-y1} pixels")
-            mask[y1:y2, x1:x2] = 255
+        # Stage 1: Scan in 5-pixel increments
+        print("Stage 1: 5-pixel increment scan...")
+        for edge in ['top', 'bottom', 'left', 'right']:
+            for depth in range(5, min(150, h//4 if edge in ['top','bottom'] else w//4), 5):
+                if self._check_and_remove_black_strip(result, edge, depth, threshold=30):
+                    print(f"  Removed {depth}px from {edge}")
+                    break
         
-        # Inpaint the masked regions
+        # Stage 2: Scan in 10-pixel increments with different threshold
+        print("Stage 2: 10-pixel increment scan...")
+        for edge in ['top', 'bottom', 'left', 'right']:
+            for depth in range(10, min(100, h//4 if edge in ['top','bottom'] else w//4), 10):
+                if self._check_and_remove_black_strip(result, edge, depth, threshold=40):
+                    print(f"  Removed {depth}px from {edge}")
+                    break
+        
+        # Stage 3: Pixel-by-pixel scan for remaining black edges
+        print("Stage 3: Pixel-by-pixel scan...")
+        for _ in range(3):  # Multiple passes
+            old_shape = result.shape
+            result = self._remove_black_pixels_aggressive(result)
+            if result.shape == old_shape:
+                break
+            print(f"  Trimmed to {result.shape}")
+        
+        # Stage 4: Corner analysis
+        print("Stage 4: Corner analysis...")
+        result = self._remove_black_corners(result)
+        
+        # Stage 5: Final cleanup with multiple thresholds
+        print("Stage 5: Final cleanup...")
+        for threshold in [20, 30, 40, 50]:
+            result = self._final_black_cleanup(result, threshold)
+        
+        return result
+    
+    def _check_and_remove_black_strip(self, img: np.ndarray, edge: str, depth: int, threshold: int) -> bool:
+        """Check and remove black strip from specific edge"""
+        h, w = img.shape[:2]
+        
+        if edge == 'top':
+            strip = img[:depth, :]
+            if np.mean(strip) < threshold:
+                # Inpaint the region
+                mask = np.ones((h, w), dtype=np.uint8) * 255
+                mask[:depth, :] = 0
+                img[:] = cv2.inpaint(img, 255 - mask, 3, cv2.INPAINT_TELEA)
+                return True
+                
+        elif edge == 'bottom':
+            strip = img[-depth:, :]
+            if np.mean(strip) < threshold:
+                mask = np.ones((h, w), dtype=np.uint8) * 255
+                mask[-depth:, :] = 0
+                img[:] = cv2.inpaint(img, 255 - mask, 3, cv2.INPAINT_TELEA)
+                return True
+                
+        elif edge == 'left':
+            strip = img[:, :depth]
+            if np.mean(strip) < threshold:
+                mask = np.ones((h, w), dtype=np.uint8) * 255
+                mask[:, :depth] = 0
+                img[:] = cv2.inpaint(img, 255 - mask, 3, cv2.INPAINT_TELEA)
+                return True
+                
+        elif edge == 'right':
+            strip = img[:, -depth:]
+            if np.mean(strip) < threshold:
+                mask = np.ones((h, w), dtype=np.uint8) * 255
+                mask[:, -depth:] = 0
+                img[:] = cv2.inpaint(img, 255 - mask, 3, cv2.INPAINT_TELEA)
+                return True
+        
+        return False
+    
+    def _remove_black_pixels_aggressive(self, img: np.ndarray) -> np.ndarray:
+        """Aggressively remove black pixels from edges"""
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        
+        # Find first non-black pixel from each edge
+        top = 0
+        for y in range(h):
+            if np.max(gray[y, :]) > 50 or np.mean(gray[y, :]) > 30:
+                top = y
+                break
+        
+        bottom = h
+        for y in range(h-1, -1, -1):
+            if np.max(gray[y, :]) > 50 or np.mean(gray[y, :]) > 30:
+                bottom = y + 1
+                break
+        
+        left = 0
+        for x in range(w):
+            if np.max(gray[:, x]) > 50 or np.mean(gray[:, x]) > 30:
+                left = x
+                break
+        
+        right = w
+        for x in range(w-1, -1, -1):
+            if np.max(gray[:, x]) > 50 or np.mean(gray[:, x]) > 30:
+                right = x + 1
+                break
+        
+        return img[top:bottom, left:right]
+    
+    def _remove_black_corners(self, img: np.ndarray) -> np.ndarray:
+        """Remove black corners specifically"""
+        h, w = img.shape[:2]
+        corner_size = min(50, h//10, w//10)
+        
+        # Check each corner
+        corners = [
+            (0, 0, corner_size, corner_size),  # Top-left
+            (w-corner_size, 0, w, corner_size),  # Top-right
+            (0, h-corner_size, corner_size, h),  # Bottom-left
+            (w-corner_size, h-corner_size, w, h)  # Bottom-right
+        ]
+        
+        mask = np.zeros((h, w), dtype=np.uint8)
+        
+        for x1, y1, x2, y2 in corners:
+            corner_region = img[y1:y2, x1:x2]
+            if np.mean(corner_region) < 40:
+                mask[y1:y2, x1:x2] = 255
+        
         if np.any(mask):
-            result = cv2.inpaint(result, mask, 3, cv2.INPAINT_TELEA)
+            img = cv2.inpaint(img, mask, 5, cv2.INPAINT_TELEA)
         
-        # Final crop to remove any remaining borders
-        gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
-        coords = cv2.findNonZero(gray > 30)
-        if coords is not None:
-            x, y, w, h = cv2.boundingRect(coords)
-            # Add small margin
-            margin = 5
-            x = max(0, x - margin)
-            y = max(0, y - margin)
-            w = min(result.shape[1] - x, w + 2 * margin)
-            h = min(result.shape[0] - y, h + 2 * margin)
-            result = result[y:y+h, x:x+w]
-        
-        return result
+        return img
     
-    def denoise_advanced(self, img: np.ndarray) -> np.ndarray:
-        """Advanced denoising for both background and product"""
-        # Convert to LAB for better noise reduction
-        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
+    def _final_black_cleanup(self, img: np.ndarray, threshold: int) -> np.ndarray:
+        """Final cleanup pass with specific threshold"""
+        # Convert to grayscale for analysis
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Denoise each channel
-        l = cv2.bilateralFilter(l, 9, 50, 50)
-        a = cv2.bilateralFilter(a, 9, 75, 75)
-        b = cv2.bilateralFilter(b, 9, 75, 75)
+        # Create mask for black pixels
+        mask = (gray < threshold).astype(np.uint8) * 255
         
-        # Merge and convert back
-        lab = cv2.merge([l, a, b])
-        result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        # Only process edge regions
+        h, w = mask.shape
+        edge_mask = np.zeros_like(mask)
+        edge_width = 20
+        edge_mask[:edge_width, :] = mask[:edge_width, :]  # Top
+        edge_mask[-edge_width:, :] = mask[-edge_width:, :]  # Bottom
+        edge_mask[:, :edge_width] = mask[:, :edge_width]  # Left
+        edge_mask[:, -edge_width:] = mask[:, -edge_width:]  # Right
         
-        # Additional edge-preserving smoothing
-        result = cv2.edgePreservingFilter(result, flags=2, sigma_s=50, sigma_r=0.4)
+        # Inpaint edge black pixels
+        if np.any(edge_mask):
+            img = cv2.inpaint(img, edge_mask, 3, cv2.INPAINT_TELEA)
         
-        return result
+        return img
     
-    def enhance_brightness_extreme(self, img: np.ndarray) -> np.ndarray:
-        """Extreme brightness enhancement"""
+    def enhance_brightness_contrast_extreme(self, img: np.ndarray) -> np.ndarray:
+        """Extreme brightness and contrast enhancement"""
         # Convert to LAB
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         
-        # Extreme L channel enhancement
+        # Extreme L channel processing
         l = cv2.normalize(l, None, 0, 255, cv2.NORM_MINMAX)
-        l = cv2.add(l, 60)  # Add brightness
-        l = np.clip(l, 0, 255).astype(np.uint8)
         
-        # CLAHE on L channel
-        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))
+        # Apply CLAHE with high clip limit
+        clahe = cv2.createCLAHE(clipLimit=4.5, tileGridSize=(8,8))
         l = clahe.apply(l)
+        
+        # Boost brightness
+        l = cv2.add(l, 70)
+        l = np.clip(l, 0, 255).astype(np.uint8)
         
         # Merge back
         lab = cv2.merge([l, a, b])
         enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
         
-        # Additional gamma correction
-        gamma = 0.7
+        # Gamma correction for extra brightness
+        gamma = 0.6
         inv_gamma = 1.0 / gamma
         table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
         enhanced = cv2.LUT(enhanced, table)
         
         return enhanced
     
-    def extreme_sharpening(self, img: np.ndarray) -> np.ndarray:
-        """Extreme sharpening for jewelry details"""
-        # Multiple sharpening passes
-        sharpened = img.copy()
-        
-        # First pass - unsharp mask
+    def super_sharpening(self, img: np.ndarray) -> np.ndarray:
+        """Super aggressive sharpening"""
+        # Unsharp mask with high amount
         gaussian = cv2.GaussianBlur(img, (0, 0), 2.0)
-        sharpened = cv2.addWeighted(img, 1.8, gaussian, -0.8, 0)
+        sharpened = cv2.addWeighted(img, 2.0, gaussian, -1.0, 0)
         
-        # Second pass - kernel sharpening
-        kernel = np.array([[-1,-1,-1],
-                          [-1, 9,-1],
-                          [-1,-1,-1]])
+        # Additional kernel sharpening
+        kernel = np.array([[-1,-1,-1,-1,-1],
+                          [-1, 2, 2, 2,-1],
+                          [-1, 2, 9, 2,-1],
+                          [-1, 2, 2, 2,-1],
+                          [-1,-1,-1,-1,-1]]) / 9.0
         sharpened = cv2.filter2D(sharpened, -1, kernel)
         
         # Edge enhancement
-        edges = cv2.Canny(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 50, 150)
+        edges = cv2.Canny(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), 30, 100)
         edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
         sharpened = cv2.addWeighted(sharpened, 1.0, edges_colored, 0.3, 0)
         
@@ -177,67 +229,64 @@ class RingImageEnhancer:
         """Complete ring image processing pipeline"""
         print(f"Input shape: {img_array.shape}")
         
-        # Step 1: Smart black border removal
-        print("Step 1: Removing black borders...")
-        img_no_border = self.remove_black_borders_smart(img_array)
+        # Step 1: Multi-stage black border removal
+        print("Step 1: Multi-stage black border removal...")
+        img_no_border = self.multi_stage_black_detection(img_array)
         print(f"After border removal: {img_no_border.shape}")
         
-        # Step 2: Advanced denoising
-        print("Step 2: Advanced denoising...")
-        img_denoised = self.denoise_advanced(img_no_border)
+        # Step 2: Denoising
+        print("Step 2: Denoising...")
+        denoised = cv2.bilateralFilter(img_no_border, 9, 75, 75)
+        denoised = cv2.edgePreservingFilter(denoised, flags=2, sigma_s=60, sigma_r=0.4)
         
-        # Step 3: Detect ring and create tight crop
+        # Step 3: Find ring and crop tightly
         print("Step 3: Finding ring boundaries...")
-        gray = cv2.cvtColor(img_denoised, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(denoised, cv2.COLOR_BGR2GRAY)
         
-        # Use edge detection to find ring
-        edges = cv2.Canny(gray, 30, 100)
-        kernel = np.ones((5,5), np.uint8)
-        edges = cv2.dilate(edges, kernel, iterations=2)
-        edges = cv2.erode(edges, kernel, iterations=1)
+        # Use multiple methods to find ring
+        edges = cv2.Canny(gray, 20, 80)
+        kernel = np.ones((3,3), np.uint8)
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=2)
         
         # Find contours
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
-            # Get the largest contour (likely the ring)
-            largest_contour = max(contours, key=cv2.contourArea)
-            x, y, w, h = cv2.boundingRect(largest_contour)
+            # Get bounding box of all contours
+            all_points = np.vstack(contours)
+            x, y, w, h = cv2.boundingRect(all_points)
             
-            # Tight crop with minimal padding
-            padding = 2  # Minimal padding
+            # Minimal padding
+            padding = 1
             x = max(0, x - padding)
             y = max(0, y - padding)
-            w = min(img_denoised.shape[1] - x, w + 2 * padding)
-            h = min(img_denoised.shape[0] - y, h + 2 * padding)
+            w = min(denoised.shape[1] - x, w + 2 * padding)
+            h = min(denoised.shape[0] - y, h + 2 * padding)
             
-            img_cropped = img_denoised[y:y+h, x:x+w]
+            img_cropped = denoised[y:y+h, x:x+w]
         else:
-            img_cropped = img_denoised
+            img_cropped = denoised
         
         print(f"After crop: {img_cropped.shape}")
         
         # Step 4: Extreme enhancement
         print("Step 4: Extreme enhancement...")
-        img_bright = self.enhance_brightness_extreme(img_cropped)
-        img_sharp = self.extreme_sharpening(img_bright)
+        img_bright = self.enhance_brightness_contrast_extreme(img_cropped)
+        img_sharp = self.super_sharpening(img_bright)
         
-        # Step 5: PIL enhancements
-        print("Step 5: Final PIL enhancements...")
+        # Step 5: PIL final touches
+        print("Step 5: Final enhancements...")
         pil_img = Image.fromarray(cv2.cvtColor(img_sharp, cv2.COLOR_BGR2RGB))
         
-        # Strong enhancements
+        # Maximum enhancements
         enhancer = ImageEnhance.Brightness(pil_img)
-        pil_img = enhancer.enhance(1.4)
+        pil_img = enhancer.enhance(1.5)
         
         enhancer = ImageEnhance.Contrast(pil_img)
-        pil_img = enhancer.enhance(1.4)
+        pil_img = enhancer.enhance(1.5)
         
         enhancer = ImageEnhance.Sharpness(pil_img)
-        pil_img = enhancer.enhance(1.6)
-        
-        enhancer = ImageEnhance.Color(pil_img)
-        pil_img = enhancer.enhance(1.1)
+        pil_img = enhancer.enhance(2.0)
         
         # Convert back
         result = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
@@ -245,20 +294,20 @@ class RingImageEnhancer:
         return result
     
     def create_thumbnail(self, img: np.ndarray, size: Tuple[int, int] = (1000, 1300)) -> np.ndarray:
-        """Create perfect thumbnail with ring filling the frame"""
+        """Create perfect thumbnail"""
         h, w = img.shape[:2]
         target_w, target_h = size
         
-        # Scale to fill the entire frame (no black borders)
-        scale = max(target_w / w, target_h / h) * 1.05  # 5% extra to ensure full coverage
+        # Scale to overfill frame
+        scale = max(target_w / w, target_h / h) * 1.1  # 10% extra
         
         new_w = int(w * scale)
         new_h = int(h * scale)
         
-        # Resize
+        # High quality resize
         resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
         
-        # Center crop to exact size
+        # Center crop
         start_x = (new_w - target_w) // 2
         start_y = (new_h - target_h) // 2
         
@@ -293,7 +342,7 @@ class RingImageEnhancer:
             _, thumb_buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
             thumbnail_base64 = base64.b64encode(thumb_buffer).decode('utf-8')
             
-            # Save debug images
+            # Save debug images if enabled
             if self.debug_mode:
                 debug_path = os.path.join(self.output_dir, "debug_enhanced.png")
                 cv2.imwrite(debug_path, enhanced)
