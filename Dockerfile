@@ -9,7 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 핸들러 파일 복사
-COPY handler.py ./src/handler.py
+COPY handler.py .
 
 
 
