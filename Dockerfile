@@ -9,9 +9,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 핸들러 파일 복사
-COPY handler.py .
+COPY handler.py ./src/handler.py
 
-# 메모리 최적화를 위한 환경 변수
+
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONOPTIMIZE=1
 
