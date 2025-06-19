@@ -5,7 +5,6 @@ from PIL import Image, ImageEnhance, ImageOps
 import io
 import base64
 import time
-from rembg import remove
 
 # v13.3 complete parameters from 28 pairs of training data
 METAL_PARAMS = {
@@ -91,46 +90,67 @@ METAL_PARAMS = {
     }
 }
 
-def detect_black_border(img_array, threshold=30):
-    """Detect black border width (supports up to 200px)"""
-    h, w = img_array.shape[:2]
+def find_border_thickness(img_gray, direction='top', max_check=200):
+    """Find black border thickness from each direction"""
+    h, w = img_gray.shape
+    
+    if direction == 'top':
+        for i in range(min(max_check, h)):
+            if np.mean(img_gray[i, :]) > 50:
+                return i
+    elif direction == 'bottom':
+        for i in range(min(max_check, h)):
+            if np.mean(img_gray[h-1-i, :]) > 50:
+                return i
+    elif direction == 'left':
+        for i in range(min(max_check, w)):
+            if np.mean(img_gray[:, i]) > 50:
+                return i
+    elif direction == 'right':
+        for i in range(min(max_check, w)):
+            if np.mean(img_gray[:, w-1-i]) > 50:
+                return i
+    
+    return 0
+
+def remove_black_border_smart(img_array):
+    """Smart black border removal with ring position tracking"""
     gray = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY) if len(img_array.shape) == 3 else img_array
     
-    max_border = min(200, h//4, w//4)
+    # Find border thickness from each direction
+    top = find_border_thickness(gray, 'top')
+    bottom = find_border_thickness(gray, 'bottom')
+    left = find_border_thickness(gray, 'left')
+    right = find_border_thickness(gray, 'right')
     
-    for border_width in range(1, max_border + 1):
-        edges = np.concatenate([
-            gray[:border_width, :].flatten(),
-            gray[-border_width:, :].flatten(),
-            gray[:, :border_width].flatten(),
-            gray[:, -border_width:].flatten()
-        ])
-        
-        if np.mean(edges) > threshold:
-            return max(0, border_width - 1)
+    # Add safety margin
+    margin = 10
+    top = max(0, top - margin)
+    bottom = max(0, bottom - margin)
+    left = max(0, left - margin)
+    right = max(0, right - margin)
     
-    return max_border
-
-def remove_black_border_complete(img_array):
-    """Remove black border completely with safety margin"""
-    border_width = detect_black_border(img_array)
+    h, w = img_array.shape[:2]
     
-    if border_width > 0:
-        h, w = img_array.shape[:2]
-        safe_border = min(int(border_width * 1.5 + 20), h//4, w//4)
-        
-        # Crop with safety margin
-        img_cropped = img_array[safe_border:h-safe_border, safe_border:w-safe_border]
-        
-        # Fill borders with background color (gray)
-        result = np.full_like(img_array, [200, 200, 200] if len(img_array.shape) == 3 else 200)
-        y_offset = (h - img_cropped.shape[0]) // 2
-        x_offset = (w - img_cropped.shape[1]) // 2
-        result[y_offset:y_offset+img_cropped.shape[0], x_offset:x_offset+img_cropped.shape[1]] = img_cropped
-        
-        return result, True
+    # Calculate crop area
+    crop_h = h - top - bottom
+    crop_w = w - left - right
     
-    return img_array, False
+    if crop_h > 100 and crop_w > 100:  # Minimum size check
+        # Crop image
+        cropped = img_array[top:h-bottom, left:w-right]
+        
+        # Ring position relative to original image
+        ring_bbox = {
+            'x': left,
+            'y': top,
+            'width': crop_w,
+            'height': crop_h
+        }
+        
+        return cropped, ring_bbox, True
+    
+    return img_array, None, False
 
 def analyze_image_for_params(img_array):
     """Analyze image to determine metal type and lighting"""
@@ -232,65 +252,58 @@ def apply_white_overlay(img, opacity):
     white_layer = Image.new('RGB', img.size, (255, 255, 255))
     return Image.blend(img, white_layer, opacity)
 
-def create_thumbnail(img, target_size=(1000, 1300)):
-    """Create thumbnail with ring taking up 80% of frame"""
-    # Remove background first
-    img_no_bg = remove(img)
+def create_thumbnail_simple(img, ring_bbox=None, target_size=(1000, 1300)):
+    """Create thumbnail with ring centered - simple version without rembg"""
+    if ring_bbox:
+        # Use saved ring position
+        x, y, w, h = ring_bbox['x'], ring_bbox['y'], ring_bbox['width'], ring_bbox['height']
+        
+        # Add 30% margin
+        margin_w = int(w * 0.3)
+        margin_h = int(h * 0.3)
+        
+        # Calculate crop area
+        crop_x1 = max(0, x - margin_w)
+        crop_y1 = max(0, y - margin_h)
+        crop_x2 = min(img.width, x + w + margin_w)
+        crop_y2 = min(img.height, y + h + margin_h)
+        
+        # Crop to ring area
+        img_cropped = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+    else:
+        # Fallback: center crop
+        w, h = img.size
+        if w > h:
+            left = (w - h) // 2
+            img_cropped = img.crop((left, 0, left + h, h))
+        else:
+            top = (h - w) // 2
+            img_cropped = img.crop((0, top, w, top + w))
     
-    # Find ring bounds
-    img_array = np.array(img_no_bg)
-    alpha = img_array[:, :, 3] if img_array.shape[2] == 4 else None
+    # Calculate scaling to fit target size
+    crop_w, crop_h = img_cropped.size
+    scale = min(target_size[0] / crop_w, target_size[1] / crop_h)
     
-    if alpha is not None:
-        coords = np.column_stack(np.where(alpha > 0))
-        if len(coords) > 0:
-            y_min, x_min = coords.min(axis=0)
-            y_max, x_max = coords.max(axis=0)
-            
-            # Crop to ring with padding
-            padding = 20
-            y_min = max(0, y_min - padding)
-            x_min = max(0, x_min - padding)
-            y_max = min(img_array.shape[0], y_max + padding)
-            x_max = min(img_array.shape[1], x_max + padding)
-            
-            ring_cropped = img_array[y_min:y_max, x_min:x_max]
-            
-            # Calculate scaling to make ring 80% of target
-            ring_h, ring_w = ring_cropped.shape[:2]
-            scale = min(target_size[0] * 0.8 / ring_w, target_size[1] * 0.8 / ring_h)
-            
-            new_w = int(ring_w * scale)
-            new_h = int(ring_h * scale)
-            
-            # Resize ring
-            ring_resized = cv2.resize(ring_cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-            
-            # Create white background
-            result = np.full((target_size[1], target_size[0], 4), [255, 255, 255, 255], dtype=np.uint8)
-            
-            # Center the ring
-            y_offset = (target_size[1] - new_h) // 2
-            x_offset = (target_size[0] - new_w) // 2
-            
-            # Composite
-            for c in range(3):
-                result[y_offset:y_offset+new_h, x_offset:x_offset+new_w, c] = \
-                    ring_resized[:, :, c] * (ring_resized[:, :, 3] / 255.0) + \
-                    result[y_offset:y_offset+new_h, x_offset:x_offset+new_w, c] * (1 - ring_resized[:, :, 3] / 255.0)
-            
-            result[y_offset:y_offset+new_h, x_offset:x_offset+new_w, 3] = \
-                np.maximum(result[y_offset:y_offset+new_h, x_offset:x_offset+new_w, 3], ring_resized[:, :, 3])
-            
-            return Image.fromarray(result[:, :, :3])
+    new_w = int(crop_w * scale)
+    new_h = int(crop_h * scale)
     
-    # Fallback
-    return img.resize(target_size, Image.Resampling.LANCZOS)
+    # Resize
+    img_resized = img_cropped.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
+    # Create white background
+    result = Image.new('RGB', target_size, (255, 255, 255))
+    
+    # Paste centered
+    x_offset = (target_size[0] - new_w) // 2
+    y_offset = (target_size[1] - new_h) // 2
+    result.paste(img_resized, (x_offset, y_offset))
+    
+    return result
 
 def process_image(img_cv):
-    """Main processing function with 10-step enhancement"""
-    # Remove black border first
-    img_cv, border_removed = remove_black_border_complete(img_cv)
+    """Main processing function with smart border removal"""
+    # Remove black border and get ring position
+    img_cv, ring_bbox, border_removed = remove_black_border_smart(img_cv)
     
     # Analyze image
     metal_type, lighting = analyze_image_for_params(img_cv)
@@ -317,10 +330,10 @@ def process_image(img_cv):
     # Step 10: Color temperature
     img_pil = adjust_color_temperature(img_pil, params['color_temp'])
     
-    # Generate thumbnail
-    thumbnail = create_thumbnail(img_pil)
+    # Generate thumbnail using saved ring position
+    thumbnail = create_thumbnail_simple(img_pil, ring_bbox)
     
-    return img_pil, thumbnail, metal_type, lighting, border_removed
+    return img_pil, thumbnail, metal_type, lighting, border_removed, ring_bbox
 
 def handler(event):
     """RunPod handler function"""
@@ -328,29 +341,45 @@ def handler(event):
         start_time = time.time()
         
         # Get input
-        image_data = event['input'].get('image')
+        input_data = event.get('input', {})
+        image_data = input_data.get('image')
+        
+        # Handle test requests
         if not image_data:
             return {
-                "error": "No image provided",
-                "status": "error"
+                "output": {
+                    "status": "ready",
+                    "message": "Wedding Ring AI v25 - Ready for processing",
+                    "version": "v25"
+                }
             }
         
         # Decode image
         if ',' in image_data:
             image_data = image_data.split(',')[1]
         
-        image_bytes = base64.b64decode(image_data)
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        try:
+            image_bytes = base64.b64decode(image_data)
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        except Exception as e:
+            return {
+                "output": {
+                    "error": f"Failed to decode image: {str(e)}",
+                    "status": "error"
+                }
+            }
         
         if img_cv is None:
             return {
-                "error": "Failed to decode image",
-                "status": "error"
+                "output": {
+                    "error": "Failed to decode image - invalid format",
+                    "status": "error"
+                }
             }
         
         # Process image
-        processed_img, thumbnail_img, metal_type, lighting, border_removed = process_image(img_cv)
+        processed_img, thumbnail_img, metal_type, lighting, border_removed, ring_bbox = process_image(img_cv)
         
         # Convert to base64
         # Main image
@@ -372,18 +401,21 @@ def handler(event):
                     "metal_type": metal_type,
                     "lighting": lighting,
                     "border_removed": border_removed,
+                    "ring_position": ring_bbox,
                     "processing_time": time.time() - start_time,
                     "status": "success",
-                    "version": "v24"
+                    "version": "v25"
                 }
             }
         }
         
     except Exception as e:
         return {
-            "error": str(e),
-            "status": "error",
-            "version": "v24"
+            "output": {
+                "error": str(e),
+                "status": "error",
+                "version": "v25"
+            }
         }
 
 # RunPod serverless handler
