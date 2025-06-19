@@ -11,8 +11,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def detect_and_remove_black_border(image):
-    """Detect black borders and remove them by cropping"""
+def detect_and_remove_black_border_ultra(image):
+    """Ultra aggressive black border detection and removal"""
     try:
         # Convert to numpy array
         img_array = np.array(image)
@@ -25,61 +25,86 @@ def detect_and_remove_black_border(image):
         
         h, w = gray.shape
         
-        # Enhanced parameters for 100-120 pixel borders
-        threshold = 120  # Detect borders up to gray value 120
-        scan_range = int(min(h, w) * 0.5)  # Scan up to 50% of image
+        # v23.1 ULTRA style parameters
+        threshold = 120  # Aggressive threshold
+        max_scan = int(min(h, w) * 0.5)  # 50% scan range
         
-        # Find borders from all edges
+        # Find borders - check for continuous dark pixels
         top = 0
-        for i in range(scan_range):
-            if np.mean(gray[i, :]) > threshold:
+        for i in range(max_scan):
+            # Check if 90% of the row is dark (more flexible than all)
+            dark_pixels = np.sum(gray[i, :] <= threshold)
+            if dark_pixels < w * 0.9:  # If less than 90% dark, stop
                 break
-            # Check if entire row is dark
-            if np.all(gray[i, :] <= threshold):
-                top = i + 1
+            top = i + 1
         
         bottom = h
-        for i in range(scan_range):
-            if np.mean(gray[h-1-i, :]) > threshold:
+        for i in range(max_scan):
+            dark_pixels = np.sum(gray[h-1-i, :] <= threshold)
+            if dark_pixels < w * 0.9:
                 break
-            # Check if entire row is dark
-            if np.all(gray[h-1-i, :] <= threshold):
-                bottom = h - 1 - i
+            bottom = h - 1 - i
         
         left = 0
-        for i in range(scan_range):
-            if np.mean(gray[:, i]) > threshold:
+        for i in range(max_scan):
+            dark_pixels = np.sum(gray[:, i] <= threshold)
+            if dark_pixels < h * 0.9:
                 break
-            # Check if entire column is dark
-            if np.all(gray[:, i] <= threshold):
-                left = i + 1
+            left = i + 1
         
         right = w
-        for i in range(scan_range):
-            if np.mean(gray[:, w-1-i]) > threshold:
+        for i in range(max_scan):
+            dark_pixels = np.sum(gray[:, w-1-i] <= threshold)
+            if dark_pixels < h * 0.9:
                 break
-            # Check if entire column is dark
-            if np.all(gray[:, w-1-i] <= threshold):
-                right = w - 1 - i
+            right = w - 1 - i
         
-        # Add safety margin
-        safety_margin = 50
+        # Minimal safety margin (v52 style)
+        safety_margin = 10
         top = min(top + safety_margin, h // 4)
         bottom = max(bottom - safety_margin, 3 * h // 4)
         left = min(left + safety_margin, w // 4)
         right = max(right - safety_margin, 3 * w // 4)
         
-        # Crop the image
+        # First crop
         if top < bottom and left < right:
             if len(img_array.shape) == 3:
                 cropped = img_array[top:bottom, left:right]
             else:
                 cropped = img_array[top:bottom, left:right]
             
-            logger.info(f"Removed black border: {top}, {bottom}, {left}, {right}")
+            # Second pass - v52 style ultra precision crop
+            gray2 = cv2.cvtColor(cropped, cv2.COLOR_RGB2GRAY) if len(cropped.shape) == 3 else cropped
+            h2, w2 = gray2.shape
             
-            # Return PIL Image and crop coordinates
-            return Image.fromarray(cropped), (left, top, right - left, bottom - top)
+            # Check edges again for any remaining dark borders
+            edge_cut = 25  # v52 ULTRA style
+            
+            # Top edge
+            if np.mean(gray2[:20, :]) < 100:
+                cropped = cropped[edge_cut:, :]
+            
+            # Bottom edge
+            if np.mean(gray2[-20:, :]) < 100:
+                cropped = cropped[:-edge_cut, :]
+            
+            # Left edge
+            if np.mean(gray2[:, :20]) < 100:
+                cropped = cropped[:, edge_cut:]
+            
+            # Right edge
+            if np.mean(gray2[:, -20:]) < 100:
+                cropped = cropped[:, :-edge_cut]
+            
+            logger.info(f"Ultra border removal complete. Original: {w}x{h}, Final: {cropped.shape[1]}x{cropped.shape[0]}")
+            
+            # Calculate total crop coordinates
+            final_left = left + (edge_cut if np.mean(gray2[:, :20]) < 100 else 0)
+            final_top = top + (edge_cut if np.mean(gray2[:20, :]) < 100 else 0)
+            final_width = cropped.shape[1]
+            final_height = cropped.shape[0]
+            
+            return Image.fromarray(cropped), (final_left, final_top, final_width, final_height)
         else:
             logger.warning("Invalid crop dimensions, returning original")
             return image, (0, 0, w, h)
@@ -210,7 +235,23 @@ def create_professional_background(image, background_color=(248, 248, 248)):
 def create_thumbnail_ultra_zoom(image, ring_bbox, target_size=(1000, 1300)):
     """Create thumbnail with v64 style - ultra zoom to fill canvas"""
     try:
-        x, y, w, h = ring_bbox
+        # Apply same border removal to ensure no black frames
+        cleaned_image, _ = detect_and_remove_black_border_ultra(image)
+        
+        # Re-detect ring in cleaned image
+        new_ring_bbox = detect_ring(cleaned_image)
+        if new_ring_bbox:
+            x, y, w, h = new_ring_bbox
+        else:
+            # Use original bbox adjusted for cleaning
+            x, y, w, h = ring_bbox
+            # Adjust for potential size change
+            scale_x = cleaned_image.width / image.width
+            scale_y = cleaned_image.height / image.height
+            x = int(x * scale_x)
+            y = int(y * scale_y)
+            w = int(w * scale_x)
+            h = int(h * scale_y)
         
         # Ultra tight crop - only 2% margin (v64 style)
         margin = 0.02
@@ -220,11 +261,11 @@ def create_thumbnail_ultra_zoom(image, ring_bbox, target_size=(1000, 1300)):
         # Calculate crop area
         x1 = max(0, x - margin_w)
         y1 = max(0, y - margin_h)
-        x2 = min(image.width, x + w + margin_w)
-        y2 = min(image.height, y + h + margin_h)
+        x2 = min(cleaned_image.width, x + w + margin_w)
+        y2 = min(cleaned_image.height, y + h + margin_h)
         
         # Crop the ring area
-        cropped = image.crop((x1, y1, x2, y2))
+        cropped = cleaned_image.crop((x1, y1, x2, y2))
         
         # Calculate scaling to fill entire canvas (98% coverage)
         crop_w, crop_h = cropped.size
@@ -257,7 +298,7 @@ def create_thumbnail_ultra_zoom(image, ring_bbox, target_size=(1000, 1300)):
 def handler(event):
     """RunPod Serverless Handler with complete jewelry processing"""
     try:
-        logger.info("Handler started")
+        logger.info("Handler started - v69 Ultra")
         input_data = event.get("input", {})
         
         # Handle test connection
@@ -265,8 +306,8 @@ def handler(event):
             return {
                 "output": {
                     "status": "connected",
-                    "message": "Wedding Ring AI v68 Ready",
-                    "version": "v68"
+                    "message": "Wedding Ring AI v69 Ultra Ready",
+                    "version": "v69"
                 }
             }
         
@@ -280,7 +321,7 @@ def handler(event):
                     "error": "No image data provided",
                     "status": "error",
                     "processing_info": {
-                        "version": "v68",
+                        "version": "v69",
                         "error_details": "Missing 'image' or 'image_base64' in input"
                     }
                 }
@@ -306,7 +347,7 @@ def handler(event):
                 "output": {
                     "error": f"Failed to decode image: {str(e)}",
                     "status": "error",
-                    "processing_info": {"version": "v68"}
+                    "processing_info": {"version": "v69"}
                 }
             }
         
@@ -318,9 +359,9 @@ def handler(event):
         elif image.mode != 'RGB':
             image = image.convert('RGB')
         
-        # Step 1: Detect and remove black border
-        logger.info("Detecting and removing black border...")
-        processed_image, border_crop = detect_and_remove_black_border(image)
+        # Step 1: Ultra aggressive border removal
+        logger.info("Detecting and removing black border with ULTRA mode...")
+        processed_image, border_crop = detect_and_remove_black_border_ultra(image)
         
         # Step 2: Detect ring in the processed image
         logger.info("Detecting wedding ring...")
@@ -341,9 +382,9 @@ def handler(event):
         # Step 4: Create professional background
         final_image = create_professional_background(enhanced_image)
         
-        # Step 5: Create thumbnail using v64 ultra zoom style
-        logger.info("Creating ultra zoom thumbnail...")
-        thumbnail = create_thumbnail_ultra_zoom(final_image, ring_bbox, target_size=(1000, 1300))
+        # Step 5: Create thumbnail using v64 ultra zoom style with border removal
+        logger.info("Creating ultra zoom thumbnail with border removal...")
+        thumbnail = create_thumbnail_ultra_zoom(image, ring_bbox, target_size=(1000, 1300))
         
         # Convert images to base64
         # Main image
@@ -358,7 +399,7 @@ def handler(event):
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         thumb_base64 = thumb_base64.rstrip('=')  # Remove padding for Make.com
         
-        logger.info("Processing completed successfully")
+        logger.info("Processing completed successfully - v69 Ultra")
         
         # Return with proper structure for Make.com
         return {
@@ -374,7 +415,7 @@ def handler(event):
                     "border_removed": border_crop != (0, 0, image.width, image.height),
                     "ring_detected": ring_bbox is not None,
                     "status": "success",
-                    "version": "v68"
+                    "version": "v69-ultra"
                 }
             }
         }
@@ -386,7 +427,7 @@ def handler(event):
                 "error": str(e),
                 "status": "error",
                 "processing_info": {
-                    "version": "v68",
+                    "version": "v69",
                     "error_type": type(e).__name__
                 }
             }
