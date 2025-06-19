@@ -315,21 +315,24 @@ def apply_clarity(img, clarity):
     result = img + (high_pass * mid_mask * clarity / 100).astype(np.uint8)
     return np.clip(result, 0, 255).astype(np.uint8)
 
-def adjust_color_temperature(img, temp_adjust):
-    """Adjust color temperature"""
-    if temp_adjust == 0:
-        return img
+def adjust_color_temperature(img_pil, temp_value):
+    """Adjust color temperature - now accepts PIL Image"""
+    if temp_value == 0:
+        return img_pil
     
-    result = img.copy().astype(np.float32)
+    # Convert to numpy array
+    img = np.array(img_pil).astype(np.float32)
     
-    if temp_adjust > 0:  # Warmer
-        result[:,:,2] *= (1 - temp_adjust * 0.1)  # Reduce blue
-        result[:,:,0] *= (1 + temp_adjust * 0.05)  # Increase red
+    if temp_value > 0:  # Warmer
+        img[:,:,2] *= (1 - temp_value * 0.1)  # Reduce blue
+        img[:,:,0] *= (1 + temp_value * 0.05)  # Increase red
     else:  # Cooler
-        result[:,:,0] *= (1 + temp_adjust * 0.1)  # Reduce red
-        result[:,:,2] *= (1 - temp_adjust * 0.05)  # Increase blue
+        img[:,:,0] *= (1 + temp_value * 0.1)  # Reduce red
+        img[:,:,2] *= (1 - temp_value * 0.05)  # Increase blue
     
-    return np.clip(result, 0, 255).astype(np.uint8)
+    # Convert back to PIL
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    return Image.fromarray(img)
 
 def process_image(img_cv, metal_type=None, lighting=None):
     """Process image with v13.3 parameters"""
@@ -369,8 +372,8 @@ def process_image(img_cv, metal_type=None, lighting=None):
     # Step 9: Back to PIL for final adjustments
     img_pil = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
     
-    # Step 10: Color temperature
-    img_pil = adjust_color_temperature(img_pil, params['color_temp'])
+    # Step 10: Color temperature (fixed parameter name)
+    img_pil = adjust_color_temperature(img_pil, params.get('temp_adjust', 0))
     
     # Generate thumbnail
     thumbnail = create_thumbnail(img_pil)
@@ -403,40 +406,63 @@ def create_thumbnail(img_pil):
     return thumbnail
 
 def handler(event):
-    """RunPod handler function - v26 with field name fix"""
+    """RunPod handler function - v27 Complete"""
     try:
+        print("[v27] Handler started")
         start_time = time.time()
         
         # Get input - check both 'image' and 'image_base64'
         input_data = event.get('input', {})
         image_data = input_data.get('image') or input_data.get('image_base64')
         
+        print(f"[v27] Input keys: {input_data.keys()}")
+        
         if not image_data:
+            print("[v27] No image data found")
             return {
                 "output": {
                     "error": "No image provided. Expected 'image' or 'image_base64' field",
-                    "status": "error"
+                    "status": "error",
+                    "version": "v27"
                 }
             }
+        
+        print(f"[v27] Image data length: {len(image_data)}")
         
         # Decode image
         if ',' in image_data:
             image_data = image_data.split(',')[1]
         
-        image_bytes = base64.b64decode(image_data)
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if img_cv is None:
+        try:
+            image_bytes = base64.b64decode(image_data)
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        except Exception as decode_error:
+            print(f"[v27] Decode error: {decode_error}")
             return {
                 "output": {
-                    "error": "Failed to decode image",
-                    "status": "error"
+                    "error": f"Failed to decode image: {str(decode_error)}",
+                    "status": "error",
+                    "version": "v27"
                 }
             }
         
+        if img_cv is None:
+            print("[v27] cv2.imdecode returned None")
+            return {
+                "output": {
+                    "error": "Failed to decode image - invalid format",
+                    "status": "error",
+                    "version": "v27"
+                }
+            }
+        
+        print(f"[v27] Image shape: {img_cv.shape}")
+        
         # Process image
         processed_img, thumbnail_img, metal_type, lighting, border_removed = process_image(img_cv)
+        
+        print(f"[v27] Processing complete - Metal: {metal_type}, Lighting: {lighting}")
         
         # Convert to base64
         # Main image
@@ -449,8 +475,10 @@ def handler(event):
         thumbnail_img.save(thumb_buffer, format='JPEG', quality=90)
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         
+        print(f"[v27] Main image size: {len(main_base64)}, Thumbnail size: {len(thumb_base64)}")
+        
         # Return with correct structure for Make.com
-        return {
+        result = {
             "output": {  # This is critical - RunPod wraps this in data.output
                 "enhanced_image": main_base64,
                 "thumbnail": thumb_base64,
@@ -460,17 +488,23 @@ def handler(event):
                     "border_removed": border_removed,
                     "processing_time": time.time() - start_time,
                     "status": "success",
-                    "version": "v26"
+                    "version": "v27"
                 }
             }
         }
         
+        print(f"[v27] Returning success - Processing time: {time.time() - start_time:.2f}s")
+        return result
+        
     except Exception as e:
+        print(f"[v27] Handler error: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "output": {
                 "error": str(e),
                 "status": "error",
-                "version": "v26"
+                "version": "v27"
             }
         }
 
