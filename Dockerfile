@@ -16,6 +16,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
+# PyTorch 설치 추가
+RUN pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
+RUN pip install simple-lama==0.2.0
+
 # Copy handler
 COPY handler.py /handler.py
 
