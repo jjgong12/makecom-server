@@ -7,6 +7,150 @@ import numpy as np
 from typing import Dict, Tuple, List, Optional
 import traceback
 
+# v13.3 complete parameters (28 pairs training data - 4 metals x 3 lighting = 12 sets)
+WEDDING_RING_PARAMS = {
+    'white_gold': {
+        'natural': {
+            'brightness': 1.18,
+            'contrast': 1.12,
+            'white_overlay': 0.09,
+            'sharpness': 1.15,
+            'color_temp_a': -3,
+            'color_temp_b': -3,
+            'original_blend': 0.15,
+            'saturation': 1.02,
+            'gamma': 1.01
+        },
+        'warm': {
+            'brightness': 1.16,
+            'contrast': 1.10,
+            'white_overlay': 0.12,
+            'sharpness': 1.13,
+            'color_temp_a': -5,
+            'color_temp_b': -5,
+            'original_blend': 0.18,
+            'saturation': 1.00,
+            'gamma': 0.98
+        },
+        'cool': {
+            'brightness': 1.20,
+            'contrast': 1.14,
+            'white_overlay': 0.07,
+            'sharpness': 1.17,
+            'color_temp_a': -2,
+            'color_temp_b': -2,
+            'original_blend': 0.12,
+            'saturation': 1.03,
+            'gamma': 1.02
+        }
+    },
+    'rose_gold': {
+        'natural': {
+            'brightness': 1.14,
+            'contrast': 1.08,
+            'white_overlay': 0.06,
+            'sharpness': 1.11,
+            'color_temp_a': -1,
+            'color_temp_b': -1,
+            'original_blend': 0.20,
+            'saturation': 1.05,
+            'gamma': 1.00
+        },
+        'warm': {
+            'brightness': 1.12,
+            'contrast': 1.06,
+            'white_overlay': 0.08,
+            'sharpness': 1.09,
+            'color_temp_a': -2,
+            'color_temp_b': -2,
+            'original_blend': 0.22,
+            'saturation': 1.03,
+            'gamma': 0.97
+        },
+        'cool': {
+            'brightness': 1.16,
+            'contrast': 1.10,
+            'white_overlay': 0.04,
+            'sharpness': 1.13,
+            'color_temp_a': 0,
+            'color_temp_b': 0,
+            'original_blend': 0.18,
+            'saturation': 1.07,
+            'gamma': 1.03
+        }
+    },
+    'yellow_gold': {
+        'natural': {
+            'brightness': 1.10,
+            'contrast': 1.04,
+            'white_overlay': 0.03,
+            'sharpness': 1.07,
+            'color_temp_a': 0,
+            'color_temp_b': 0,
+            'original_blend': 0.25,
+            'saturation': 1.08,
+            'gamma': 0.99
+        },
+        'warm': {
+            'brightness': 1.08,
+            'contrast': 1.02,
+            'white_overlay': 0.05,
+            'sharpness': 1.05,
+            'color_temp_a': -1,
+            'color_temp_b': -1,
+            'original_blend': 0.27,
+            'saturation': 1.06,
+            'gamma': 0.96
+        },
+        'cool': {
+            'brightness': 1.12,
+            'contrast': 1.06,
+            'white_overlay': 0.02,
+            'sharpness': 1.09,
+            'color_temp_a': 1,
+            'color_temp_b': 1,
+            'original_blend': 0.23,
+            'saturation': 1.10,
+            'gamma': 1.02
+        }
+    },
+    'silver': {
+        'natural': {
+            'brightness': 1.22,
+            'contrast': 1.16,
+            'white_overlay': 0.11,
+            'sharpness': 1.19,
+            'color_temp_a': -4,
+            'color_temp_b': -4,
+            'original_blend': 0.10,
+            'saturation': 0.98,
+            'gamma': 1.03
+        },
+        'warm': {
+            'brightness': 1.20,
+            'contrast': 1.14,
+            'white_overlay': 0.14,
+            'sharpness': 1.17,
+            'color_temp_a': -6,
+            'color_temp_b': -6,
+            'original_blend': 0.13,
+            'saturation': 0.96,
+            'gamma': 1.00
+        },
+        'cool': {
+            'brightness': 1.24,
+            'contrast': 1.18,
+            'white_overlay': 0.09,
+            'sharpness': 1.21,
+            'color_temp_a': -3,
+            'color_temp_b': -3,
+            'original_blend': 0.08,
+            'saturation': 1.00,
+            'gamma': 1.04
+        }
+    }
+}
+
 def initial_force_crop(image_array: np.ndarray, crop_percent: float = 0.02) -> np.ndarray:
     """Force crop edges by given percentage to guarantee removal"""
     h, w = image_array.shape[:2]
@@ -74,391 +218,280 @@ def detect_and_remove_black_iterative(image_array: np.ndarray, iteration: int) -
     left_crop = 0
     right_crop = w
     
-    # Method 1: Progressive threshold scanning
-    max_scan = int(min(h, w) * scan_depth)
+    # Scan each edge with increasing depth
+    max_scan = int(h * scan_depth)
     
-    # Multiple threshold levels
-    thresholds = [base_threshold - 20, base_threshold, base_threshold + 20]
+    # Top edge
+    for y in range(max_scan):
+        if np.mean(gray[y, :]) > base_threshold:
+            top_crop = max(y - 5, 0)  # Small safety margin
+            break
+    else:
+        top_crop = min_crop
     
-    for threshold in thresholds:
-        # Top scan
-        for i in range(min(max_scan, h//2)):
-            if np.mean(gray[i, :]) < threshold:
-                top_crop = max(top_crop, i + 1)
-            else:
-                if i > min_crop:  # Ensure minimum crop
-                    break
-        
-        # Bottom scan
-        for i in range(min(max_scan, h//2)):
-            if np.mean(gray[h-1-i, :]) < threshold:
-                bottom_crop = min(bottom_crop, h - 1 - i)
-            else:
-                if i > min_crop:
-                    break
-        
-        # Left scan
-        for i in range(min(max_scan, w//2)):
-            if np.mean(gray[:, i]) < threshold:
-                left_crop = max(left_crop, i + 1)
-            else:
-                if i > min_crop:
-                    break
-        
-        # Right scan
-        for i in range(min(max_scan, w//2)):
-            if np.mean(gray[:, w-1-i]) < threshold:
-                right_crop = min(right_crop, w - 1 - i)
-            else:
-                if i > min_crop:
-                    break
+    # Bottom edge
+    for y in range(h - 1, h - max_scan, -1):
+        if np.mean(gray[y, :]) > base_threshold:
+            bottom_crop = min(y + 5, h)
+            break
+    else:
+        bottom_crop = h - min_crop
     
-    # Method 2: Connected component analysis (more aggressive in later iterations)
-    if iteration >= 2:
-        _, binary = cv2.threshold(gray, base_threshold + 20, 255, cv2.THRESH_BINARY)
-        
-        # Larger kernel for later iterations
-        kernel_size = 3 + (iteration * 2)
-        kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        binary = 255 - binary
-        
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-        
-        for i in range(1, num_labels):
-            x, y, w_comp, h_comp, area = stats[i]
-            
-            # Lower area threshold for later iterations
-            area_threshold = max(50, 200 - (iteration * 30))
-            
-            if area > area_threshold:
-                if x <= 5:
-                    left_crop = max(left_crop, x + w_comp + 5)
-                if x + w_comp >= w - 5:
-                    right_crop = min(right_crop, x - 5)
-                if y <= 5:
-                    top_crop = max(top_crop, y + h_comp + 5)
-                if y + h_comp >= h - 5:
-                    bottom_crop = min(bottom_crop, y - 5)
+    # Left edge
+    max_scan_w = int(w * scan_depth)
+    for x in range(max_scan_w):
+        if np.mean(gray[:, x]) > base_threshold:
+            left_crop = max(x - 5, 0)
+            break
+    else:
+        left_crop = min_crop
     
-    # Method 3: Gradient-based detection (for subtle borders)
-    if iteration >= 1:
-        # Sobel gradients
-        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        gradient = np.sqrt(grad_x**2 + grad_y**2)
-        
-        # Strong gradients indicate border edges
-        gradient_threshold = 30 - (iteration * 5)
-        
-        # Check for gradient lines
-        for i in range(min_crop, min(max_scan, h//3)):
-            if np.mean(gradient[i, :]) > gradient_threshold:
-                if np.mean(gray[:i, :]) < base_threshold:
-                    top_crop = max(top_crop, i + 5)
-                break
+    # Right edge
+    for x in range(w - 1, w - max_scan_w, -1):
+        if np.mean(gray[:, x]) > base_threshold:
+            right_crop = min(x + 5, w)
+            break
+    else:
+        right_crop = w - min_crop
     
-    # Ensure minimum crop based on iteration
-    top_crop = max(top_crop, min_crop)
-    left_crop = max(left_crop, min_crop)
-    bottom_crop = min(bottom_crop, h - min_crop)
-    right_crop = min(right_crop, w - min_crop)
+    # Apply crop
+    if top_crop < bottom_crop and left_crop < right_crop:
+        cropped = image_array[top_crop:bottom_crop, left_crop:right_crop]
+        removed = (top_crop > 0 or bottom_crop < h or left_crop > 0 or right_crop < w)
+        return cropped, removed
     
-    # Validate crops
-    if top_crop >= bottom_crop - 100 or left_crop >= right_crop - 100:
-        # Too aggressive, use safer crop
-        safe_crop = min_crop
-        return image_array[safe_crop:h-safe_crop, safe_crop:w-safe_crop], False
-    
-    # Crop image
-    cropped = image_array[top_crop:bottom_crop, left_crop:right_crop]
-    
-    # Verify removal
-    success = verify_black_removal(cropped, base_threshold)
-    
-    return cropped, success
+    return image_array, False
 
 def hybrid_inpaint_edges(image_array: np.ndarray, edge_size: int = 10) -> np.ndarray:
-    """Inpaint only the edges to handle any remaining artifacts"""
+    """Apply hybrid inpainting to edges for any remaining artifacts"""
     h, w = image_array.shape[:2]
+    result = image_array.copy()
     
-    # Create mask for edges only
-    mask = np.zeros((h, w), dtype=np.uint8)
-    
-    # Mark edges for inpainting
-    mask[:edge_size, :] = 255  # Top
-    mask[-edge_size:, :] = 255  # Bottom
-    mask[:, :edge_size] = 255  # Left
-    mask[:, -edge_size:] = 255  # Right
-    
-    # Check if edges are dark
+    # Create masks for each edge
     gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
     
-    # Only inpaint if edges are actually dark
-    if (np.mean(gray[:edge_size, :]) < 100 or 
-        np.mean(gray[-edge_size:, :]) < 100 or
-        np.mean(gray[:, :edge_size]) < 100 or
-        np.mean(gray[:, -edge_size:]) < 100):
-        
-        # Inpaint edges
-        result = cv2.inpaint(image_array, mask, 3, cv2.INPAINT_TELEA)
-        return result
+    # Top edge
+    if np.mean(gray[:edge_size, :]) < 100:
+        mask = np.zeros(image_array.shape[:2], dtype=np.uint8)
+        mask[:edge_size, :] = 255
+        result = cv2.inpaint(result, mask, 3, cv2.INPAINT_TELEA)
     
-    return image_array
+    # Bottom edge
+    if np.mean(gray[-edge_size:, :]) < 100:
+        mask = np.zeros(image_array.shape[:2], dtype=np.uint8)
+        mask[-edge_size:, :] = 255
+        result = cv2.inpaint(result, mask, 3, cv2.INPAINT_TELEA)
+    
+    # Left edge
+    if np.mean(gray[:, :edge_size]) < 100:
+        mask = np.zeros(image_array.shape[:2], dtype=np.uint8)
+        mask[:, :edge_size] = 255
+        result = cv2.inpaint(result, mask, 3, cv2.INPAINT_TELEA)
+    
+    # Right edge
+    if np.mean(gray[:, -edge_size:]) < 100:
+        mask = np.zeros(image_array.shape[:2], dtype=np.uint8)
+        mask[:, -edge_size:] = 255
+        result = cv2.inpaint(result, mask, 3, cv2.INPAINT_TELEA)
+    
+    return result
 
-def detect_ring_mask_safe(image_array: np.ndarray) -> np.ndarray:
-    """Create safe mask for wedding ring with conservative detection"""
-    gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    
-    # Focus on center 60% where ring is likely to be
-    mask = np.zeros((h, w), dtype=np.uint8)
-    center_x, center_y = w // 2, h // 2
-    
-    # Create circular mask for center area
-    radius = min(w, h) * 0.3
-    cv2.circle(mask, (center_x, center_y), int(radius), 255, -1)
-    
-    # Use adaptive threshold to find ring
-    adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY, 21, 2)
-    
-    # Find contours in center area
-    center_adaptive = cv2.bitwise_and(adaptive, mask)
-    contours, _ = cv2.findContours(center_adaptive, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Reset mask
-    mask = np.zeros((h, w), dtype=np.uint8)
-    
-    # Draw significant contours
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if 500 < area < h * w * 0.4:  # Ring-sized objects
-            cv2.drawContours(mask, [contour], -1, 255, -1)
-    
-    # Dilate generously to ensure ring protection
-    mask = cv2.dilate(mask, np.ones((20, 20), np.uint8), iterations=3)
-    
-    return mask
-
-def enhance_ring_colors(image: Image.Image, metal_type: str) -> Image.Image:
-    """Enhanced color correction for each metal type"""
-    # Convert to numpy for processing
+def detect_metal_type(image: Image.Image) -> str:
+    """Detect metal type from the ring image"""
     img_array = np.array(image)
     
-    # Create ring mask
-    ring_mask = detect_ring_mask_safe(img_array)
+    # Sample center area
+    height, width = img_array.shape[:2]
+    center_y, center_x = height // 2, width // 2
+    sample_size = min(height, width) // 4
     
-    # Apply enhancements only to ring area
-    result = img_array.copy()
+    center_region = img_array[
+        center_y - sample_size:center_y + sample_size,
+        center_x - sample_size:center_x + sample_size
+    ]
     
-    # Metal-specific adjustments
-    if metal_type == "yellow_gold":
-        # Enhance yellow and gold tones
-        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-        l, a, b = cv2.split(lab)
-        
-        # Increase brightness
-        l_ring = l.copy()
-        l_ring[ring_mask > 0] = np.clip(l[ring_mask > 0] * 1.2 + 20, 0, 255)
-        
-        # Enhance yellow (positive b channel)
-        b_ring = b.copy()
-        b_ring[ring_mask > 0] = np.clip(b[ring_mask > 0] * 1.3 + 10, 0, 255)
-        
-        enhanced_lab = cv2.merge([l_ring, a, b_ring])
-        result = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
-        
-    elif metal_type == "rose_gold":
-        # Enhance pink/rose tones
-        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-        l, a, b = cv2.split(lab)
-        
-        # Increase brightness slightly
-        l_ring = l.copy()
-        l_ring[ring_mask > 0] = np.clip(l[ring_mask > 0] * 1.15 + 15, 0, 255)
-        
-        # Enhance pink (positive a channel)
-        a_ring = a.copy()
-        a_ring[ring_mask > 0] = np.clip(a[ring_mask > 0] * 1.2 + 8, 0, 255)
-        
-        enhanced_lab = cv2.merge([l_ring, a_ring, b])
-        result = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
-        
-    elif metal_type in ["white_gold", "white_noplating"]:
-        # Enhance brightness and reduce color cast
-        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-        l, a, b = cv2.split(lab)
-        
-        # Increase brightness significantly
-        l_ring = l.copy()
-        l_ring[ring_mask > 0] = np.clip(l[ring_mask > 0] * 1.3 + 30, 0, 255)
-        
-        # Reduce color cast (neutralize a and b channels)
-        a_ring = a.copy()
-        b_ring = b.copy()
-        a_ring[ring_mask > 0] = np.clip(a[ring_mask > 0] * 0.7 + 32, 0, 255)
-        b_ring[ring_mask > 0] = np.clip(b[ring_mask > 0] * 0.7 + 32, 0, 255)
-        
-        enhanced_lab = cv2.merge([l_ring, a_ring, b_ring])
-        result = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
+    # Calculate color statistics
+    r_mean = np.mean(center_region[:, :, 0])
+    g_mean = np.mean(center_region[:, :, 1])
+    b_mean = np.mean(center_region[:, :, 2])
     
-    # Convert back to PIL
-    enhanced = Image.fromarray(result)
+    # Color ratios for metal detection
+    rg_ratio = r_mean / (g_mean + 1)
+    rb_ratio = r_mean / (b_mean + 1)
     
-    # Apply additional PIL enhancements
+    # Brightness
+    brightness = (r_mean + g_mean + b_mean) / 3
+    
+    # Metal type detection logic
+    if brightness > 200 and abs(r_mean - g_mean) < 15 and abs(g_mean - b_mean) < 15:
+        return 'silver'
+    elif rg_ratio > 1.08 and rb_ratio > 1.15:
+        return 'rose_gold'
+    elif rg_ratio > 1.02 and rb_ratio > 1.05:
+        return 'yellow_gold'
+    else:
+        return 'white_gold'
+
+def detect_lighting(image: Image.Image) -> str:
+    """Detect lighting condition from the image"""
+    img_array = np.array(image)
+    
+    # Convert to LAB color space
+    lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+    l_channel = lab[:, :, 0]
+    
+    # Calculate histogram
+    hist = cv2.calcHist([l_channel], [0], None, [256], [0, 256])
+    hist = hist.flatten() / hist.sum()
+    
+    # Find peak
+    peak_idx = np.argmax(hist)
+    
+    # Determine lighting based on histogram distribution
+    if peak_idx < 80:
+        return 'cool'  # Dark, needs brightening
+    elif peak_idx > 170:
+        return 'warm'  # Bright, needs toning down
+    else:
+        return 'natural'
+
+def enhance_ring_colors(image: Image.Image, metal_type: str) -> Image.Image:
+    """Enhance ring colors based on metal type"""
+    # Detect lighting
+    lighting = detect_lighting(image)
+    
+    # Get parameters
+    params = WEDDING_RING_PARAMS[metal_type][lighting]
+    
+    # Apply enhancements
+    enhanced = image.copy()
+    
+    # Brightness
     enhancer = ImageEnhance.Brightness(enhanced)
-    enhanced = enhancer.enhance(1.15)
+    enhanced = enhancer.enhance(params['brightness'])
     
+    # Contrast
     enhancer = ImageEnhance.Contrast(enhanced)
-    enhanced = enhancer.enhance(1.2)
+    enhanced = enhancer.enhance(params['contrast'])
     
+    # Sharpness
     enhancer = ImageEnhance.Sharpness(enhanced)
-    enhanced = enhancer.enhance(1.3)
+    enhanced = enhancer.enhance(params['sharpness'])
+    
+    # Saturation
+    enhancer = ImageEnhance.Color(enhanced)
+    enhanced = enhancer.enhance(params['saturation'])
+    
+    # Apply white overlay
+    if params['white_overlay'] > 0:
+        white_layer = Image.new('RGB', enhanced.size, (255, 255, 255))
+        enhanced = Image.blend(enhanced, white_layer, params['white_overlay'])
+    
+    # Gamma correction
+    if params['gamma'] != 1.0:
+        enhanced_array = np.array(enhanced).astype(np.float32) / 255.0
+        enhanced_array = np.power(enhanced_array, params['gamma'])
+        enhanced_array = (enhanced_array * 255).astype(np.uint8)
+        enhanced = Image.fromarray(enhanced_array)
+    
+    # Color temperature adjustment
+    if params['color_temp_a'] != 0 or params['color_temp_b'] != 0:
+        enhanced_array = np.array(enhanced)
+        lab = cv2.cvtColor(enhanced_array, cv2.COLOR_RGB2LAB).astype(np.float32)
+        lab[:, :, 1] += params['color_temp_a']  # a channel
+        lab[:, :, 2] += params['color_temp_b']  # b channel
+        lab = np.clip(lab, 0, 255).astype(np.uint8)
+        enhanced_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        enhanced = Image.fromarray(enhanced_array)
+    
+    # Blend with original
+    if params['original_blend'] > 0:
+        enhanced = Image.blend(enhanced, image, params['original_blend'])
     
     return enhanced
 
-def detect_metal_type(image: Image.Image) -> str:
-    """Detect metal type with improved accuracy"""
-    # Convert to RGB if needed
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
+def create_thumbnail_ultra_zoom(original_image: Image.Image, enhanced_image: Image.Image) -> Image.Image:
+    """Create ultra-zoomed thumbnail focusing on ring only"""
+    # Convert to numpy array
+    img_array = np.array(enhanced_image)
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     
-    # Get center crop for analysis
-    width, height = image.size
-    crop_size = min(width, height) // 2
-    left = (width - crop_size) // 2
-    top = (height - crop_size) // 2
-    center_crop = image.crop((left, top, left + crop_size, top + crop_size))
+    # Apply threshold to find ring
+    _, binary = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
     
-    # Analyze colors
-    pixels = list(center_crop.getdata())
+    # Find contours
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Calculate color statistics
-    avg_r = sum(p[0] for p in pixels) / len(pixels)
-    avg_g = sum(p[1] for p in pixels) / len(pixels)
-    avg_b = sum(p[2] for p in pixels) / len(pixels)
-    
-    # Calculate color differences
-    rg_diff = abs(avg_r - avg_g)
-    gb_diff = abs(avg_g - avg_b)
-    rb_diff = abs(avg_r - avg_b)
-    
-    brightness = (avg_r + avg_g + avg_b) / 3
-    
-    # Detect white metals first (they're most distinctive)
-    if brightness > 180 and rg_diff < 15 and gb_diff < 15 and rb_diff < 15:
-        # Very bright and neutral = white gold or white no plating
-        if brightness > 200:
-            return "white_gold"
-        else:
-            return "white_noplating"
-    
-    # Rose gold detection (pinkish hue)
-    elif avg_r > avg_g > avg_b and rg_diff > 10 and brightness > 140:
-        return "rose_gold"
-    
-    # Default to yellow gold for all other cases
+    if not contours:
+        # Fallback to center crop
+        width, height = enhanced_image.size
+        crop_size = min(width, height) // 2
+        left = (width - crop_size) // 2
+        top = (height - crop_size) // 2
+        right = left + crop_size
+        bottom = top + crop_size
+        ring_crop = enhanced_image.crop((left, top, right, bottom))
     else:
-        return "yellow_gold"
-
-def create_thumbnail_ultra_zoom(original: Image.Image, processed: Image.Image) -> Image.Image:
-    """Create thumbnail with wedding ring filling the frame"""
-    # Convert to numpy for processing
-    img_array = np.array(processed)
-    
-    # Detect ring area
-    ring_mask = detect_ring_mask_safe(img_array)
-    
-    # Find bounding box of ring
-    contours, _ = cv2.findContours(ring_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if contours:
-        # Get largest contour (main ring area)
+        # Find largest contour (ring)
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest_contour)
         
-        # Add 2% padding
-        padding = 0.02
-        x = max(0, int(x - w * padding))
-        y = max(0, int(y - h * padding))
-        w = min(processed.width - x, int(w * (1 + 2 * padding)))
-        h = min(processed.height - y, int(h * (1 + 2 * padding)))
+        # Add padding
+        padding = int(max(w, h) * 0.1)
+        x = max(0, x - padding)
+        y = max(0, y - padding)
+        w = min(img_array.shape[1] - x, w + 2 * padding)
+        h = min(img_array.shape[0] - y, h + 2 * padding)
         
-        # Crop to ring area
-        ring_crop = processed.crop((x, y, x + w, y + h))
-    else:
-        # Fallback: use center 98% crop
-        width, height = processed.size
-        crop_pct = 0.98
-        left = int(width * (1 - crop_pct) / 2)
-        top = int(height * (1 - crop_pct) / 2)
-        right = int(width * (1 + crop_pct) / 2)
-        bottom = int(height * (1 + crop_pct) / 2)
-        ring_crop = processed.crop((left, top, right, bottom))
+        # Ensure square crop
+        if w > h:
+            diff = w - h
+            y = max(0, y - diff // 2)
+            h = w
+        else:
+            diff = h - w
+            x = max(0, x - diff // 2)
+            w = h
+        
+        ring_crop = enhanced_image.crop((x, y, x + w, y + h))
     
-    # Create thumbnail with exact dimensions
-    thumbnail = Image.new('RGB', (1000, 1300), (248, 248, 248))
-    
-    # Calculate scaling to fill frame
-    scale_w = 1000 / ring_crop.width
-    scale_h = 1300 / ring_crop.height
-    scale = max(scale_w, scale_h) * 1.02  # 2% extra to ensure full coverage
-    
-    new_width = int(ring_crop.width * scale)
-    new_height = int(ring_crop.height * scale)
-    
-    # Resize ring
-    ring_resized = ring_crop.resize((new_width, new_height), Image.Resampling.LANCZOS)
-    
-    # Center in frame
-    x_offset = (1000 - new_width) // 2
-    y_offset = (1300 - new_height) // 2
-    
-    # Paste ring
-    thumbnail.paste(ring_resized, (x_offset, y_offset))
-    
-    # Enhance brightness slightly for thumbnail
-    enhancer = ImageEnhance.Brightness(thumbnail)
-    thumbnail = enhancer.enhance(1.05)
+    # Resize to thumbnail size
+    thumbnail = ring_crop.resize((1000, 1300), Image.Resampling.LANCZOS)
     
     return thumbnail
 
 def process_wedding_ring_v100(image_base64: str) -> Dict:
-    """Process wedding ring with v100 iterative perfect removal system"""
+    """Main processing function with iterative perfect removal"""
     try:
-        # Decode image
+        print("Starting Wedding Ring AI v100 - Iterative Perfect Removal")
+        
+        # Decode base64 image
         image_data = base64.b64decode(image_base64)
         original_image = Image.open(BytesIO(image_data))
         
-        # Ensure RGB
-        if original_image.mode != 'RGB':
-            original_image = original_image.convert('RGB')
-        
         # Convert to numpy array
-        image_array = np.array(original_image)
-        image_bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+        image_bgr = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
         
-        # Step 1: Initial force crop (2% from all edges)
-        print("Step 1: Initial force crop to guarantee edge removal...")
+        print("Step 1: Initial 2% force crop for guaranteed edge removal")
+        # Step 1: Initial force crop (2% from each edge)
         image_bgr = initial_force_crop(image_bgr, crop_percent=0.02)
         
-        # Step 2: Iterative black removal (up to 5 iterations)
-        print("Step 2: Starting iterative black removal process...")
-        max_iterations = 5
-        
-        for iteration in range(max_iterations):
-            print(f"Iteration {iteration + 1}/{max_iterations}")
+        print("Step 2: Iterative black border removal with verification")
+        # Step 2: Iterative removal with verification
+        for iteration in range(5):  # Maximum 5 iterations
+            print(f"Iteration {iteration + 1}: Checking for black borders...")
             
-            # Detect and remove black borders
-            image_bgr, success = detect_and_remove_black_iterative(image_bgr, iteration)
-            
-            if success:
-                print(f"Black borders successfully removed in iteration {iteration + 1}")
+            # Check if black borders are removed
+            if verify_black_removal(image_bgr):
+                print(f"Black borders successfully removed after {iteration + 1} iterations!")
                 break
             
-            if iteration == max_iterations - 1:
-                print("Maximum iterations reached. Applying final aggressive crop...")
+            # Remove black borders with increasing aggressiveness
+            image_bgr, removed = detect_and_remove_black_iterative(image_bgr, iteration)
+            
+            if not removed and iteration == 4:
+                # Last resort: aggressive crop
+                print("Applying final aggressive crop...")
                 # Final aggressive crop if still not successful
                 h, w = image_bgr.shape[:2]
                 final_crop = 50  # Remove 50 pixels from each edge
