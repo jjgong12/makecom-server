@@ -2,7 +2,7 @@ FROM runpod/pytorch:2.0.1-py3.10-cuda11.8.0-devel-ubuntu22.04
 
 WORKDIR /
 
-# Install system dependencies
+# Install system dependencies (unzip 추가!!)
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libsm6 \
@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     git \
     wget \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
