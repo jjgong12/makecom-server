@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Wedding Ring AI v107 - Clean Architecture
-- No black border detection needed
-- Direct wedding ring detection using Replicate
-- Fixed 1000x1300 output size
-- Simplified and optimized workflow
+Wedding Ring AI v108 - Perfect Crop & Metal Detection
+- Perfect 1000x1300 crop
+- Auto metal type detection
+- Special processing for white metal
 """
 
 import runpod
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import base64
 from io import BytesIO
 import traceback
@@ -56,24 +55,66 @@ WEDDING_RING_PARAMS = {
         "temperature": -2,
         "vibrance": 1.2
     },
-    "white": {
-        "brightness": 1.15,
-        "contrast": 1.08,
-        "sharpness": 1.8,
-        "saturation": 0.88,
-        "white_overlay": 0.14,
-        "gamma": 0.96,
-        "highlights": 1.2,
-        "shadows": 0.9,
-        "temperature": -7,
-        "vibrance": 1.05
+    "white": {  # 무도금화이트
+        "brightness": 1.22,
+        "contrast": 1.25,
+        "sharpness": 1.95,
+        "saturation": 0.65,  # 채도 낮춤
+        "white_overlay": 0.18,  # 화이트 오버레이 증가
+        "gamma": 0.98,
+        "highlights": 1.25,
+        "shadows": 0.95,
+        "temperature": -8,  # 차가운 톤
+        "vibrance": 0.9
     }
 }
+
+def detect_metal_type(image: np.ndarray, bbox: Tuple[int, int, int, int]) -> str:
+    """
+    자동으로 웨딩링의 금속 타입을 감지
+    """
+    x, y, w, h = bbox
+    
+    # 웨딩링 영역만 추출
+    ring_area = image[y:y+h, x:x+w]
+    
+    # HSV로 변환
+    hsv = cv2.cvtColor(ring_area, cv2.COLOR_BGR2HSV)
+    
+    # 평균 색상값 계산
+    avg_hue = np.mean(hsv[:,:,0])
+    avg_sat = np.mean(hsv[:,:,1])
+    avg_val = np.mean(hsv[:,:,2])
+    
+    # RGB 평균값도 계산
+    avg_b = np.mean(ring_area[:,:,0])
+    avg_g = np.mean(ring_area[:,:,1])
+    avg_r = np.mean(ring_area[:,:,2])
+    
+    print(f"Metal detection - H:{avg_hue:.1f}, S:{avg_sat:.1f}, V:{avg_val:.1f}, RGB:({avg_r:.1f},{avg_g:.1f},{avg_b:.1f})")
+    
+    # 무도금화이트 감지 (매우 낮은 채도)
+    if avg_sat < 30 and avg_val > 150:
+        return "white"
+    
+    # 로즈골드 감지 (붉은 색조)
+    if avg_r > avg_g + 10 and avg_r > avg_b + 15:
+        return "rose_gold"
+    
+    # 화이트골드 감지 (차가운 톤)
+    if avg_b > avg_r and avg_sat < 50:
+        return "white_gold"
+    
+    # 옐로우골드 감지 (따뜻한 황금색, 높은 채도)
+    if avg_hue > 20 and avg_hue < 40 and avg_sat > 50:
+        return "yellow_gold"
+    
+    # 기본값: 화이트골드
+    return "white_gold"
 
 def detect_wedding_ring_replicate(image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
     """
     Detect wedding ring using Replicate AI
-    Returns: (x, y, width, height) or None if detection fails
     """
     try:
         # Convert to PIL
@@ -85,72 +126,73 @@ def detect_wedding_ring_replicate(image: np.ndarray) -> Optional[Tuple[int, int,
         
         # Use object detection model
         output = replicate.run(
-            "daanelson/imagebind:0383f62e173dc821ec52663ed22a076d9c970549c209666ac3db181618b7a304",
+            "salesforce/blip:2e1dddc8621f72155f24cf2e0adbde548458d3cab9f00c0139eea840d0ac4746",
             input={
                 "image": open(temp_path, "rb"),
-                "prompt": "wedding ring, jewelry, ring",
-                "threshold": 0.5
+                "task": "image_captioning"
             }
         )
         
-        # Parse detection results
-        if output and len(output) > 0:
-            # Get the first/best detection
-            detection = output[0]
-            x, y, w, h = detection['bbox']
-            
-            # Clean up
+        # Simple detection based on caption
+        if output and "ring" in output.lower():
+            # Use fallback to get actual bbox
             os.remove(temp_path)
-            
-            return int(x), int(y), int(w), int(h)
+            return detect_wedding_ring_opencv(image)
         
-        # Clean up
         os.remove(temp_path)
         
     except Exception as e:
-        print(f"Replicate detection failed: {str(e)}, using fallback")
+        print(f"Replicate detection failed: {str(e)}")
     
     return None
 
-def detect_wedding_ring_fallback(image: np.ndarray) -> Tuple[int, int, int, int]:
+def detect_wedding_ring_opencv(image: np.ndarray) -> Tuple[int, int, int, int]:
     """
-    Fallback ring detection using OpenCV
+    OpenCV를 사용한 정확한 웨딩링 감지
     """
     height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Apply bilateral filter to reduce noise while keeping edges
-    gray = cv2.bilateralFilter(gray, 9, 75, 75)
+    # 엣지 감지
+    edges = cv2.Canny(gray, 50, 150)
     
-    # Threshold to find bright objects (rings are usually bright)
-    _, binary = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
-    
-    # Morphology operations
-    kernel = np.ones((5, 5), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-    
-    # Find contours
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 컨투어 찾기
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if contours:
-        # Filter contours by area and aspect ratio
-        valid_contours = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > 1000:  # Minimum area threshold
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = float(w) / h
-                # Rings typically have aspect ratio close to 1
-                if 0.5 < aspect_ratio < 2.0:
-                    valid_contours.append((contour, area))
+        # 면적이 큰 상위 5개 컨투어 검토
+        sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
         
-        if valid_contours:
-            # Get the largest valid contour
-            largest_contour = max(valid_contours, key=lambda x: x[1])[0]
-            x, y, w, h = cv2.boundingRect(largest_contour)
+        best_bbox = None
+        best_score = 0
+        
+        for contour in sorted_contours:
+            area = cv2.contourArea(contour)
+            if area < 1000:  # 너무 작은 컨투어 제외
+                continue
+                
+            x, y, w, h = cv2.boundingRect(contour)
             
-            # Add 15% padding
+            # 중앙에서의 거리 계산
+            center_x = x + w // 2
+            center_y = y + h // 2
+            dist_from_center = np.sqrt((center_x - width//2)**2 + (center_y - height//2)**2)
+            
+            # 종횡비 계산 (1에 가까울수록 정사각형)
+            aspect_ratio = float(w) / h
+            aspect_score = 1 - abs(1 - aspect_ratio)
+            
+            # 점수 계산 (중앙에 가깝고, 정사각형에 가까울수록 높은 점수)
+            score = aspect_score * 1000 / (dist_from_center + 1)
+            
+            if score > best_score:
+                best_score = score
+                best_bbox = (x, y, w, h)
+        
+        if best_bbox:
+            x, y, w, h = best_bbox
+            
+            # 패딩 추가 (15%)
             padding = int(max(w, h) * 0.15)
             x = max(0, x - padding)
             y = max(0, y - padding)
@@ -159,16 +201,82 @@ def detect_wedding_ring_fallback(image: np.ndarray) -> Tuple[int, int, int, int]
             
             return x, y, w, h
     
-    # If no ring detected, return center region
-    center_size = int(min(width, height) * 0.6)
-    x = (width - center_size) // 2
-    y = (height - center_size) // 2
+    # 웨딩링을 찾지 못한 경우 중앙 영역 반환
+    size = int(min(width, height) * 0.5)
+    x = (width - size) // 2
+    y = (height - size) // 2
     
-    return x, y, center_size, center_size
+    return x, y, size, size
+
+def crop_to_target_size(image: np.ndarray, bbox: Tuple[int, int, int, int], 
+                       target_size: Tuple[int, int] = (1000, 1300)) -> np.ndarray:
+    """
+    웨딩링을 중심으로 1000x1300으로 완벽하게 크롭
+    """
+    x, y, w, h = bbox
+    height, width = image.shape[:2]
+    
+    # 웨딩링 중심점
+    ring_center_x = x + w // 2
+    ring_center_y = y + h // 2
+    
+    # 타겟 비율 (1000:1300 = 0.77)
+    target_ratio = target_size[0] / target_size[1]
+    
+    # 웨딩링이 화면의 80%를 차지하도록 크기 계산
+    ring_size = max(w, h)
+    crop_size = int(ring_size / 0.8)  # 웨딩링이 80% 차지
+    
+    # 세로가 더 긴 비율로 크롭 영역 계산
+    crop_w = int(crop_size * target_ratio)
+    crop_h = crop_size
+    
+    # 크롭 시작점 계산 (웨딩링이 중앙에 오도록)
+    crop_x = ring_center_x - crop_w // 2
+    crop_y = ring_center_y - crop_h // 2
+    
+    # 경계 체크 및 조정
+    if crop_x < 0:
+        crop_x = 0
+    elif crop_x + crop_w > width:
+        crop_x = width - crop_w
+        
+    if crop_y < 0:
+        crop_y = 0
+    elif crop_y + crop_h > height:
+        crop_y = height - crop_h
+    
+    # 크롭 영역이 이미지를 벗어나는 경우 패딩 추가
+    if crop_x < 0 or crop_y < 0 or crop_x + crop_w > width or crop_y + crop_h > height:
+        # 패딩 추가
+        pad_top = max(0, -crop_y)
+        pad_bottom = max(0, crop_y + crop_h - height)
+        pad_left = max(0, -crop_x)
+        pad_right = max(0, crop_x + crop_w - width)
+        
+        # 배경색 (이미지 가장자리 색상 평균)
+        bg_color = np.mean(image[0:10, 0:10], axis=(0,1))
+        
+        # 패딩 적용
+        image = cv2.copyMakeBorder(image, pad_top, pad_bottom, pad_left, pad_right, 
+                                  cv2.BORDER_CONSTANT, value=bg_color)
+        
+        # 크롭 좌표 조정
+        crop_x += pad_left
+        crop_y += pad_top
+    
+    # 크롭
+    cropped = image[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
+    
+    # PIL로 변환하여 고품질 리사이즈
+    pil_cropped = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+    resized = pil_cropped.resize(target_size, Image.Resampling.LANCZOS)
+    
+    return cv2.cvtColor(np.array(resized), cv2.COLOR_RGB2BGR)
 
 def enhance_wedding_ring_advanced(image: Image.Image, metal_type: str = "white_gold") -> Image.Image:
     """
-    Advanced wedding ring enhancement with detailed adjustments
+    Advanced wedding ring enhancement with metal-specific adjustments
     """
     params = WEDDING_RING_PARAMS.get(metal_type, WEDDING_RING_PARAMS["white_gold"])
     
@@ -178,15 +286,23 @@ def enhance_wedding_ring_advanced(image: Image.Image, metal_type: str = "white_g
     # Convert to numpy for advanced processing
     img_array = np.array(image).astype(np.float32) / 255.0
     
-    # 1. Adjust highlights and shadows
-    # Create luminance channel
-    luminance = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    # 무도금화이트 특별 처리
+    if metal_type == "white":
+        # 채도를 크게 낮춤
+        hsv = cv2.cvtColor((img_array * 255).astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+        hsv[:,:,1] = hsv[:,:,1] * 0.5  # 채도 50% 감소
+        img_array = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32) / 255.0
+        
+        # 밝은 영역 강조
+        luminance = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        bright_mask = np.where(luminance > 0.7, 1.0, 0.0)
+        img_array = img_array + bright_mask[:,:,np.newaxis] * 0.1
     
-    # Separate highlights and shadows
+    # 1. Adjust highlights and shadows
+    luminance = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     highlights_mask = np.where(luminance > 0.6, 1.0, 0.0)
     shadows_mask = np.where(luminance < 0.3, 1.0, 0.0)
     
-    # Apply adjustments
     img_array = img_array * (1 + highlights_mask[:,:,np.newaxis] * (params['highlights'] - 1))
     img_array = img_array * (1 + shadows_mask[:,:,np.newaxis] * (params['shadows'] - 1))
     
@@ -195,10 +311,9 @@ def enhance_wedding_ring_advanced(image: Image.Image, metal_type: str = "white_g
     img_array[:,:,0] = np.clip(img_array[:,:,0] + temp_shift, 0, 1)  # Red
     img_array[:,:,2] = np.clip(img_array[:,:,2] - temp_shift, 0, 1)  # Blue
     
-    # 3. Vibrance (selective saturation)
-    # Convert to HSV
+    # 3. Vibrance
     hsv = cv2.cvtColor((img_array * 255).astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
-    hsv[:,:,1] = hsv[:,:,1] * params['vibrance']  # Adjust saturation
+    hsv[:,:,1] = hsv[:,:,1] * params['vibrance']
     img_array = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32) / 255.0
     
     # 4. Apply gamma correction
@@ -214,81 +329,35 @@ def enhance_wedding_ring_advanced(image: Image.Image, metal_type: str = "white_g
     enhanced = Image.fromarray(img_array)
     
     # 6. Apply PIL enhancements
-    # Brightness
     enhancer = ImageEnhance.Brightness(enhanced)
     enhanced = enhancer.enhance(params['brightness'])
     
-    # Contrast
     enhancer = ImageEnhance.Contrast(enhanced)
     enhanced = enhancer.enhance(params['contrast'])
     
-    # Sharpness
     enhancer = ImageEnhance.Sharpness(enhanced)
     enhanced = enhancer.enhance(params['sharpness'])
     
-    # Saturation
     enhancer = ImageEnhance.Color(enhanced)
     enhanced = enhancer.enhance(params['saturation'])
     
-    # 7. Detail enhancement
-    # Unsharp mask for fine details
-    gaussian = enhanced.filter(ImageFilter.GaussianBlur(radius=2))
-    enhanced = Image.blend(gaussian, enhanced, 1.5)
+    # 7. 무도금화이트 추가 처리
+    if metal_type == "white":
+        # 추가 화이트 오버레이
+        white_layer = Image.new('RGB', enhanced.size, (255, 255, 255))
+        enhanced = Image.blend(enhanced, white_layer, 0.1)
+        
+        # 추가 샤프닝
+        enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=3, percent=200, threshold=3))
     
     # 8. Final sharpening
     enhanced = enhanced.filter(ImageFilter.SHARPEN)
     
     return enhanced
 
-def crop_and_upscale(image: np.ndarray, bbox: Tuple[int, int, int, int], 
-                     target_size: Tuple[int, int] = (1000, 1300)) -> np.ndarray:
+def process_wedding_ring_v108(image_base64: str, metal_type: str = "auto") -> Dict:
     """
-    Crop to ring area and upscale to target size
-    """
-    x, y, w, h = bbox
-    
-    # Calculate aspect ratio for target size
-    target_aspect = target_size[0] / target_size[1]  # 1000/1300 = 0.77
-    current_aspect = w / h
-    
-    # Adjust crop to match target aspect ratio
-    if current_aspect > target_aspect:
-        # Too wide, increase height
-        new_h = int(w / target_aspect)
-        y_offset = (new_h - h) // 2
-        y = max(0, y - y_offset)
-        h = new_h
-    else:
-        # Too tall, increase width
-        new_w = int(h * target_aspect)
-        x_offset = (new_w - w) // 2
-        x = max(0, x - x_offset)
-        w = new_w
-    
-    # Ensure within image bounds
-    height, width = image.shape[:2]
-    x = max(0, min(x, width - w))
-    y = max(0, min(y, height - h))
-    w = min(w, width - x)
-    h = min(h, height - y)
-    
-    # Crop
-    cropped = image[y:y+h, x:x+w]
-    
-    # Convert to PIL for high-quality resize
-    pil_cropped = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
-    
-    # Upscale using LANCZOS
-    upscaled = pil_cropped.resize(target_size, Image.Resampling.LANCZOS)
-    
-    # Additional sharpening after upscale
-    upscaled = upscaled.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
-    
-    return cv2.cvtColor(np.array(upscaled), cv2.COLOR_RGB2BGR)
-
-def process_wedding_ring_v107(image_base64: str, metal_type: str = "white_gold") -> Dict:
-    """
-    Main processing function v107 - Clean architecture
+    Main processing function v108
     """
     try:
         # Decode base64
@@ -304,27 +373,36 @@ def process_wedding_ring_v107(image_base64: str, metal_type: str = "white_gold")
         img = Image.open(BytesIO(img_bytes))
         img_array = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
         
-        print(f"Processing v107: metal={metal_type}, original_size={img_array.shape}")
+        print(f"Processing v108: size={img_array.shape}")
         
         # Step 1: Detect wedding ring
         bbox = detect_wedding_ring_replicate(img_array)
         
         if bbox is None:
-            print("Replicate detection failed, using fallback")
-            bbox = detect_wedding_ring_fallback(img_array)
+            print("Using OpenCV detection")
+            bbox = detect_wedding_ring_opencv(img_array)
         
         print(f"Ring detected at: {bbox}")
         
-        # Step 2: Crop and upscale to 1000x1300
-        cropped_upscaled = crop_and_upscale(img_array, bbox, (1000, 1300))
+        # Step 2: Auto detect metal type if needed
+        if metal_type == "auto":
+            detected_metal = detect_metal_type(img_array, bbox)
+            print(f"Auto-detected metal type: {detected_metal}")
+        else:
+            detected_metal = metal_type
+            
+        # Step 3: Perfect crop to 1000x1300
+        cropped = crop_to_target_size(img_array, bbox, (1000, 1300))
         
-        # Step 3: Convert to PIL and apply enhancement
-        pil_image = Image.fromarray(cv2.cvtColor(cropped_upscaled, cv2.COLOR_BGR2RGB))
-        enhanced = enhance_wedding_ring_advanced(pil_image, metal_type)
+        # Step 4: Convert to PIL and apply enhancement
+        pil_image = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+        enhanced = enhance_wedding_ring_advanced(pil_image, detected_metal)
         
-        # Step 4: Create thumbnail (800x800)
-        thumbnail = enhanced.resize((800, 800), Image.Resampling.LANCZOS)
-        thumbnail = thumbnail.filter(ImageFilter.SHARPEN)
+        # Step 5: Create thumbnail (800x800) - 중앙 정사각형 크롭
+        thumb_crop_size = 800
+        crop_x = (1000 - thumb_crop_size) // 2
+        crop_y = (1300 - thumb_crop_size) // 2
+        thumbnail = enhanced.crop((crop_x, crop_y, crop_x + thumb_crop_size, crop_y + thumb_crop_size))
         
         # Convert to base64
         # Main image (1000x1300)
@@ -337,31 +415,32 @@ def process_wedding_ring_v107(image_base64: str, metal_type: str = "white_gold")
         thumbnail.save(thumb_buffer, format='PNG', quality=95, optimize=True)
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         
-        # Log sizes for debugging
-        print(f"Main image size: {len(main_base64)} bytes (base64)")
-        print(f"Thumbnail size: {len(thumb_base64)} bytes (base64)")
+        # Log sizes
+        print(f"Main image size: {len(main_base64)} bytes")
+        print(f"Thumbnail size: {len(thumb_base64)} bytes")
+        print(f"Metal type used: {detected_metal}")
         
-        # CRITICAL: Return with nested output structure for Make.com
+        # Return with nested output structure
         return {
             "output": {
                 "enhanced_image": main_base64,
                 "thumbnail": thumb_base64,
-                "metal_type": metal_type,
-                "processing_version": "v107_clean_architecture",
+                "metal_type": detected_metal,
+                "processing_version": "v108_perfect_crop",
                 "dimensions": {
                     "main": "1000x1300",
                     "thumbnail": "800x800"
                 },
                 "ring_detection": {
-                    "method": "replicate" if bbox else "fallback",
-                    "bbox": bbox
+                    "bbox": bbox,
+                    "auto_metal": metal_type == "auto"
                 },
                 "status": "success"
             }
         }
         
     except Exception as e:
-        print(f"Error in process_wedding_ring_v107: {str(e)}")
+        print(f"Error in process_wedding_ring_v108: {str(e)}")
         print(f"Traceback: {traceback.format_exc()}")
         
         return {
@@ -369,7 +448,7 @@ def process_wedding_ring_v107(image_base64: str, metal_type: str = "white_gold")
                 "error": str(e),
                 "traceback": traceback.format_exc(),
                 "status": "error",
-                "processing_version": "v107_clean_architecture"
+                "processing_version": "v108_perfect_crop"
             }
         }
 
@@ -383,15 +462,14 @@ def handler(event):
         if input_data.get("test") == True:
             return {
                 "status": "test_success",
-                "message": "Wedding Ring Processor v107 - Clean Architecture",
-                "version": "v107_clean_architecture",
+                "message": "Wedding Ring Processor v108 - Perfect Crop & Metal Detection",
+                "version": "v108_perfect_crop",
                 "features": [
-                    "Direct wedding ring detection using Replicate AI",
-                    "No black border detection needed",
-                    "Fixed 1000x1300 main output",
-                    "800x800 thumbnail output",
-                    "Advanced metal-specific enhancement",
-                    "Simplified and optimized workflow"
+                    "Perfect 1000x1300 crop with ring at 80% size",
+                    "Auto metal type detection (white/rose_gold/white_gold/yellow_gold)",
+                    "Special white metal processing",
+                    "800x800 thumbnail from center",
+                    "Improved ring detection accuracy"
                 ]
             }
         
@@ -406,13 +484,11 @@ def handler(event):
                 }
             }
         
-        # Get metal type
-        metal_type = input_data.get("metal_type", "white_gold")
-        if metal_type not in WEDDING_RING_PARAMS:
-            metal_type = "white_gold"
+        # Get metal type (default: auto)
+        metal_type = input_data.get("metal_type", "auto")
         
         # Process image
-        return process_wedding_ring_v107(image_base64, metal_type)
+        return process_wedding_ring_v108(image_base64, metal_type)
         
     except Exception as e:
         print(f"Handler error: {str(e)}")
