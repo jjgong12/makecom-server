@@ -86,36 +86,264 @@ WEDDING_RING_PARAMS = {
     }
 }
 
-def detect_black_borders_simple(image):
-    """Simple black border detection using threshold"""
+def detect_black_borders_ultra_precise(image):
+    """Ultra-precise black border detection with multiple methods and validation loops"""
     height, width = image.shape[:2]
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Use a single threshold
-    _, binary = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
-    
-    # Find the actual content area
-    coords = cv2.findNonZero(binary)
-    if coords is not None:
-        x, y, w, h = cv2.boundingRect(coords)
-        return {
-            'top': y,
-            'bottom': y + h,
-            'left': x,
-            'right': x + w,
-            'has_border': (y > 10 or x > 10 or (y + h) < height - 10 or (x + w) < width - 10)
-        }
-    
-    return {
+    # Initialize best borders
+    best_borders = {
         'top': 0,
         'bottom': height,
         'left': 0,
         'right': width,
-        'has_border': False
+        'has_border': False,
+        'confidence': 0
     }
+    
+    # Method 1: Multiple threshold levels
+    threshold_levels = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+    all_detections = []
+    
+    for thresh in threshold_levels:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+        
+        # Detect from each direction independently
+        # TOP
+        top = 0
+        for i in range(height):
+            row_mean = np.mean(binary[i, width//4:3*width//4])  # Check center portion
+            if row_mean > 20:  # Found content
+                top = i
+                break
+        
+        # BOTTOM
+        bottom = height
+        for i in range(height - 1, -1, -1):
+            row_mean = np.mean(binary[i, width//4:3*width//4])
+            if row_mean > 20:
+                bottom = i + 1
+                break
+        
+        # LEFT
+        left = 0
+        for i in range(width):
+            col_mean = np.mean(binary[height//4:3*height//4, i])
+            if col_mean > 20:
+                left = i
+                break
+        
+        # RIGHT
+        right = width
+        for i in range(width - 1, -1, -1):
+            col_mean = np.mean(binary[height//4:3*height//4, i])
+            if col_mean > 20:
+                right = i + 1
+                break
+        
+        all_detections.append({
+            'threshold': thresh,
+            'top': top,
+            'bottom': bottom,
+            'left': left,
+            'right': right
+        })
+    
+    # Method 2: Edge detection
+    edges = cv2.Canny(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), 30, 100)
+    
+    # Find first/last edge from each direction
+    edge_top = 0
+    for i in range(height):
+        if np.sum(edges[i, :]) > width * 0.1:  # 10% of width has edges
+            edge_top = max(0, i - 5)  # Small margin
+            break
+    
+    edge_bottom = height
+    for i in range(height - 1, -1, -1):
+        if np.sum(edges[i, :]) > width * 0.1:
+            edge_bottom = min(height, i + 6)
+            break
+    
+    edge_left = 0
+    for i in range(width):
+        if np.sum(edges[:, i]) > height * 0.1:
+            edge_left = max(0, i - 5)
+            break
+    
+    edge_right = width
+    for i in range(width - 1, -1, -1):
+        if np.sum(edges[:, i]) > height * 0.1:
+            edge_right = min(width, i + 6)
+            break
+    
+    # Method 3: Gradient-based detection
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    gradient = np.sqrt(grad_x**2 + grad_y**2)
+    
+    # Detect significant gradient changes
+    grad_threshold = np.max(gradient) * 0.1
+    
+    grad_top = 0
+    for i in range(height):
+        if np.max(gradient[i, :]) > grad_threshold:
+            grad_top = max(0, i - 5)
+            break
+    
+    grad_bottom = height
+    for i in range(height - 1, -1, -1):
+        if np.max(gradient[i, :]) > grad_threshold:
+            grad_bottom = min(height, i + 6)
+            break
+    
+    grad_left = 0
+    for i in range(width):
+        if np.max(gradient[:, i]) > grad_threshold:
+            grad_left = max(0, i - 5)
+            break
+    
+    grad_right = width
+    for i in range(width - 1, -1, -1):
+        if np.max(gradient[:, i]) > grad_threshold:
+            grad_right = min(width, i + 6)
+            break
+    
+    # Method 4: Color variance detection
+    # Check if borders have very low color variance (indicating solid black)
+    border_size = 50  # Check up to 50 pixels
+    
+    # Top border variance
+    var_top = 0
+    for i in range(min(border_size, height)):
+        row_variance = np.var(image[i, :])
+        if row_variance > 100:  # Significant variance found
+            var_top = i
+            break
+    
+    # Bottom border variance
+    var_bottom = height
+    for i in range(max(0, height - border_size), height):
+        row_variance = np.var(image[i, :])
+        if row_variance > 100:
+            var_bottom = i + 1
+            break
+    
+    # Left border variance
+    var_left = 0
+    for i in range(min(border_size, width)):
+        col_variance = np.var(image[:, i])
+        if col_variance > 100:
+            var_left = i
+            break
+    
+    # Right border variance
+    var_right = width
+    for i in range(max(0, width - border_size), width):
+        col_variance = np.var(image[:, i])
+        if col_variance > 100:
+            var_right = i + 1
+            break
+    
+    # Consensus algorithm - take the most conservative (largest) border from all methods
+    final_top = max(edge_top, grad_top, var_top, max([d['top'] for d in all_detections]))
+    final_bottom = min(edge_bottom, grad_bottom, var_bottom, min([d['bottom'] for d in all_detections]))
+    final_left = max(edge_left, grad_left, var_left, max([d['left'] for d in all_detections]))
+    final_right = min(edge_right, grad_right, var_right, min([d['right'] for d in all_detections]))
+    
+    # Validation loop - ensure we detected actual borders
+    max_iterations = 5
+    iteration = 0
+    
+    while iteration < max_iterations:
+        # Check if detected area is too small (might have over-cropped)
+        detected_width = final_right - final_left
+        detected_height = final_bottom - final_top
+        
+        if detected_width < width * 0.5 or detected_height < height * 0.5:
+            # Too aggressive, reduce borders
+            logger.warning(f"Iteration {iteration}: Detected area too small, adjusting...")
+            final_top = max(0, final_top - 10)
+            final_bottom = min(height, final_bottom + 10)
+            final_left = max(0, final_left - 10)
+            final_right = min(width, final_right + 10)
+        else:
+            # Validate borders are actually black
+            top_strip = image[max(0, final_top-10):final_top, :]
+            bottom_strip = image[final_bottom:min(height, final_bottom+10), :]
+            left_strip = image[:, max(0, final_left-10):final_left]
+            right_strip = image[:, final_right:min(width, final_right+10)]
+            
+            # Check if strips are actually dark
+            strips_are_dark = True
+            if top_strip.size > 0 and np.mean(top_strip) > 40:
+                strips_are_dark = False
+            if bottom_strip.size > 0 and np.mean(bottom_strip) > 40:
+                strips_are_dark = False
+            if left_strip.size > 0 and np.mean(left_strip) > 40:
+                strips_are_dark = False
+            if right_strip.size > 0 and np.mean(right_strip) > 40:
+                strips_are_dark = False
+            
+            if strips_are_dark:
+                break  # Good detection
+            else:
+                logger.warning(f"Iteration {iteration}: Borders not dark enough, refining...")
+                # Refine detection with stricter threshold
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                _, binary = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
+                
+                # Re-detect with stricter criteria
+                for i in range(final_top, min(final_top + 50, height)):
+                    if np.mean(binary[i, width//4:3*width//4]) > 30:
+                        final_top = i
+                        break
+                
+                for i in range(final_bottom - 1, max(final_bottom - 50, 0), -1):
+                    if np.mean(binary[i, width//4:3*width//4]) > 30:
+                        final_bottom = i + 1
+                        break
+        
+        iteration += 1
+    
+    # Calculate confidence based on how many methods agreed
+    has_significant_border = (
+        (final_top > 20) or 
+        (height - final_bottom > 20) or 
+        (final_left > 20) or 
+        (width - final_right > 20)
+    )
+    
+    confidence = 100 if has_significant_border else 0
+    
+    # Add extra margin to ensure complete removal
+    margin = 10
+    final_top = max(0, final_top - margin)
+    final_bottom = min(height, final_bottom + margin)
+    final_left = max(0, final_left - margin)
+    final_right = min(width, final_right + margin)
+    
+    result = {
+        'top': final_top,
+        'bottom': final_bottom,
+        'left': final_left,
+        'right': final_right,
+        'has_border': has_significant_border,
+        'confidence': confidence,
+        'detected_methods': {
+            'threshold': len([d for d in all_detections if d['top'] > 10 or height - d['bottom'] > 10]),
+            'edge': (edge_top > 10 or height - edge_bottom > 10),
+            'gradient': (grad_top > 10 or height - grad_bottom > 10),
+            'variance': (var_top > 10 or height - var_bottom > 10)
+        }
+    }
+    
+    logger.info(f"Border detection complete: {result}")
+    return result
 
 def apply_replicate_inpainting(image, mask, use_flux=False):
-    """Apply Replicate AI inpainting - always use this instead of OpenCV"""
+    """Apply Replicate AI inpainting with natural background extension"""
     try:
         # Convert image to base64
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -130,16 +358,16 @@ def apply_replicate_inpainting(image, mask, use_flux=False):
         mask_base64 = base64.b64encode(mask_buffered.getvalue()).decode()
         
         if use_flux:
-            # Use FLUX for better quality
-            logger.info("Using FLUX Fill for high-quality inpainting")
+            # Use FLUX for highest quality
+            logger.info("Using FLUX Fill for maximum quality inpainting")
             output = replicate.run(
                 "black-forest-labs/flux-fill-dev",
                 input={
-                    "prompt": "professional product photography, clean white seamless background, studio lighting, no shadows",
+                    "prompt": "extend the existing background naturally, maintain the same lighting and texture, seamless continuation of the original background",
                     "image": f"data:image/png;base64,{img_base64}",
                     "mask": f"data:image/png;base64,{mask_base64}",
-                    "num_inference_steps": 30,
-                    "guidance_scale": 8.0
+                    "num_inference_steps": 35,
+                    "guidance_scale": 8.5
                 }
             )
         else:
@@ -148,12 +376,12 @@ def apply_replicate_inpainting(image, mask, use_flux=False):
             output = replicate.run(
                 "ideogram-ai/ideogram-v2-turbo",
                 input={
-                    "prompt": "professional product photography background, clean white studio background, soft even lighting",
+                    "prompt": "natural extension of existing background, maintain exact same style and lighting, seamless blend with original",
                     "image": f"data:image/png;base64,{img_base64}",
                     "mask": f"data:image/png;base64,{mask_base64}",
                     "mode": "inpaint",
-                    "num_inference_steps": 25,
-                    "guidance_scale": 7.5
+                    "num_inference_steps": 28,
+                    "guidance_scale": 8.0
                 }
             )
         
@@ -179,48 +407,52 @@ def apply_replicate_inpainting(image, mask, use_flux=False):
         # Return original image if failed
         return image
 
-def remove_black_borders_replicate_only(image):
-    """Remove black borders using only Replicate models"""
-    borders = detect_black_borders_simple(image)
+def remove_black_borders_with_replicate(image):
+    """Remove black borders using ultra-precise OpenCV detection + Replicate inpainting"""
+    # Step 1: Ultra-precise border detection
+    borders = detect_black_borders_ultra_precise(image)
     
     # If no borders detected, return original
     if not borders['has_border']:
-        logger.info("No black borders detected")
+        logger.info("No black borders detected after thorough analysis")
         return image
     
-    # Create mask for borders
+    # Step 2: Create detailed mask for inpainting
     height, width = image.shape[:2]
     mask = np.zeros((height, width), dtype=np.uint8)
     
-    # Create a larger mask area for better inpainting
-    border_expansion = 20  # Expand border area for better results
+    # Fill detected border areas
+    # Extra thick mask for better inpainting
+    mask[:borders['top'], :] = 255
+    mask[borders['bottom']:, :] = 255
+    mask[:, :borders['left']] = 255
+    mask[:, borders['right']:] = 255
     
-    # Fill border areas in mask with some expansion
-    mask[:max(0, borders['top'] + border_expansion), :] = 255
-    mask[min(height, borders['bottom'] - border_expansion):, :] = 255
-    mask[:, :max(0, borders['left'] + border_expansion)] = 255
-    mask[:, min(width, borders['right'] - border_expansion):] = 255
+    # Add gradient to mask edges for smoother blending
+    kernel_size = 15
+    mask = cv2.GaussianBlur(mask, (kernel_size, kernel_size), 0)
+    mask = np.where(mask > 127, 255, mask).astype(np.uint8)
     
-    # Calculate total border area
+    # Calculate inpainting area percentage
     total_pixels = height * width
-    border_pixels = np.sum(mask > 0)
-    border_percentage = (border_pixels / total_pixels) * 100
+    mask_pixels = np.sum(mask > 0)
+    mask_percentage = (mask_pixels / total_pixels) * 100
     
-    logger.info(f"Border area: {border_percentage:.1f}% of image")
+    logger.info(f"Mask covers {mask_percentage:.1f}% of image")
     
-    # Always use Replicate, choose model based on complexity
-    if border_percentage > 20:
-        # Large borders - use FLUX for better quality
-        logger.info("Large border area detected, using FLUX for quality")
+    # Step 3: Apply Replicate inpainting
+    if mask_percentage > 25:
+        # Large area - use FLUX for quality
         result = apply_replicate_inpainting(image, mask, use_flux=True)
     else:
-        # Smaller borders - use Ideogram for speed
-        logger.info("Small/medium border area, using Ideogram for speed")
+        # Smaller area - use Ideogram for speed
         result = apply_replicate_inpainting(image, mask, use_flux=False)
     
-    # Crop to content area
+    # Step 4: Crop to content area
     cropped = result[borders['top']:borders['bottom'], 
                      borders['left']:borders['right']]
+    
+    logger.info(f"Cropped from {image.shape} to {cropped.shape}")
     
     return cropped
 
@@ -287,84 +519,79 @@ def enhance_wedding_ring(image: Image.Image, metal_type: str, lighting: str) -> 
     
     return enhanced
 
-def create_thumbnail_center_focused(original_image: Image.Image, enhanced_image: Image.Image) -> Image.Image:
-    """Create thumbnail with better ring detection"""
+def create_thumbnail_ultra_zoom(original_image: Image.Image, enhanced_image: Image.Image) -> Image.Image:
+    """Create ultra-zoomed thumbnail focusing on ring only"""
     img_array = np.array(enhanced_image)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     
-    # More aggressive threshold for ring detection
-    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+    # Multiple detection methods for ring
+    best_crop = None
     
-    # Morphological operations to connect ring parts
-    kernel = np.ones((5,5), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    
-    # Find contours
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if contours:
-        # Find the contour closest to center (likely the ring)
-        height, width = img_array.shape[:2]
-        center_x, center_y = width // 2, height // 2
+    # Method 1: Threshold-based
+    for thresh_val in [180, 200, 220, 240]:
+        _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY_INV)
         
-        best_contour = None
-        min_distance = float('inf')
+        # Morphological operations
+        kernel = np.ones((5,5), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
         
-        for contour in contours:
-            # Get contour center
-            M = cv2.moments(contour)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                
-                # Calculate distance from image center
-                distance = np.sqrt((cx - center_x)**2 + (cy - center_y)**2)
-                
-                # Also check contour area (ring should be substantial)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Find most centered and substantial contour
+            height, width = img_array.shape[:2]
+            center_x, center_y = width // 2, height // 2
+            
+            valid_contours = []
+            for contour in contours:
                 area = cv2.contourArea(contour)
-                if area > 1000 and distance < min_distance:
-                    min_distance = distance
-                    best_contour = contour
-        
-        if best_contour is not None:
-            x, y, w, h = cv2.boundingRect(best_contour)
+                if area > 500:  # Minimum area threshold
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        distance = np.sqrt((cx - center_x)**2 + (cy - center_y)**2)
+                        valid_contours.append((contour, distance, area))
             
-            # Make the crop area square and larger
-            size = int(max(w, h) * 2.0)  # 2x padding
-            
-            # Center the crop on the ring
-            center_x = x + w // 2
-            center_y = y + h // 2
-            
-            x = max(0, center_x - size // 2)
-            y = max(0, center_y - size // 2)
-            
-            # Ensure we don't exceed image boundaries
-            x = min(x, img_array.shape[1] - size)
-            y = min(y, img_array.shape[0] - size)
-            
-            ring_crop = enhanced_image.crop((x, y, x + size, y + size))
-        else:
-            # Fallback to center crop
-            logger.info("Using center crop for thumbnail")
-            width, height = enhanced_image.size
-            size = min(width, height) // 2
-            left = (width - size) // 2
-            top = (height - size) // 2
-            ring_crop = enhanced_image.crop((left, top, left + size, top + size))
+            if valid_contours:
+                # Sort by distance from center, then by area
+                valid_contours.sort(key=lambda x: (x[1], -x[2]))
+                best_contour = valid_contours[0][0]
+                
+                x, y, w, h = cv2.boundingRect(best_contour)
+                
+                # Create square crop with generous padding
+                size = int(max(w, h) * 2.5)
+                cx = x + w // 2
+                cy = y + h // 2
+                
+                x = max(0, cx - size // 2)
+                y = max(0, cy - size // 2)
+                x = min(x, img_array.shape[1] - size)
+                y = min(y, img_array.shape[0] - size)
+                
+                if size > 100:  # Valid detection
+                    best_crop = (x, y, x + size, y + size)
+                    break
+    
+    # Use best detection or fallback to center
+    if best_crop:
+        ring_crop = enhanced_image.crop(best_crop)
+        logger.info(f"Ring detected and cropped at {best_crop}")
     else:
-        # Fallback to center crop
-        logger.info("No contours found, using center crop")
+        # Fallback: center crop
         width, height = enhanced_image.size
-        size = min(width, height) // 2
+        size = min(width, height) * 2 // 3
         left = (width - size) // 2
         top = (height - size) // 2
         ring_crop = enhanced_image.crop((left, top, left + size, top + size))
+        logger.info("Using center crop for thumbnail")
     
     # Resize to target size
     thumbnail = ring_crop.resize((1000, 1300), Image.Resampling.LANCZOS)
     
-    # Apply sharpening
+    # Apply double sharpening
+    thumbnail = thumbnail.filter(ImageFilter.SHARPEN)
     thumbnail = thumbnail.filter(ImageFilter.SHARPEN)
     
     return thumbnail
@@ -399,10 +626,10 @@ def handler(job):
         if metal_type not in WEDDING_RING_PARAMS:
             metal_type = 'white_gold'
         
-        logger.info(f"Processing v104: metal={metal_type}, size={img_array.shape}")
+        logger.info(f"Processing v105: metal={metal_type}, size={img_array.shape}")
         
-        # Step 1: Remove black borders using only Replicate
-        no_border_img = remove_black_borders_replicate_only(img_array)
+        # Step 1: Remove black borders with ultra-precise detection + Replicate inpainting
+        no_border_img = remove_black_borders_with_replicate(img_array)
         
         # Step 2: Analyze lighting
         lighting = analyze_lighting(no_border_img)
@@ -414,8 +641,8 @@ def handler(job):
         # Step 4: Apply wedding ring enhancement
         enhanced_image = enhance_wedding_ring(pil_image, metal_type, lighting)
         
-        # Step 5: Create thumbnail with better centering
-        thumbnail = create_thumbnail_center_focused(pil_image, enhanced_image)
+        # Step 5: Create thumbnail with ultra zoom
+        thumbnail = create_thumbnail_ultra_zoom(pil_image, enhanced_image)
         
         # Convert to base64
         # Main image
@@ -440,7 +667,7 @@ def handler(job):
                     "enhanced_size": f"{enhanced_image.width}x{enhanced_image.height}",
                     "thumbnail_size": f"{thumbnail.width}x{thumbnail.height}",
                     "status": "success",
-                    "version": "v104-replicate-only"
+                    "version": "v105-ultra-detection"
                 }
             }
         }
@@ -451,7 +678,7 @@ def handler(job):
             "output": {  # Even errors need the output wrapper!
                 "error": str(e),
                 "status": "failed",
-                "version": "v104-replicate-only"
+                "version": "v105-ultra-detection"
             }
         }
 
