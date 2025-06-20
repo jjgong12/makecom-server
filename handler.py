@@ -1,463 +1,342 @@
 import runpod
-import base64
-from io import BytesIO
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageDraw
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import numpy as np
-from typing import Dict, Tuple, Optional, List
+from io import BytesIO
+import base64
+import traceback
 import json
-import os
-import requests
 
-def safe_base64_decode(image_base64: str) -> bytes:
+def print_debug(msg):
+    """Debug helper"""
+    print(f"[DEBUG v113] {msg}")
+
+def safe_base64_decode(base64_string):
     """
-    Safely decode base64 with multiple fallback strategies
+    Safely decode base64 with multiple strategies
     """
+    if not base64_string:
+        raise ValueError("Empty base64 string")
+    
     # Remove data URL prefix if present
-    if ',' in image_base64:
-        image_base64 = image_base64.split(',')[-1]
+    if base64_string.startswith('data:'):
+        base64_string = base64_string.split(',')[1]
     
-    # Clean base64 string
-    image_base64 = image_base64.strip()
-    image_base64 = image_base64.replace(' ', '+')
-    image_base64 = image_base64.replace('\n', '')
-    image_base64 = image_base64.replace('\r', '')
+    # Try standard decode
+    try:
+        return base64.b64decode(base64_string)
+    except:
+        pass
     
-    # Try multiple decoding strategies
-    strategies = [
-        lambda s: base64.b64decode(s),
-        lambda s: base64.b64decode(s + '='),
-        lambda s: base64.b64decode(s + '=='),
-        lambda s: base64.b64decode(s + '==='),
-        lambda s: base64.b64decode(s + '===='),
-    ]
+    # Try with padding
+    try:
+        padding = 4 - len(base64_string) % 4
+        if padding != 4:
+            base64_string += '=' * padding
+        return base64.b64decode(base64_string)
+    except:
+        pass
     
-    for strategy in strategies:
-        try:
-            return strategy(image_base64)
-        except:
-            continue
+    # Try URL-safe decode
+    try:
+        return base64.urlsafe_b64decode(base64_string)
+    except:
+        pass
     
-    # Last resort: add padding based on length
-    padding = 4 - len(image_base64) % 4
-    if padding != 4:
-        image_base64 += '=' * padding
-    
-    return base64.b64decode(image_base64)
+    # Last resort - clean and retry
+    try:
+        cleaned = base64_string.replace('-', '+').replace('_', '/')
+        padding = 4 - len(cleaned) % 4
+        if padding != 4:
+            cleaned += '=' * padding
+        return base64.b64decode(cleaned)
+    except Exception as e:
+        raise ValueError(f"Failed to decode base64: {str(e)}")
 
-def detect_metal_type_from_ring(img: Image.Image, bbox: Tuple[int, int, int, int]) -> str:
+def detect_ring_metal_type(img):
     """
-    Detect metal type from wedding ring area with improved accuracy
+    Detect metal type from ring image
     """
-    x, y, w, h = bbox
-    
-    # Ensure bbox is within image bounds
-    img_width, img_height = img.size
-    x = max(0, min(x, img_width - 1))
-    y = max(0, min(y, img_height - 1))
-    w = min(w, img_width - x)
-    h = min(h, img_height - y)
-    
-    # Crop ring area for analysis
-    ring_area = img.crop((x, y, x+w, y+h))
+    # Center crop for better detection
+    w, h = img.size
+    crop_size = min(w, h) // 2
+    left = (w - crop_size) // 2
+    top = (h - crop_size) // 2
+    center = img.crop((left, top, left + crop_size, top + crop_size))
     
     # Convert to numpy for analysis
-    ring_np = np.array(ring_area)
+    pixels = np.array(center)
     
-    # Calculate average color in RGB
-    avg_r = np.mean(ring_np[:,:,0])
-    avg_g = np.mean(ring_np[:,:,1])
-    avg_b = np.mean(ring_np[:,:,2])
+    # Calculate average color
+    avg_color = pixels.mean(axis=(0, 1))
+    r, g, b = avg_color
     
-    # Calculate brightness and saturation
-    brightness = (avg_r + avg_g + avg_b) / 3
-    max_val = max(avg_r, avg_g, avg_b)
-    min_val = min(avg_r, avg_g, avg_b)
-    saturation = (max_val - min_val) / max_val if max_val > 0 else 0
+    # Calculate color properties
+    brightness = (r + g + b) / 3
+    saturation = (max(r, g, b) - min(r, g, b)) / (max(r, g, b) + 1)
     
-    print(f"Metal detection - RGB:({avg_r:.1f},{avg_g:.1f},{avg_b:.1f}), Brightness:{brightness:.1f}, Saturation:{saturation:.3f}")
-    
-    # Improved detection logic
-    # 무도금화이트 감지 (매우 낮은 채도, 높은 밝기)
-    if saturation < 0.15 and brightness > 180:
-        return "white"
-    
-    # 로즈골드 감지 (붉은색 우세)
-    if avg_r > avg_g + 15 and avg_r > avg_b + 20:
-        return "rose_gold"
-    
-    # 화이트골드 감지 (차가운 톤, 중간 채도)
-    if avg_b > avg_r and saturation < 0.25:
-        return "white_gold"
-    
-    # 옐로우골드 감지 (따뜻한 황금색)
-    if avg_g > avg_b and avg_r > avg_b and saturation > 0.2:
-        return "yellow_gold"
-    
-    # 기본값: 화이트골드
-    return "white_gold"
+    # Detect metal type
+    if saturation < 0.1 and brightness > 200:
+        # Low saturation + high brightness = white/silver
+        return 'white'
+    elif r > g * 1.2 and r > b * 1.2:
+        # Red dominant = rose gold
+        return 'rose_gold'
+    elif r > g and g > b and brightness < 180:
+        # Warm tone = yellow gold
+        return 'yellow_gold'
+    else:
+        # Default to white gold
+        return 'white_gold'
 
-def find_wedding_ring_multi_method(img: Image.Image) -> Tuple[int, int, int, int]:
+def find_wedding_ring_multi_method(img):
     """
-    Multi-method wedding ring detection with fallback strategies
+    Find wedding ring using multiple detection methods
     """
-    width, height = img.size
+    gray = np.array(img.convert('L'))
+    h, w = gray.shape
+    
+    methods = []
     
     # Method 1: Edge-based detection
-    bbox1 = find_wedding_ring_by_edges(img)
+    try:
+        from PIL import ImageFilter
+        edges = img.filter(ImageFilter.FIND_EDGES)
+        edge_array = np.array(edges.convert('L'))
+        
+        # Find regions with high edge density
+        regions = []
+        step = min(w, h) // 10
+        for y in range(0, h - step, step):
+            for x in range(0, w - step, step):
+                region = edge_array[y:y+step, x:x+step]
+                if region.size > 0:
+                    density = np.mean(region)
+                    regions.append((density, x, y, step, step))
+        
+        if regions:
+            regions.sort(reverse=True)
+            _, x, y, rw, rh = regions[0]
+            methods.append(('edge', x, y, rw, rh))
+    except:
+        pass
     
-    # Method 2: Color variance detection
-    bbox2 = find_wedding_ring_by_variance(img)
+    # Method 2: Variance-based detection
+    try:
+        step = min(w, h) // 8
+        best_var = 0
+        best_region = None
+        
+        for y in range(0, h - step, step//2):
+            for x in range(0, w - step, step//2):
+                region = gray[y:y+step, x:x+step]
+                if region.size > 0:
+                    var = np.var(region)
+                    if var > best_var:
+                        best_var = var
+                        best_region = (x, y, step, step)
+        
+        if best_region:
+            methods.append(('variance', *best_region))
+    except:
+        pass
     
     # Method 3: Center-weighted detection
-    bbox3 = find_wedding_ring_center_weighted(img)
+    try:
+        cx, cy = w // 2, h // 2
+        size = min(w, h) // 2
+        methods.append(('center', cx - size//2, cy - size//2, size, size))
+    except:
+        pass
     
-    # Combine results - choose the one closest to center with reasonable size
-    candidates = [bbox1, bbox2, bbox3]
-    center_x, center_y = width // 2, height // 2
+    # Choose best method or fallback to center
+    if methods:
+        # Prefer edge detection if available
+        for method in methods:
+            if method[0] == 'edge':
+                _, x, y, bw, bh = method
+                return (x, y, x + bw, y + bh)
+        # Otherwise use first available
+        _, x, y, bw, bh = methods[0]
+        return (x, y, x + bw, y + bh)
     
-    best_bbox = None
-    best_score = float('inf')
-    
-    for bbox in candidates:
-        if bbox is None:
-            continue
-        x, y, w, h = bbox
-        cx = x + w // 2
-        cy = y + h // 2
-        
-        # Score based on distance from center and reasonable size
-        distance = np.sqrt((cx - center_x)**2 + (cy - center_y)**2)
-        size_score = abs(w * h - (width * height * 0.1))  # Prefer ~10% of image area
-        
-        score = distance + size_score * 0.001
-        
-        if score < best_score:
-            best_score = score
-            best_bbox = bbox
-    
-    # If all methods fail, use safe center crop
-    if best_bbox is None:
-        size = min(width, height) // 3
-        best_bbox = (center_x - size//2, center_y - size//2, size, size)
-    
-    print(f"Ring detected at: {best_bbox}")
-    return best_bbox
+    # Final fallback: center crop
+    size = min(w, h) * 3 // 4
+    x = (w - size) // 2
+    y = (h - size) // 2
+    return (x, y, x + size, y + size)
 
-def find_wedding_ring_by_edges(img: Image.Image) -> Optional[Tuple[int, int, int, int]]:
+def enhance_wedding_ring_v113(img, metal_type='auto', strength=0.7):
     """
-    Edge-based wedding ring detection
+    Enhanced wedding ring processing with metal-specific adjustments
     """
-    width, height = img.size
-    img_np = np.array(img)
+    if metal_type == 'auto':
+        metal_type = detect_ring_metal_type(img)
     
-    # Convert to grayscale
-    gray = img.convert('L')
-    gray_np = np.array(gray)
+    print_debug(f"Detected metal type: {metal_type}")
     
-    # Apply Sobel edge detection
-    edges = np.zeros_like(gray_np, dtype=float)
-    for i in range(1, gray_np.shape[0]-1):
-        for j in range(1, gray_np.shape[1]-1):
-            # Sobel X
-            gx = (gray_np[i-1,j+1] + 2*gray_np[i,j+1] + gray_np[i+1,j+1] -
-                  gray_np[i-1,j-1] - 2*gray_np[i,j-1] - gray_np[i+1,j-1])
-            # Sobel Y
-            gy = (gray_np[i+1,j-1] + 2*gray_np[i+1,j] + gray_np[i+1,j+1] -
-                  gray_np[i-1,j-1] - 2*gray_np[i-1,j] - gray_np[i-1,j+1])
-            edges[i,j] = np.sqrt(gx**2 + gy**2)
+    # Base enhancements
+    img = ImageEnhance.Sharpness(img).enhance(1.3)
+    img = ImageEnhance.Contrast(img).enhance(1.2)
     
-    # Normalize edges
-    if edges.max() > 0:
-        edges = (edges / edges.max() * 255).astype(np.uint8)
-    else:
-        return None
-    
-    # Find regions with high edge density
-    center_x, center_y = width // 2, height // 2
-    best_bbox = None
-    best_score = 0
-    
-    # Search in multiple scales
-    for scale in [0.2, 0.3, 0.4, 0.5]:
-        search_size = int(min(width, height) * scale)
+    # Metal-specific adjustments
+    if metal_type == 'white':
+        # White/Silver metals - increase brightness significantly
+        img = ImageEnhance.Brightness(img).enhance(1.3 * strength)
+        img = ImageEnhance.Color(img).enhance(0.8)
         
-        # Scan around center
-        for dy in range(-height//4, height//4, 20):
-            for dx in range(-width//4, width//4, 20):
-                cx = center_x + dx
-                cy = center_y + dy
-                
-                # Skip if out of bounds
-                if cx - search_size//2 < 0 or cx + search_size//2 > width:
-                    continue
-                if cy - search_size//2 < 0 or cy + search_size//2 > height:
-                    continue
-                
-                # Extract region
-                x1 = cx - search_size//2
-                y1 = cy - search_size//2
-                x2 = x1 + search_size
-                y2 = y1 + search_size
-                
-                region = edges[y1:y2, x1:x2]
-                
-                # Calculate edge density
-                edge_density = np.sum(region > 50) / region.size if region.size > 0 else 0
-                
-                # Calculate metallic score
-                region_color = img_np[y1:y2, x1:x2]
-                metallic_score = np.std(region_color) / 255.0
-                
-                # Combined score
-                score = edge_density * metallic_score
-                
-                if score > best_score:
-                    best_score = score
-                    best_bbox = (x1, y1, search_size, search_size)
-    
-    return best_bbox
-
-def find_wedding_ring_by_variance(img: Image.Image) -> Optional[Tuple[int, int, int, int]]:
-    """
-    Variance-based detection for metallic surfaces
-    """
-    width, height = img.size
-    img_np = np.array(img)
-    
-    # Calculate local variance
-    center_x, center_y = width // 2, height // 2
-    best_bbox = None
-    best_score = 0
-    
-    for scale in [0.15, 0.25, 0.35]:
-        size = int(min(width, height) * scale)
-        
-        for dy in range(-height//6, height//6, 15):
-            for dx in range(-width//6, width//6, 15):
-                cx = center_x + dx
-                cy = center_y + dy
-                
-                x1 = max(0, cx - size//2)
-                y1 = max(0, cy - size//2)
-                x2 = min(width, x1 + size)
-                y2 = min(height, y1 + size)
-                
-                if x2 - x1 < size * 0.8 or y2 - y1 < size * 0.8:
-                    continue
-                
-                region = img_np[y1:y2, x1:x2]
-                
-                # Calculate variance in each channel
-                var_r = np.var(region[:,:,0])
-                var_g = np.var(region[:,:,1])
-                var_b = np.var(region[:,:,2])
-                
-                # Metallic surfaces have high variance
-                total_var = var_r + var_g + var_b
-                
-                if total_var > best_score:
-                    best_score = total_var
-                    best_bbox = (x1, y1, x2-x1, y2-y1)
-    
-    return best_bbox
-
-def find_wedding_ring_center_weighted(img: Image.Image) -> Tuple[int, int, int, int]:
-    """
-    Simple center-weighted detection as fallback
-    """
-    width, height = img.size
-    
-    # Assume ring is near center, use different sizes
-    center_x, center_y = width // 2, height // 2
-    
-    # Try different sizes, prefer smaller (rings are usually small in frame)
-    for scale in [0.25, 0.3, 0.35, 0.4]:
-        size = int(min(width, height) * scale)
-        x = center_x - size // 2
-        y = center_y - size // 2
-        
-        # Ensure within bounds
-        if x >= 0 and y >= 0 and x + size <= width and y + size <= height:
-            return (x, y, size, size)
-    
-    # Last resort
-    size = min(width, height) // 3
-    return (center_x - size//2, center_y - size//2, size, size)
-
-def enhance_wedding_ring_v112(img: Image.Image, metal_type: str, strength: float = 1.0) -> Image.Image:
-    """
-    Enhanced wedding ring processing with adjustable strength
-    """
-    # 1. Base adjustments
-    enhancer = ImageEnhance.Brightness(img)
-    enhanced = enhancer.enhance(1 + 0.15 * strength)
-    
-    enhancer = ImageEnhance.Contrast(enhanced)
-    enhanced = enhancer.enhance(1 + 0.2 * strength)
-    
-    # 2. Metal-specific processing
-    if metal_type == "yellow_gold":
-        # Warm enhancement
-        r, g, b = enhanced.split()
-        r = r.point(lambda i: min(255, int(i * (1 + 0.05 * strength))))
-        g = g.point(lambda i: min(255, int(i * (1 + 0.03 * strength))))
-        enhanced = Image.merge('RGB', (r, g, b))
-        
-    elif metal_type == "rose_gold":
-        # Rose tint
-        r, g, b = enhanced.split()
-        r = r.point(lambda i: min(255, int(i * (1 + 0.08 * strength))))
-        enhanced = Image.merge('RGB', (r, g, b))
-        
-    elif metal_type == "white_gold":
-        # Cool tone
-        r, g, b = enhanced.split()
-        b = b.point(lambda i: min(255, int(i * (1 + 0.05 * strength))))
-        enhanced = Image.merge('RGB', (r, g, b))
-        
-    elif metal_type == "white":
-        # 무도금화이트 - 더 강한 화이트 처리
-        enhancer = ImageEnhance.Brightness(enhanced)
-        enhanced = enhancer.enhance(1 + 0.2 * strength)
-        
-        enhancer = ImageEnhance.Color(enhanced)
-        enhanced = enhancer.enhance(1 - 0.3 * strength)
-        
-        white_layer = Image.new('RGB', enhanced.size, (255, 255, 255))
-        enhanced = Image.blend(enhanced, white_layer, 0.2 * strength)
-        
+        # Add subtle blue tint for white metals
         if strength > 0.5:
-            enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=3, percent=int(250 * strength), threshold=2))
+            r, g, b = img.split()
+            b = ImageEnhance.Brightness(b).enhance(1.05)
+            img = Image.merge('RGB', (r, g, b))
     
-    # 3. Overall enhancement
-    enhancer = ImageEnhance.Color(enhanced)
-    enhanced = enhancer.enhance(1 + 0.1 * strength)
+    elif metal_type == 'rose_gold':
+        # Rose gold - enhance reds and warmth
+        img = ImageEnhance.Brightness(img).enhance(1.15 * strength)
+        img = ImageEnhance.Color(img).enhance(1.2 * strength)
+        
+        # Enhance red channel
+        if strength > 0.5:
+            r, g, b = img.split()
+            r = ImageEnhance.Brightness(r).enhance(1.1)
+            img = Image.merge('RGB', (r, g, b))
     
-    # 4. Sharpening
+    elif metal_type == 'yellow_gold':
+        # Yellow gold - warm enhancement
+        img = ImageEnhance.Brightness(img).enhance(1.2 * strength)
+        img = ImageEnhance.Color(img).enhance(1.3 * strength)
+        
+        # Add warmth
+        if strength > 0.5:
+            r, g, b = img.split()
+            r = ImageEnhance.Brightness(r).enhance(1.05)
+            g = ImageEnhance.Brightness(g).enhance(1.05)
+            img = Image.merge('RGB', (r, g, b))
+    
+    else:  # white_gold
+        # White gold - balanced enhancement
+        img = ImageEnhance.Brightness(img).enhance(1.2 * strength)
+        img = ImageEnhance.Color(img).enhance(0.9)
+    
+    # Final clarity enhancement
+    img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=3))
+    
+    # Add subtle white overlay for shine effect
     if strength > 0.5:
-        enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=2, percent=int(150 * strength), threshold=3))
+        white_layer = Image.new('RGB', img.size, (255, 255, 255))
+        img = Image.blend(img, white_layer, 0.05 * strength)
     
-    # 5. Final brightness adjustment
-    enhancer = ImageEnhance.Brightness(enhanced)
-    enhanced = enhancer.enhance(1 + 0.05 * strength)
-    
-    return enhanced
+    return img, metal_type
 
-def create_thumbnail_v112(img: Image.Image, bbox: Tuple[int, int, int, int], target_size: Tuple[int, int] = (1000, 1300)) -> Image.Image:
+def create_thumbnail(img, target_size=(1000, 1300)):
     """
-    Create perfect thumbnail with clean background and proper ring centering
+    Create a perfect thumbnail with wedding ring centered
     """
-    x, y, w, h = bbox
-    img_width, img_height = img.size
+    # Find ring location
+    bbox = find_wedding_ring_multi_method(img)
+    x1, y1, x2, y2 = bbox
     
-    # Ensure bbox is within bounds
-    x = max(0, min(x, img_width - 1))
-    y = max(0, min(y, img_height - 1))
-    w = min(w, img_width - x)
-    h = min(h, img_height - y)
+    # Add padding around detected ring
+    padding = int((x2 - x1) * 0.2)
+    x1 = max(0, x1 - padding)
+    y1 = max(0, y1 - padding)
+    x2 = min(img.width, x2 + padding)
+    y2 = min(img.height, y2 + padding)
     
-    # Calculate center of the ring
-    ring_center_x = x + w // 2
-    ring_center_y = y + h // 2
+    # Crop to ring area
+    cropped = img.crop((x1, y1, x2, y2))
     
-    # Determine crop size based on target aspect ratio
-    target_aspect = target_size[0] / target_size[1]  # 0.769
+    # Create clean background
+    background = Image.new('RGB', target_size, (248, 248, 248))
     
-    # Make the crop larger to ensure ring fits well
-    crop_size = int(max(w, h) * 1.4)
+    # Calculate scaling to fit
+    scale = min(target_size[0] / cropped.width * 0.85,
+                target_size[1] / cropped.height * 0.85)
     
-    # Adjust crop size to match aspect ratio
-    if target_aspect < 1:
-        crop_height = crop_size
-        crop_width = int(crop_height * target_aspect)
-    else:
-        crop_width = crop_size
-        crop_height = int(crop_width / target_aspect)
+    new_size = (int(cropped.width * scale), int(cropped.height * scale))
+    resized = cropped.resize(new_size, Image.Resampling.LANCZOS)
     
-    # Calculate crop coordinates centered on ring
-    crop_x1 = max(0, ring_center_x - crop_width // 2)
-    crop_y1 = max(0, ring_center_y - crop_height // 2)
-    crop_x2 = min(img_width, crop_x1 + crop_width)
-    crop_y2 = min(img_height, crop_y1 + crop_height)
+    # Center on background
+    x = (target_size[0] - new_size[0]) // 2
+    y = (target_size[1] - new_size[1]) // 2
     
-    # Adjust if crop exceeds image boundaries
-    actual_width = crop_x2 - crop_x1
-    actual_height = crop_y2 - crop_y1
-    
-    if actual_width < crop_width or actual_height < crop_height:
-        # Create a white canvas and paste the available crop
-        canvas = Image.new('RGB', (crop_width, crop_height), (248, 248, 248))
-        cropped = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-        paste_x = (crop_width - actual_width) // 2
-        paste_y = (crop_height - actual_height) // 2
-        canvas.paste(cropped, (paste_x, paste_y))
-        cropped = canvas
-    else:
-        cropped = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
-    
-    # Create clean background effect
-    cropped_np = np.array(cropped)
-    gray = np.array(cropped.convert('L'))
-    
-    # Find ring area
-    threshold = np.percentile(gray, 70)
-    
-    # Create soft mask
-    mask = Image.fromarray(gray)
-    mask = mask.point(lambda p: 255 if p < threshold else 0)
+    # Create soft mask for blending
+    mask = Image.new('L', new_size, 0)
+    mask.paste(255, (0, 0, new_size[0], new_size[1]))
     mask = mask.filter(ImageFilter.GaussianBlur(radius=3))
     
-    # Create light background
-    background = Image.new('RGB', cropped.size, (248, 248, 248))
+    # Composite
+    background.paste(resized, (x, y), mask)
     
-    # Composite ring over background
-    result = Image.composite(cropped, background, mask)
-    
-    # Resize to exact target size
-    thumbnail = result.resize(target_size, Image.Resampling.LANCZOS)
-    
-    return thumbnail
+    return background
 
 def handler(event):
     """
-    RunPod handler function for wedding ring processing v112
+    RunPod handler function for wedding ring processing v113
     """
     try:
-        # Parse input with multiple fallbacks
-        input_data = event.get('input', {})
+        print_debug("Handler started")
+        print_debug(f"Event type: {type(event)}")
+        print_debug(f"Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
         
-        # Try different keys for image
-        image_base64 = input_data.get('image', '')
-        if not image_base64:
-            image_base64 = input_data.get('image_base64', '')
-        if not image_base64:
-            image_base64 = input_data.get('base64', '')
-        if not image_base64:
-            # Check if input_data itself is the base64 string
-            if isinstance(input_data, str):
-                image_base64 = input_data
+        # Get input data with extensive checking
+        input_data = event.get('input', {})
+        print_debug(f"Input data type: {type(input_data)}")
+        print_debug(f"Input data keys: {list(input_data.keys()) if isinstance(input_data, dict) else 'Not a dict'}")
+        
+        # Try all possible keys for image
+        image_base64 = None
+        possible_keys = ['image', 'image_base64', 'base64', 'img', 'data', 'imageData', 'image_data']
+        
+        for key in possible_keys:
+            if key in input_data:
+                image_base64 = input_data[key]
+                print_debug(f"Found image in key: {key}")
+                break
+        
+        # Check if input_data itself is the base64 string
+        if not image_base64 and isinstance(input_data, str):
+            image_base64 = input_data
+            print_debug("Input data itself is base64 string")
+        
+        # Debug what we found
+        if image_base64:
+            print_debug(f"Base64 length: {len(image_base64)}")
+            print_debug(f"Base64 preview: {image_base64[:100]}...")
+        else:
+            print_debug("No image found!")
+            print_debug(f"Full input_data: {json.dumps(input_data, indent=2) if isinstance(input_data, dict) else str(input_data)[:500]}")
         
         if not image_base64:
             return {
                 "output": {
-                    "error": "No image provided in input. Expected keys: 'image', 'image_base64', or 'base64'",
+                    "error": "No image provided in input",
                     "status": "error",
-                    "input_keys": list(input_data.keys()) if isinstance(input_data, dict) else "input is not dict"
+                    "debug_info": {
+                        "event_keys": list(event.keys()) if isinstance(event, dict) else "event not dict",
+                        "input_keys": list(input_data.keys()) if isinstance(input_data, dict) else "input not dict",
+                        "input_type": str(type(input_data)),
+                        "checked_keys": possible_keys
+                    }
                 }
             }
         
+        # Get metal type
         metal_type = input_data.get('metal_type', 'auto') if isinstance(input_data, dict) else 'auto'
+        print_debug(f"Metal type: {metal_type}")
         
         # Safe decode base64
         try:
             img_bytes = safe_base64_decode(image_base64)
+            print_debug(f"Successfully decoded {len(img_bytes)} bytes")
         except Exception as e:
+            print_debug(f"Failed to decode base64: {str(e)}")
             return {
                 "output": {
                     "error": f"Failed to decode base64: {str(e)}",
                     "status": "error",
                     "base64_length": len(image_base64),
-                    "base64_preview": image_base64[:50] + "..."
+                    "base64_preview": image_base64[:100] + "..."
                 }
             }
         
@@ -466,7 +345,9 @@ def handler(event):
             img = Image.open(BytesIO(img_bytes))
             if img.mode != 'RGB':
                 img = img.convert('RGB')
+            print_debug(f"Opened image: {img.size}, mode: {img.mode}")
         except Exception as e:
+            print_debug(f"Failed to open image: {str(e)}")
             return {
                 "output": {
                     "error": f"Failed to open image: {str(e)}",
@@ -474,69 +355,52 @@ def handler(event):
                 }
             }
         
-        print(f"Processing v112: size={img.size}")
+        # Process enhanced image (lighter enhancement)
+        enhanced, detected_metal = enhance_wedding_ring_v113(img, metal_type, strength=0.3)
+        print_debug("Created enhanced image")
         
-        # Step 1: Detect wedding ring with multi-method approach
-        bbox = find_wedding_ring_multi_method(img)
-        
-        # Step 2: Auto detect metal type if needed
-        if metal_type == "auto":
-            detected_metal = detect_metal_type_from_ring(img, bbox)
-            print(f"Auto-detected metal type: {detected_metal}")
-        else:
-            detected_metal = metal_type
-        
-        # Step 3: Light enhancement for main image (strength=0.3)
-        enhanced = enhance_wedding_ring_v112(img, detected_metal, strength=0.3)
-        
-        # Step 4: Strong enhancement for thumbnail (strength=1.0)
-        enhanced_for_thumb = enhance_wedding_ring_v112(img, detected_metal, strength=1.0)
-        
-        # Step 5: Create thumbnail (1000x1300)
-        thumbnail = create_thumbnail_v112(enhanced_for_thumb, bbox)
+        # Create thumbnail (stronger enhancement)
+        img_for_thumb, _ = enhance_wedding_ring_v113(img, detected_metal, strength=1.0)
+        thumbnail = create_thumbnail(img_for_thumb)
+        print_debug("Created thumbnail")
         
         # Convert to base64
-        # Enhanced full image
-        buffer = BytesIO()
-        enhanced.save(buffer, format='JPEG', quality=95)
-        buffer.seek(0)
-        enhanced_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        # Enhanced image
+        enhanced_buffer = BytesIO()
+        enhanced.save(enhanced_buffer, format='PNG', quality=95, optimize=True)
+        enhanced_base64 = base64.b64encode(enhanced_buffer.getvalue()).decode('utf-8')
         
         # Thumbnail
-        buffer = BytesIO()
-        thumbnail.save(buffer, format='JPEG', quality=95)
-        buffer.seek(0)
-        thumbnail_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        thumb_buffer = BytesIO()
+        thumbnail.save(thumb_buffer, format='PNG', quality=95, optimize=True)
+        thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         
-        # Return with correct structure
+        print_debug(f"Enhanced size: {len(enhanced_base64)}, Thumbnail size: {len(thumb_base64)}")
+        
+        # Return with correct structure for Make.com
         return {
             "output": {
                 "enhanced_image": enhanced_base64,
-                "thumbnail": thumbnail_base64,
-                "processing_info": {
-                    "metal_type": detected_metal,
-                    "original_size": img.size,
-                    "thumbnail_size": thumbnail.size,
-                    "ring_bbox": bbox,
-                    "status": "success",
-                    "version": "v112"
-                }
+                "thumbnail": thumb_base64,
+                "metal_type": detected_metal,
+                "original_size": f"{img.width}x{img.height}",
+                "processing_version": "v113_complete_fix",
+                "status": "success"
             }
         }
         
     except Exception as e:
-        print(f"Error in handler: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print_debug(f"Handler error: {str(e)}")
+        print_debug(f"Traceback: {traceback.format_exc()}")
         
         return {
             "output": {
                 "error": str(e),
+                "traceback": traceback.format_exc(),
                 "status": "error",
-                "version": "v112",
-                "traceback": traceback.format_exc()
+                "processing_version": "v113_complete_fix"
             }
         }
 
-# RunPod serverless entry point
+# RunPod entry point
 runpod.serverless.start({"handler": handler})
