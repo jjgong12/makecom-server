@@ -4,10 +4,15 @@ import numpy as np
 from io import BytesIO
 import base64
 import traceback
+import os
+import requests
+
+# Replicate API token from environment
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN", "")
 
 def print_debug(msg):
     """Debug helper"""
-    print(f"[DEBUG v114] {msg}")
+    print(f"[DEBUG v115] {msg}")
 
 def safe_base64_decode(base64_string):
     """
@@ -60,32 +65,183 @@ def detect_black_masking(img):
     
     # Check edges for black borders
     edge_width = 100
-    edges = []
+    borders = {
+        'top': 0,
+        'bottom': h,
+        'left': 0,
+        'right': w,
+        'has_masking': False
+    }
     
-    # Top edge
-    if np.mean(gray[:edge_width, :]) < 30:
-        edges.append('top')
-    # Bottom edge
-    if np.mean(gray[-edge_width:, :]) < 30:
-        edges.append('bottom')
-    # Left edge
-    if np.mean(gray[:, :edge_width]) < 30:
-        edges.append('left')
-    # Right edge
-    if np.mean(gray[:, -edge_width:]) < 30:
-        edges.append('right')
+    # Scan from edges
+    scan_depth = int(min(h, w) * 0.4)
+    threshold = 40
     
-    # Find exact boundaries
-    mask = gray < 40  # Black pixels
+    # Top border
+    for y in range(scan_depth):
+        row = gray[y, :]
+        if np.mean(row) > threshold:
+            borders['top'] = y
+            break
     
-    # Find contours
-    from PIL import ImageOps
-    binary = Image.fromarray((mask * 255).astype(np.uint8))
+    # Bottom border
+    for y in range(scan_depth):
+        row = gray[h-1-y, :]
+        if np.mean(row) > threshold:
+            borders['bottom'] = h - y
+            break
     
-    # Get bounding box of non-black area
-    bbox = ImageOps.invert(binary).getbbox()
+    # Left border
+    for x in range(scan_depth):
+        col = gray[:, x]
+        if np.mean(col) > threshold:
+            borders['left'] = x
+            break
     
-    return edges, bbox
+    # Right border
+    for x in range(scan_depth):
+        col = gray[:, w-1-x]
+        if np.mean(col) > threshold:
+            borders['right'] = w - x
+            break
+    
+    # Check if significant masking detected
+    max_border = max(borders['top'], h - borders['bottom'], 
+                     borders['left'], w - borders['right'])
+    borders['has_masking'] = max_border > 10
+    borders['max_border'] = max_border
+    
+    return borders
+
+def apply_replicate_inpainting(img, borders):
+    """
+    Apply Replicate AI inpainting for black masking removal
+    """
+    if not REPLICATE_API_TOKEN:
+        print_debug("No Replicate API token, using simple inpainting")
+        return apply_simple_inpainting(img, borders)
+    
+    try:
+        import replicate
+        
+        # Create mask for inpainting
+        h, w = img.size[1], img.size[0]
+        mask = Image.new('L', (w, h), 0)
+        draw = ImageDraw.Draw(mask)
+        
+        # Draw white areas where black masking is
+        if borders['top'] > 0:
+            draw.rectangle([(0, 0), (w, borders['top'])], fill=255)
+        if borders['bottom'] < h:
+            draw.rectangle([(0, borders['bottom']), (w, h)], fill=255)
+        if borders['left'] > 0:
+            draw.rectangle([(0, 0), (borders['left'], h)], fill=255)
+        if borders['right'] < w:
+            draw.rectangle([(borders['right'], 0), (w, h)], fill=255)
+        
+        # Convert to base64
+        img_buffer = BytesIO()
+        img.save(img_buffer, format='PNG')
+        img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+        
+        mask_buffer = BytesIO()
+        mask.save(mask_buffer, format='PNG')
+        mask_base64 = base64.b64encode(mask_buffer.getvalue()).decode()
+        
+        # Select model based on border size
+        if borders['max_border'] < 50:
+            # Small borders - use faster model
+            print_debug(f"Using Ideogram v2-turbo for {borders['max_border']}px borders")
+            output = replicate.run(
+                "ideogram-ai/ideogram-v2-turbo",
+                input={
+                    "prompt": "clean white seamless background for product photography, soft gradient",
+                    "image": f"data:image/png;base64,{img_base64}",
+                    "mask": f"data:image/png;base64,{mask_base64}",
+                    "mode": "inpaint",
+                    "num_inference_steps": 15,
+                    "guidance_scale": 7.0
+                }
+            )
+        else:
+            # Large borders - use high quality model
+            print_debug(f"Using FLUX Fill for {borders['max_border']}px borders")
+            output = replicate.run(
+                "black-forest-labs/flux-fill-dev",
+                input={
+                    "prompt": "professional product photography background, clean white studio background, seamless gradient",
+                    "image": f"data:image/png;base64,{img_base64}",
+                    "mask": f"data:image/png;base64,{mask_base64}",
+                    "num_inference_steps": 25,
+                    "guidance_scale": 30.0
+                }
+            )
+        
+        # Get result
+        if isinstance(output, list) and len(output) > 0:
+            result_url = output[0]
+        else:
+            result_url = output
+        
+        # Download result
+        response = requests.get(result_url)
+        result = Image.open(BytesIO(response.content))
+        
+        # Ensure same size
+        if result.size != img.size:
+            result = result.resize(img.size, Image.Resampling.LANCZOS)
+        
+        print_debug("Replicate inpainting successful")
+        return result
+        
+    except Exception as e:
+        print_debug(f"Replicate failed: {str(e)}, using fallback")
+        return apply_simple_inpainting(img, borders)
+
+def apply_simple_inpainting(img, borders):
+    """
+    Simple fallback inpainting
+    """
+    img_array = np.array(img)
+    h, w = img.shape[:2]
+    
+    # Find background color from non-masked area
+    x1, y1 = borders['left'], borders['top']
+    x2, y2 = borders['right'], borders['bottom']
+    
+    if x2 > x1 + 40 and y2 > y1 + 40:
+        # Sample from just inside the borders
+        margin = 20
+        bg_region = img_array[y1+margin:y1+margin+50, x1+margin:x2-margin]
+        if bg_region.size > 0:
+            bg_color = np.median(bg_region.reshape(-1, 3), axis=0).astype(np.uint8)
+        else:
+            bg_color = np.array([245, 242, 238], dtype=np.uint8)
+    else:
+        bg_color = np.array([245, 242, 238], dtype=np.uint8)
+    
+    # Create mask
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if borders['top'] > 0:
+        mask[:borders['top'], :] = 255
+    if borders['bottom'] < h:
+        mask[borders['bottom']:, :] = 255
+    if borders['left'] > 0:
+        mask[:, :borders['left']] = 255
+    if borders['right'] < w:
+        mask[:, borders['right']:] = 255
+    
+    # Apply inpainting
+    result = img_array.copy()
+    result[mask > 0] = bg_color
+    
+    # Smooth edges
+    result_pil = Image.fromarray(result)
+    mask_pil = Image.fromarray(mask)
+    mask_blurred = mask_pil.filter(ImageFilter.GaussianBlur(radius=5))
+    
+    # Blend
+    return Image.composite(result_pil, img, ImageOps.invert(mask_blurred))
 
 def detect_ring_metal_type_conservative(img):
     """
@@ -119,35 +275,30 @@ def detect_ring_metal_type_conservative(img):
     
     # Check for white/무도금화이트 first (highest priority)
     if saturation < 0.15 and brightness > 180:
-        # Low saturation + high brightness = white/무도금화이트
-        if rg_diff < 5 and gb_diff < 5:  # Very neutral
+        if rg_diff < 5 and gb_diff < 5:
             return 'white_gold'
-        elif r > g and g > b and rg_diff < 10:  # Slight warm tint
+        elif r > g and g > b and rg_diff < 10:
             return 'white'  # 무도금화이트
         else:
             return 'white_gold'
     
     # Check for rose gold (second priority)
     elif r > g * 1.15 and r > b * 1.2 and rb_diff > 20:
-        # Clear red dominance = rose gold
         return 'rose_gold'
     
     # Check for white gold (third priority)
     elif saturation < 0.2 and brightness > 150 and gb_diff < 10:
-        # Cool tone, medium brightness = white gold
         return 'white_gold'
     
     # Yellow gold only if very clear warm tone
     elif r > g and g > b and rg_diff > 8 and gb_diff > 8 and brightness < 180:
-        # Must have clear warm gradient and not too bright
-        # Additional check - yellow ratio
         yellow_ratio = (r + g) / (2 * b + 1)
-        if yellow_ratio > 1.3:  # Strong yellow component
+        if yellow_ratio > 1.3:
             return 'yellow_gold'
         else:
-            return 'white'  # Default to 무도금화이트 if uncertain
+            return 'white'  # Default to 무도금화이트
     
-    # Default to 무도금화이트 (not yellow gold)
+    # Default to 무도금화이트
     else:
         return 'white'
 
@@ -188,66 +339,7 @@ def find_wedding_ring_area(img):
     y = (h - size) // 2
     return (x, y, x + size, y + size)
 
-def remove_black_masking_and_inpaint(img):
-    """
-    Remove black masking and inpaint background
-    """
-    edges, bbox = detect_black_masking(img)
-    
-    if not edges and bbox:
-        # No significant black masking detected
-        return img, None
-    
-    print_debug(f"Black masking detected: {edges}, bbox: {bbox}")
-    
-    # Convert to numpy
-    img_array = np.array(img)
-    h, w = img.shape[:2]
-    
-    # Create mask for black areas
-    gray = np.array(img.convert('L'))
-    black_mask = gray < 40
-    
-    # Dilate mask slightly to ensure complete removal
-    # Simple dilation without scipy
-    kernel = np.ones((3, 3), dtype=bool)
-    black_mask_dilated = np.zeros_like(black_mask)
-    for i in range(1, h-1):
-        for j in range(1, w-1):
-            if np.any(black_mask[i-1:i+2, j-1:j+2]):
-                black_mask_dilated[i, j] = True
-    black_mask = black_mask_dilated
-    
-    # Find background color from non-masked area
-    if bbox:
-        x1, y1, x2, y2 = bbox
-        # Sample background from just inside the bbox
-        margin = 20
-        bg_region = img_array[y1+margin:y1+margin+50, x1+margin:x2-margin]
-        if bg_region.size > 0:
-            bg_color = np.median(bg_region.reshape(-1, 3), axis=0).astype(np.uint8)
-        else:
-            bg_color = np.array([245, 242, 238], dtype=np.uint8)
-    else:
-        bg_color = np.array([245, 242, 238], dtype=np.uint8)
-    
-    # Simple inpainting - replace black pixels with background color
-    result = img_array.copy()
-    result[black_mask] = bg_color
-    
-    # Smooth the edges
-    result_pil = Image.fromarray(result)
-    
-    # Apply gaussian blur to transition areas
-    mask_pil = Image.fromarray((black_mask * 255).astype(np.uint8))
-    mask_blurred = mask_pil.filter(ImageFilter.GaussianBlur(radius=5))
-    
-    # Blend original with inpainted
-    inpainted = Image.composite(result_pil, img, ImageOps.invert(mask_blurred))
-    
-    return inpainted, bbox
-
-def enhance_wedding_ring_v114(img, metal_type='auto', strength=0.7):
+def enhance_wedding_ring_v115(img, metal_type='auto', strength=0.7):
     """
     Enhanced wedding ring processing with detail preservation
     """
@@ -256,13 +348,13 @@ def enhance_wedding_ring_v114(img, metal_type='auto', strength=0.7):
     
     print_debug(f"Processing with metal type: {metal_type}")
     
-    # Find ring area for targeted enhancement
+    # Find ring area
     ring_bbox = find_wedding_ring_area(img)
     
     # Base enhancements
     enhanced = img.copy()
     
-    # Apply different enhancement to ring area vs background
+    # Apply different enhancement to ring area
     if ring_bbox:
         x1, y1, x2, y2 = ring_bbox
         
@@ -274,11 +366,10 @@ def enhance_wedding_ring_v114(img, metal_type='auto', strength=0.7):
         ring_area = ImageEnhance.Contrast(ring_area).enhance(1.3 * strength)
         ring_area = ring_area.filter(ImageFilter.UnsharpMask(radius=2, percent=200, threshold=3))
         
-        # Metal-specific adjustments for ring
+        # Metal-specific adjustments
         if metal_type == 'white':  # 무도금화이트
             ring_area = ImageEnhance.Brightness(ring_area).enhance(1.25 * strength)
             ring_area = ImageEnhance.Color(ring_area).enhance(0.85)
-            # Add slight cool tint
             r, g, b = ring_area.split()
             b = ImageEnhance.Brightness(b).enhance(1.03)
             ring_area = Image.merge('RGB', (r, g, b))
@@ -286,7 +377,6 @@ def enhance_wedding_ring_v114(img, metal_type='auto', strength=0.7):
         elif metal_type == 'rose_gold':
             ring_area = ImageEnhance.Brightness(ring_area).enhance(1.15 * strength)
             ring_area = ImageEnhance.Color(ring_area).enhance(1.2 * strength)
-            # Enhance red
             r, g, b = ring_area.split()
             r = ImageEnhance.Brightness(r).enhance(1.08)
             ring_area = Image.merge('RGB', (r, g, b))
@@ -294,7 +384,6 @@ def enhance_wedding_ring_v114(img, metal_type='auto', strength=0.7):
         elif metal_type == 'yellow_gold':
             ring_area = ImageEnhance.Brightness(ring_area).enhance(1.2 * strength)
             ring_area = ImageEnhance.Color(ring_area).enhance(1.25 * strength)
-            # Enhance yellow
             r, g, b = ring_area.split()
             r = ImageEnhance.Brightness(r).enhance(1.05)
             g = ImageEnhance.Brightness(g).enhance(1.03)
@@ -304,16 +393,13 @@ def enhance_wedding_ring_v114(img, metal_type='auto', strength=0.7):
             ring_area = ImageEnhance.Brightness(ring_area).enhance(1.2 * strength)
             ring_area = ImageEnhance.Color(ring_area).enhance(0.9)
         
-        # Paste enhanced ring back with soft blending
-        # Create soft mask for blending
+        # Paste back with soft blending
         mask = Image.new('L', (x2-x1, y2-y1), 255)
-        # Create soft edges
         draw = ImageDraw.Draw(mask)
         for i in range(10):
             draw.rectangle([(i, i), (mask.width-i-1, mask.height-i-1)], outline=255-i*20, width=1)
         mask = mask.filter(ImageFilter.GaussianBlur(radius=5))
         
-        # Paste with mask
         enhanced.paste(ring_area, (x1, y1), mask)
     
     # Light enhancement for whole image
@@ -403,7 +489,7 @@ def create_thumbnail(img, target_size=(1000, 1300)):
 
 def handler(event):
     """
-    RunPod handler function for wedding ring processing v114
+    RunPod handler function for wedding ring processing v115
     """
     try:
         print_debug("Handler started")
@@ -460,20 +546,36 @@ def handler(event):
                 }
             }
         
-        # Step 1: Remove black masking if present
-        img_cleaned, masking_bbox = remove_black_masking_and_inpaint(img)
-        if masking_bbox:
-            print_debug("Black masking removed and inpainted")
+        # Step 1: Detect black masking
+        borders = detect_black_masking(img)
+        print_debug(f"Black masking detection: {borders}")
         
-        # Step 2: Enhance image (light enhancement)
-        enhanced, detected_metal = enhance_wedding_ring_v114(img_cleaned, metal_type, strength=0.4)
+        # Step 2: Remove black masking with Replicate if needed
+        if borders['has_masking']:
+            print_debug("Applying Replicate AI inpainting")
+            img_cleaned = apply_replicate_inpainting(img, borders)
+            
+            # Crop to content area
+            if borders['top'] > 0 or borders['bottom'] < img.height or \
+               borders['left'] > 0 or borders['right'] < img.width:
+                img_cleaned = img_cleaned.crop((
+                    borders['left'], borders['top'],
+                    borders['right'], borders['bottom']
+                ))
+                print_debug(f"Cropped to: {img_cleaned.size}")
+        else:
+            img_cleaned = img
+            print_debug("No masking detected, proceeding with original")
+        
+        # Step 3: Enhance image (light enhancement)
+        enhanced, detected_metal = enhance_wedding_ring_v115(img_cleaned, metal_type, strength=0.4)
         print_debug(f"Enhanced with metal type: {detected_metal}")
         
-        # Step 3: Create clean background
+        # Step 4: Create clean background
         enhanced_clean = create_clean_background(enhanced)
         
-        # Step 4: Create thumbnail (stronger enhancement)
-        img_for_thumb, _ = enhance_wedding_ring_v114(img_cleaned, detected_metal, strength=1.0)
+        # Step 5: Create thumbnail (stronger enhancement)
+        img_for_thumb, _ = enhance_wedding_ring_v115(img_cleaned, detected_metal, strength=1.0)
         thumbnail = create_thumbnail(img_for_thumb)
         
         # Convert to base64
@@ -495,9 +597,10 @@ def handler(event):
                 "enhanced_image": enhanced_base64,
                 "thumbnail": thumb_base64,
                 "metal_type": detected_metal,
-                "masking_removed": masking_bbox is not None,
+                "masking_removed": borders['has_masking'],
+                "inpainting_method": "replicate" if borders['has_masking'] and REPLICATE_API_TOKEN else "simple",
                 "original_size": f"{img.width}x{img.height}",
-                "processing_version": "v114_masking_removal",
+                "processing_version": "v115_replicate_inpainting",
                 "status": "success"
             }
         }
