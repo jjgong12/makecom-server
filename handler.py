@@ -1,7 +1,7 @@
 import runpod
 import base64
 from io import BytesIO
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageDraw
 import numpy as np
 from typing import Dict, Tuple, Optional
 import json
@@ -55,169 +55,219 @@ def detect_metal_type_from_ring(img: Image.Image, bbox: Tuple[int, int, int, int
 
 def find_wedding_ring(img: Image.Image) -> Tuple[int, int, int, int]:
     """
-    Find wedding ring in image using edge detection and contour analysis
+    Enhanced wedding ring detection for various backgrounds
     """
+    width, height = img.size
+    img_np = np.array(img)
+    
     # Convert to grayscale
     gray = img.convert('L')
     gray_np = np.array(gray)
     
-    # Apply edge detection
-    edges = np.zeros_like(gray_np)
+    # Apply edge detection with Sobel filter
+    edges = np.zeros_like(gray_np, dtype=float)
     for i in range(1, gray_np.shape[0]-1):
         for j in range(1, gray_np.shape[1]-1):
-            gx = gray_np[i+1,j] - gray_np[i-1,j]
-            gy = gray_np[i,j+1] - gray_np[i,j-1]
-            edges[i,j] = min(255, abs(gx) + abs(gy))
+            # Sobel X
+            gx = (gray_np[i-1,j+1] + 2*gray_np[i,j+1] + gray_np[i+1,j+1] -
+                  gray_np[i-1,j-1] - 2*gray_np[i,j-1] - gray_np[i+1,j-1])
+            # Sobel Y
+            gy = (gray_np[i+1,j-1] + 2*gray_np[i+1,j] + gray_np[i+1,j+1] -
+                  gray_np[i-1,j-1] - 2*gray_np[i-1,j] - gray_np[i-1,j+1])
+            edges[i,j] = np.sqrt(gx**2 + gy**2)
     
-    # Find connected components
-    height, width = gray_np.shape
+    # Normalize edges
+    edges = (edges / edges.max() * 255).astype(np.uint8)
+    
+    # Find regions with high edge density (likely rings)
     center_x, center_y = width // 2, height // 2
-    
-    # Default to center area if no clear ring found
-    default_size = min(width, height) // 3
-    bbox = (center_x - default_size//2, center_y - default_size//2, default_size, default_size)
-    
-    # Look for circular patterns near center
+    best_bbox = None
     best_score = 0
-    for y in range(height//4, 3*height//4, 10):
-        for x in range(width//4, 3*width//4, 10):
-            # Check if this could be ring center
-            score = 0
-            for r in range(20, min(width, height)//4, 5):
-                edge_sum = 0
-                count = 0
-                for angle in range(0, 360, 10):
-                    px = int(x + r * np.cos(np.radians(angle)))
-                    py = int(y + r * np.sin(np.radians(angle)))
-                    if 0 <= px < width and 0 <= py < height:
-                        edge_sum += edges[py, px]
-                        count += 1
-                if count > 0:
-                    score += edge_sum / count
-            
-            if score > best_score:
-                best_score = score
-                size = min(width, height) // 2
-                bbox = (max(0, x - size//2), max(0, y - size//2), size, size)
     
-    print(f"Ring detected at: {bbox}")
-    return bbox
+    # Search in multiple scales
+    for scale in [0.2, 0.3, 0.4, 0.5]:
+        search_size = int(min(width, height) * scale)
+        
+        # Scan around center
+        for dy in range(-height//4, height//4, 20):
+            for dx in range(-width//4, width//4, 20):
+                cx = center_x + dx
+                cy = center_y + dy
+                
+                # Skip if out of bounds
+                if cx - search_size//2 < 0 or cx + search_size//2 > width:
+                    continue
+                if cy - search_size//2 < 0 or cy + search_size//2 > height:
+                    continue
+                
+                # Extract region
+                x1 = cx - search_size//2
+                y1 = cy - search_size//2
+                x2 = x1 + search_size
+                y2 = y1 + search_size
+                
+                region = edges[y1:y2, x1:x2]
+                
+                # Calculate edge density
+                edge_density = np.sum(region > 50) / region.size
+                
+                # Calculate metallic score (high variance in original image)
+                region_color = img_np[y1:y2, x1:x2]
+                metallic_score = np.std(region_color) / 255.0
+                
+                # Combined score
+                score = edge_density * metallic_score
+                
+                if score > best_score:
+                    best_score = score
+                    best_bbox = (x1, y1, search_size, search_size)
+    
+    # If no good detection, use center area
+    if best_bbox is None:
+        size = min(width, height) // 3
+        best_bbox = (center_x - size//2, center_y - size//2, size, size)
+    
+    print(f"Ring detected at: {best_bbox} with score: {best_score:.3f}")
+    return best_bbox
 
-def enhance_wedding_ring_v110(img: Image.Image, metal_type: str) -> Image.Image:
+def enhance_wedding_ring_v111(img: Image.Image, metal_type: str, strength: float = 1.0) -> Image.Image:
     """
-    Enhanced wedding ring processing with stronger white treatment
+    Enhanced wedding ring processing with adjustable strength
+    strength: 1.0 for full enhancement (thumbnail), 0.3 for light enhancement (main image)
     """
     # 1. Base adjustments
     enhancer = ImageEnhance.Brightness(img)
-    enhanced = enhancer.enhance(1.15)
+    enhanced = enhancer.enhance(1 + 0.15 * strength)
     
     enhancer = ImageEnhance.Contrast(enhanced)
-    enhanced = enhancer.enhance(1.2)
+    enhanced = enhancer.enhance(1 + 0.2 * strength)
     
     # 2. Metal-specific processing
     if metal_type == "yellow_gold":
         # Warm enhancement
         r, g, b = enhanced.split()
-        r = r.point(lambda i: min(255, int(i * 1.05)))
-        g = g.point(lambda i: min(255, int(i * 1.03)))
+        r = r.point(lambda i: min(255, int(i * (1 + 0.05 * strength))))
+        g = g.point(lambda i: min(255, int(i * (1 + 0.03 * strength))))
         enhanced = Image.merge('RGB', (r, g, b))
         
     elif metal_type == "rose_gold":
         # Rose tint
         r, g, b = enhanced.split()
-        r = r.point(lambda i: min(255, int(i * 1.08)))
+        r = r.point(lambda i: min(255, int(i * (1 + 0.08 * strength))))
         enhanced = Image.merge('RGB', (r, g, b))
         
     elif metal_type == "white_gold":
         # Cool tone
         r, g, b = enhanced.split()
-        b = b.point(lambda i: min(255, int(i * 1.05)))
+        b = b.point(lambda i: min(255, int(i * (1 + 0.05 * strength))))
         enhanced = Image.merge('RGB', (r, g, b))
         
     elif metal_type == "white":
         # 무도금화이트 - 더 강한 화이트 처리
         # Stronger brightness
         enhancer = ImageEnhance.Brightness(enhanced)
-        enhanced = enhancer.enhance(1.2)  # 추가 20% 밝기
+        enhanced = enhancer.enhance(1 + 0.2 * strength)
         
         # Reduce saturation more
         enhancer = ImageEnhance.Color(enhanced)
-        enhanced = enhancer.enhance(0.7)  # 채도 30% 감소
+        enhanced = enhancer.enhance(1 - 0.3 * strength)
         
         # Strong white overlay
         white_layer = Image.new('RGB', enhanced.size, (255, 255, 255))
-        enhanced = Image.blend(enhanced, white_layer, 0.2)  # 0.1에서 0.2로 증가
+        enhanced = Image.blend(enhanced, white_layer, 0.2 * strength)
         
         # Extra sharpening for white
-        enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=3, percent=250, threshold=2))
+        if strength > 0.5:
+            enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=3, percent=int(250 * strength), threshold=2))
     
     # 3. Overall enhancement
     enhancer = ImageEnhance.Color(enhanced)
-    enhanced = enhancer.enhance(1.1)
+    enhanced = enhancer.enhance(1 + 0.1 * strength)
     
     # 4. Sharpening
-    enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+    if strength > 0.5:
+        enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=2, percent=int(150 * strength), threshold=3))
     
     # 5. Final brightness adjustment
     enhancer = ImageEnhance.Brightness(enhanced)
-    enhanced = enhancer.enhance(1.05)
+    enhanced = enhancer.enhance(1 + 0.05 * strength)
     
     return enhanced
 
-def create_thumbnail_v110(img: Image.Image, bbox: Tuple[int, int, int, int], target_size: Tuple[int, int] = (1000, 1300)) -> Image.Image:
+def create_thumbnail_v111(img: Image.Image, bbox: Tuple[int, int, int, int], target_size: Tuple[int, int] = (1000, 1300)) -> Image.Image:
     """
-    Create perfect thumbnail with exact 1000x1300 size
+    Create perfect thumbnail with clean background and proper ring centering
     """
     x, y, w, h = bbox
     img_width, img_height = img.size
     
-    # Calculate expansion to fit target aspect ratio
+    # Calculate center of the ring
+    ring_center_x = x + w // 2
+    ring_center_y = y + h // 2
+    
+    # Determine crop size based on target aspect ratio
     target_aspect = target_size[0] / target_size[1]  # 1000/1300 = 0.769
     
-    # Expand bbox to match target aspect ratio
-    current_aspect = w / h
+    # Make the crop larger to ensure ring fits well
+    crop_size = int(max(w, h) * 1.4)  # 40% padding around the ring
     
-    if current_aspect > target_aspect:
-        # Too wide, increase height
-        new_h = int(w / target_aspect)
-        expand_h = new_h - h
-        y = max(0, y - expand_h // 2)
-        h = new_h
-    else:
-        # Too tall, increase width
-        new_w = int(h * target_aspect)
-        expand_w = new_w - w
-        x = max(0, x - expand_w // 2)
-        w = new_w
+    # Adjust crop size to match aspect ratio
+    if target_aspect < 1:  # Portrait
+        crop_height = crop_size
+        crop_width = int(crop_height * target_aspect)
+    else:  # Landscape
+        crop_width = crop_size
+        crop_height = int(crop_width / target_aspect)
     
-    # Add padding for ring to be 85% of frame
-    padding = int(max(w, h) * 0.15)
-    x = max(0, x - padding)
-    y = max(0, y - padding)
-    w = min(img_width - x, w + 2 * padding)
-    h = min(img_height - y, h + 2 * padding)
+    # Calculate crop coordinates centered on ring
+    crop_x1 = max(0, ring_center_x - crop_width // 2)
+    crop_y1 = max(0, ring_center_y - crop_height // 2)
+    crop_x2 = min(img_width, crop_x1 + crop_width)
+    crop_y2 = min(img_height, crop_y1 + crop_height)
     
-    # Ensure we don't exceed image boundaries
-    if x + w > img_width:
-        w = img_width - x
-    if y + h > img_height:
-        h = img_height - y
+    # Adjust if crop exceeds image boundaries
+    if crop_x2 - crop_x1 < crop_width:
+        if crop_x1 == 0:
+            crop_x2 = crop_width
+        else:
+            crop_x1 = img_width - crop_width
+    
+    if crop_y2 - crop_y1 < crop_height:
+        if crop_y1 == 0:
+            crop_y2 = crop_height
+        else:
+            crop_y1 = img_height - crop_height
     
     # Crop the image
-    cropped = img.crop((x, y, x + w, y + h))
+    cropped = img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
     
-    # Resize to exact target size
-    thumbnail = cropped.resize(target_size, Image.Resampling.LANCZOS)
+    # Create clean background effect using PIL
+    # Apply light background overlay to non-ring areas
+    cropped_np = np.array(cropped)
+    gray = np.array(cropped.convert('L'))
     
-    # Apply slight brightness boost to thumbnail
-    enhancer = ImageEnhance.Brightness(thumbnail)
-    thumbnail = enhancer.enhance(1.05)
+    # Find ring area (usually darker/more contrast)
+    threshold = np.percentile(gray, 70)
+    
+    # Create soft mask
+    mask = Image.fromarray(gray)
+    mask = mask.point(lambda p: 255 if p < threshold else 0)
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=3))
+    
+    # Create light background
+    background = Image.new('RGB', cropped.size, (248, 248, 248))
+    
+    # Composite ring over background
+    result = Image.composite(cropped, background, mask)
+    
+    # Resize to exact target size with high quality
+    thumbnail = result.resize(target_size, Image.Resampling.LANCZOS)
     
     return thumbnail
 
 def handler(event):
     """
-    RunPod handler function for wedding ring processing v110
+    RunPod handler function for wedding ring processing v111
     """
     try:
         # Parse input
@@ -252,7 +302,7 @@ def handler(event):
         if img.mode != 'RGB':
             img = img.convert('RGB')
         
-        print(f"Processing v110: size={img.size}")
+        print(f"Processing v111: size={img.size}")
         
         # Step 1: Detect wedding ring
         bbox = find_wedding_ring(img)
@@ -264,11 +314,14 @@ def handler(event):
         else:
             detected_metal = metal_type
         
-        # Step 3: Enhance the image
-        enhanced = enhance_wedding_ring_v110(img, detected_metal)
+        # Step 3: Light enhancement for main image (strength=0.3)
+        enhanced = enhance_wedding_ring_v111(img, detected_metal, strength=0.3)
         
-        # Step 4: Create thumbnail (1000x1300)
-        thumbnail = create_thumbnail_v110(enhanced, bbox)
+        # Step 4: Strong enhancement for thumbnail (strength=1.0)
+        enhanced_for_thumb = enhance_wedding_ring_v111(img, detected_metal, strength=1.0)
+        
+        # Step 5: Create thumbnail (1000x1300)
+        thumbnail = create_thumbnail_v111(enhanced_for_thumb, bbox)
         
         # Convert to base64
         # Enhanced full image
@@ -294,7 +347,7 @@ def handler(event):
                     "thumbnail_size": thumbnail.size,
                     "ring_bbox": bbox,
                     "status": "success",
-                    "version": "v110"
+                    "version": "v111"
                 }
             }
         }
@@ -305,7 +358,7 @@ def handler(event):
             "output": {
                 "error": str(e),
                 "status": "error",
-                "version": "v110"
+                "version": "v111"
             }
         }
 
