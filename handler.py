@@ -13,11 +13,11 @@ import re
 
 class WeddingRingProcessor:
     def __init__(self):
-        """Initialize the Wedding Ring Processor with v97 Ultra Fine Detection"""
+        """Initialize the Wedding Ring Processor with v98 Perfect Black Removal"""
         self.setup_complete = False
         self.reference_colors = self._load_reference_colors()
         
-        # v97 Core Parameters
+        # v98 Core Parameters
         self.brightness_factor = 1.25
         self.contrast_factor = 1.2
         self.sharpness_factor = 1.15
@@ -63,7 +63,7 @@ class WeddingRingProcessor:
         if circles is not None:
             circles = np.uint16(np.around(circles))
             x, y, r = circles[0, 0]
-            margin = int(r * 0.7)
+            margin = int(r * 0.8)  # Increased protection margin
             return (
                 max(0, x - r - margin),
                 max(0, y - r - margin),
@@ -72,13 +72,13 @@ class WeddingRingProcessor:
             )
         
         # Method 2: Bright region detection
-        _, binary = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
+        _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
             largest_contour = max(contours, key=cv2.contourArea)
             x, y, cont_w, cont_h = cv2.boundingRect(largest_contour)
-            margin = 80
+            margin = 100  # Large margin for safety
             return (
                 max(0, x - margin),
                 max(0, y - margin),
@@ -86,13 +86,13 @@ class WeddingRingProcessor:
                 min(h, y + cont_h + margin)
             )
         
-        # Method 3: Default center protection (60% of image)
-        margin_x = w // 5
-        margin_y = h // 5
+        # Method 3: Default center protection (70% of image)
+        margin_x = int(w * 0.15)
+        margin_y = int(h * 0.15)
         return (margin_x, margin_y, w - margin_x, h - margin_y)
     
-    def remove_black_borders_ultra_fine(self, img_array: np.ndarray) -> np.ndarray:
-        """Ultra fine black border detection and removal using multi-stage scanning"""
+    def remove_black_borders_perfect(self, img_array: np.ndarray) -> np.ndarray:
+        """Perfect black border removal with maximum aggression"""
         if len(img_array.shape) == 2:
             img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2RGB)
         
@@ -101,244 +101,172 @@ class WeddingRingProcessor:
         
         # Detect ring area for protection
         ring_area = self.detect_wedding_ring_area(img_array)
+        print(f"Ring area detected: {ring_area}")
         
-        # Initialize crop boundaries
-        top, bottom, left, right = 0, h, 0, w
+        # Initialize with aggressive defaults
+        top, bottom, left, right = 50, h - 50, 50, w - 50  # Start with 50px crop
         
-        # STAGE 1: Pixel-by-pixel ultra fine scanning (1 pixel at a time)
-        print("STAGE 1: Pixel-by-pixel scanning")
-        
-        # Top edge - pixel by pixel
-        for y in range(min(h // 2, 300)):
-            if ring_area and y >= ring_area[1]:
-                break
-            # Check multiple conditions
-            row_mean = np.mean(gray[y, :])
-            row_max = np.max(gray[y, :])
-            row_std = np.std(gray[y, :])
+        # PHASE 1: Ultra aggressive threshold scanning (5-120)
+        print("PHASE 1: Ultra aggressive scanning")
+        for threshold in range(5, 121, 5):
+            # Top edge
+            for y in range(min(h // 2, 400)):
+                if ring_area and y >= ring_area[1] - 20:
+                    break
+                if np.mean(gray[y, :]) < threshold:
+                    top = max(top, y + 1)
             
-            if row_mean < 40 or (row_max < 60 and row_std < 10):
+            # Bottom edge
+            for y in range(h - 1, max(h // 2, h - 400), -1):
+                if ring_area and y <= ring_area[3] + 20:
+                    break
+                if np.mean(gray[y, :]) < threshold:
+                    bottom = min(bottom, y)
+            
+            # Left edge
+            for x in range(min(w // 2, 400)):
+                if ring_area and x >= ring_area[0] - 20:
+                    break
+                if np.mean(gray[:, x]) < threshold:
+                    left = max(left, x + 1)
+            
+            # Right edge
+            for x in range(w - 1, max(w // 2, w - 400), -1):
+                if ring_area and x <= ring_area[2] + 20:
+                    break
+                if np.mean(gray[:, x]) < threshold:
+                    right = min(right, x)
+        
+        # PHASE 2: Gradient-based detection
+        print("PHASE 2: Gradient detection")
+        
+        # Calculate gradients
+        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        grad_mag = np.sqrt(grad_x**2 + grad_y**2)
+        
+        # Top edge gradient check
+        for y in range(top, min(top + 100, h // 2)):
+            if np.mean(grad_mag[y, :]) < 10 and np.mean(gray[y, :]) < 100:
                 top = y + 1
-            else:
-                break
         
-        # Bottom edge - pixel by pixel
-        for y in range(h - 1, max(h // 2, h - 300), -1):
-            if ring_area and y < ring_area[3]:
-                break
-            row_mean = np.mean(gray[y, :])
-            row_max = np.max(gray[y, :])
-            row_std = np.std(gray[y, :])
-            
-            if row_mean < 40 or (row_max < 60 and row_std < 10):
+        # Bottom edge gradient check
+        for y in range(bottom - 1, max(bottom - 100, h // 2), -1):
+            if np.mean(grad_mag[y, :]) < 10 and np.mean(gray[y, :]) < 100:
                 bottom = y
-            else:
-                break
         
-        # Left edge - pixel by pixel
-        for x in range(min(w // 2, 300)):
-            if ring_area and x >= ring_area[0]:
-                break
-            col_mean = np.mean(gray[:, x])
-            col_max = np.max(gray[:, x])
-            col_std = np.std(gray[:, x])
-            
-            if col_mean < 40 or (col_max < 60 and col_std < 10):
+        # Left edge gradient check
+        for x in range(left, min(left + 100, w // 2)):
+            if np.mean(grad_mag[:, x]) < 10 and np.mean(gray[:, x]) < 100:
                 left = x + 1
-            else:
-                break
         
-        # Right edge - pixel by pixel
-        for x in range(w - 1, max(w // 2, w - 300), -1):
-            if ring_area and x < ring_area[2]:
-                break
-            col_mean = np.mean(gray[:, x])
-            col_max = np.max(gray[:, x])
-            col_std = np.std(gray[:, x])
-            
-            if col_mean < 40 or (col_max < 60 and col_std < 10):
+        # Right edge gradient check
+        for x in range(right - 1, max(right - 100, w // 2), -1):
+            if np.mean(grad_mag[:, x]) < 10 and np.mean(gray[:, x]) < 100:
                 right = x
-            else:
-                break
         
-        # STAGE 2: 2-pixel step scanning for grey borders
-        print("STAGE 2: 2-pixel step scanning")
+        # PHASE 3: Percentile-based detection
+        print("PHASE 3: Percentile detection")
         
-        # Check for grey borders (threshold 60)
-        for y in range(top, min(top + 100, h // 2), 2):
-            if np.mean(gray[y, :]) < 60:
-                top = y + 2
-            else:
-                break
+        # Check if edge pixels are consistently dark
+        for y in range(top, min(top + 50, h // 2)):
+            if np.percentile(gray[y, :], 90) < 80:  # 90% of pixels are dark
+                top = y + 1
         
-        for y in range(bottom - 1, max(bottom - 100, h // 2), -2):
-            if np.mean(gray[y, :]) < 60:
-                bottom = y - 1
-            else:
-                break
+        for y in range(bottom - 1, max(bottom - 50, h // 2), -1):
+            if np.percentile(gray[y, :], 90) < 80:
+                bottom = y
         
-        for x in range(left, min(left + 100, w // 2), 2):
-            if np.mean(gray[:, x]) < 60:
-                left = x + 2
-            else:
-                break
+        for x in range(left, min(left + 50, w // 2)):
+            if np.percentile(gray[:, x], 90) < 80:
+                left = x + 1
         
-        for x in range(right - 1, max(right - 100, w // 2), -2):
-            if np.mean(gray[:, x]) < 60:
-                right = x - 1
-            else:
-                break
+        for x in range(right - 1, max(right - 50, w // 2), -1):
+            if np.percentile(gray[:, x], 90) < 80:
+                right = x
         
-        # STAGE 3: 5-pixel step scanning for light grey
-        print("STAGE 3: 5-pixel step scanning")
+        # PHASE 4: Color variance detection
+        print("PHASE 4: Color variance detection")
         
-        for y in range(top, min(top + 50, h // 2), 5):
-            if np.mean(gray[y, :]) < 80:
-                top = y + 5
-            else:
-                break
-        
-        for y in range(bottom - 1, max(bottom - 50, h // 2), -5):
-            if np.mean(gray[y, :]) < 80:
-                bottom = y - 4
-            else:
-                break
-        
-        for x in range(left, min(left + 50, w // 2), 5):
-            if np.mean(gray[:, x]) < 80:
-                left = x + 5
-            else:
-                break
-        
-        for x in range(right - 1, max(right - 50, w // 2), -5):
-            if np.mean(gray[:, x]) < 80:
-                right = x - 4
-            else:
-                break
-        
-        # STAGE 4: Adaptive threshold scanning
-        print("STAGE 4: Adaptive threshold scanning")
-        
-        for threshold in [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]:
-            # Top
-            for y in range(top, min(top + 20, h // 2)):
-                if np.mean(gray[y, w//4:3*w//4]) < threshold:
-                    top = y + 1
-                else:
-                    break
-            
-            # Bottom
-            for y in range(bottom - 1, max(bottom - 20, h // 2), -1):
-                if np.mean(gray[y, w//4:3*w//4]) < threshold:
-                    bottom = y
-                else:
-                    break
-            
-            # Left
-            for x in range(left, min(left + 20, w // 2)):
-                if np.mean(gray[h//4:3*h//4, x]) < threshold:
-                    left = x + 1
-                else:
-                    break
-            
-            # Right
-            for x in range(right - 1, max(right - 20, w // 2), -1):
-                if np.mean(gray[h//4:3*h//4, x]) < threshold:
-                    right = x
-                else:
-                    break
-        
-        # STAGE 5: Edge detection based scanning
-        print("STAGE 5: Edge detection scanning")
-        
-        edges = cv2.Canny(gray, 30, 100)
-        
-        # Check if edges are mostly black borders
+        # Low variance = likely black border
         for y in range(top, min(top + 30, h // 2)):
-            edge_ratio = np.sum(edges[y, :] > 0) / w
-            if edge_ratio < 0.1 and np.mean(gray[y, :]) < 100:
+            row_variance = np.var(img_array[y, :].reshape(-1))
+            if row_variance < 100:
                 top = y + 1
         
         for y in range(bottom - 1, max(bottom - 30, h // 2), -1):
-            edge_ratio = np.sum(edges[y, :] > 0) / w
-            if edge_ratio < 0.1 and np.mean(gray[y, :]) < 100:
+            row_variance = np.var(img_array[y, :].reshape(-1))
+            if row_variance < 100:
                 bottom = y
         
         for x in range(left, min(left + 30, w // 2)):
-            edge_ratio = np.sum(edges[:, x] > 0) / h
-            if edge_ratio < 0.1 and np.mean(gray[:, x]) < 100:
+            col_variance = np.var(img_array[:, x].reshape(-1))
+            if col_variance < 100:
                 left = x + 1
         
         for x in range(right - 1, max(right - 30, w // 2), -1):
-            edge_ratio = np.sum(edges[:, x] > 0) / h
-            if edge_ratio < 0.1 and np.mean(gray[:, x]) < 100:
+            col_variance = np.var(img_array[:, x].reshape(-1))
+            if col_variance < 100:
                 right = x
         
-        # STAGE 6: Corner analysis
-        print("STAGE 6: Corner analysis")
+        # PHASE 5: Fixed aggressive crop
+        print("PHASE 5: Fixed aggressive crop")
         
-        corner_size = 50
+        # Always remove at least this many pixels
+        min_crop = 30
+        top = max(top, min_crop)
+        bottom = min(bottom, h - min_crop)
+        left = max(left, min_crop)
+        right = min(right, w - min_crop)
+        
+        # PHASE 6: Corner double-check
+        print("PHASE 6: Corner analysis")
+        
+        corner_size = 80
         corners = [
-            gray[:corner_size, :corner_size],  # Top-left
-            gray[:corner_size, -corner_size:],  # Top-right
-            gray[-corner_size:, :corner_size],  # Bottom-left
-            gray[-corner_size:, -corner_size:]  # Bottom-right
+            (gray[:corner_size, :corner_size], 'top-left'),
+            (gray[:corner_size, -corner_size:], 'top-right'),
+            (gray[-corner_size:, :corner_size], 'bottom-left'),
+            (gray[-corner_size:, -corner_size:], 'bottom-right')
         ]
         
-        # If all corners are dark, add extra crop
-        if all(np.mean(corner) < 50 for corner in corners):
-            top += 20
-            bottom -= 20
-            left += 20
-            right -= 20
+        dark_corners = 0
+        for corner, name in corners:
+            if np.mean(corner) < 60:
+                dark_corners += 1
+                print(f"Dark corner detected: {name}")
         
-        # STAGE 7: Final safety crop
-        print("STAGE 7: Final safety crop")
+        if dark_corners >= 2:
+            # Extra aggressive crop
+            top += 25
+            bottom -= 25
+            left += 25
+            right -= 25
         
-        # Always remove at least 10 pixels from each edge as safety
-        top += 10
-        bottom -= 10
-        left += 10
-        right -= 10
+        # PHASE 7: Final safety adjustments
+        print("PHASE 7: Final adjustments")
         
-        # STAGE 8: RGB channel analysis
-        print("STAGE 8: RGB channel analysis")
+        # Ensure we don't crop into the ring area
+        if ring_area:
+            top = min(top, ring_area[1] - 30)
+            bottom = max(bottom, ring_area[3] + 30)
+            left = min(left, ring_area[0] - 30)
+            right = max(right, ring_area[2] + 30)
         
-        # Check each color channel separately
-        for c in range(3):
-            channel = img_array[:, :, c]
-            
-            # Top
-            for y in range(top, min(top + 20, h // 2)):
-                if np.mean(channel[y, :]) < 40:
-                    top = max(top, y + 1)
-            
-            # Bottom
-            for y in range(bottom - 1, max(bottom - 20, h // 2), -1):
-                if np.mean(channel[y, :]) < 40:
-                    bottom = min(bottom, y)
-            
-            # Left
-            for x in range(left, min(left + 20, w // 2)):
-                if np.mean(channel[:, x]) < 40:
-                    left = max(left, x + 1)
-            
-            # Right
-            for x in range(right - 1, max(right - 20, w // 2), -1):
-                if np.mean(channel[:, x]) < 40:
-                    right = min(right, x)
-        
-        # Ensure valid crop region
-        if bottom <= top or right <= left:
-            print("Invalid crop region detected, using fallback")
-            top, bottom = h // 10, 9 * h // 10
-            left, right = w // 10, 9 * w // 10
+        # Ensure valid crop
+        if bottom <= top + 100 or right <= left + 100:
+            print("Invalid crop detected, using fallback")
+            top = 60
+            bottom = h - 60
+            left = 60
+            right = w - 60
         
         # Apply crop
         cropped = img_array[top:bottom, left:right]
         
-        print(f"Cropped: top={top}, bottom={bottom}, left={left}, right={right}")
-        print(f"Original size: {h}x{w}, Cropped size: {cropped.shape[0]}x{cropped.shape[1]}")
+        print(f"Final crop: top={top}, bottom={bottom}, left={left}, right={right}")
+        print(f"Original: {h}x{w}, Cropped: {cropped.shape[0]}x{cropped.shape[1]}")
+        print(f"Removed: top={top}px, bottom={h-bottom}px, left={left}px, right={w-right}px")
         
         return cropped
     
@@ -492,8 +420,8 @@ class WeddingRingProcessor:
             
             img_array = np.array(image)
             
-            # Step 1: Remove black borders using ultra fine detection
-            img_array = self.remove_black_borders_ultra_fine(img_array)
+            # Step 1: Remove black borders using perfect detection
+            img_array = self.remove_black_borders_perfect(img_array)
             
             # Step 2: Detect metal type
             metal_type = self.detect_metal_type(img_array)
@@ -524,7 +452,7 @@ class WeddingRingProcessor:
                     "enhanced_image": enhanced_base64,
                     "thumbnail": thumbnail_base64,
                     "metal_type": metal_type,
-                    "processing_version": "v97_ultra_fine_detection",
+                    "processing_version": "v98_perfect_black_removal",
                     "status": "success"
                 }
             }
@@ -536,7 +464,7 @@ class WeddingRingProcessor:
                 "output": {
                     "error": str(e),
                     "status": "error",
-                    "processing_version": "v97_ultra_fine_detection"
+                    "processing_version": "v98_perfect_black_removal"
                 }
             }
 
