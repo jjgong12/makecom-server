@@ -1,164 +1,168 @@
+#!/usr/bin/env python3
+"""
+Wedding Ring AI v101 - Advanced OpenCV Inpainting System
+Fixed: image_base64 input handling for Make.com compatibility
+"""
+
 import runpod
-import base64
-from PIL import Image, ImageEnhance, ImageOps, ImageFilter
-from io import BytesIO
 import cv2
 import numpy as np
-from typing import Dict, Tuple, List, Optional
+from PIL import Image, ImageEnhance
+import base64
+from io import BytesIO
 import traceback
+from typing import Dict, Tuple, List
 
-# v13.3 complete parameters (28 pairs training data - 4 metals x 3 lighting = 12 sets)
+# Wedding ring enhancement parameters (28 pairs of training data)
 WEDDING_RING_PARAMS = {
-    'white_gold': {
-        'natural': {
-            'brightness': 1.18,
-            'contrast': 1.12,
-            'white_overlay': 0.09,
-            'sharpness': 1.15,
-            'color_temp_a': -3,
-            'color_temp_b': -3,
-            'original_blend': 0.15,
-            'saturation': 1.02,
-            'gamma': 1.01
+    "white_gold": {
+        "natural": {
+            "brightness": 1.18,
+            "contrast": 1.12,
+            "sharpness": 1.85,
+            "saturation": 0.82,
+            "white_overlay": 0.12,
+            "gamma": 0.93,
+            "color_temp_a": -5,
+            "color_temp_b": -3,
+            "original_blend": 0.1
         },
-        'warm': {
-            'brightness': 1.16,
-            'contrast': 1.10,
-            'white_overlay': 0.12,
-            'sharpness': 1.13,
-            'color_temp_a': -5,
-            'color_temp_b': -5,
-            'original_blend': 0.18,
-            'saturation': 1.00,
-            'gamma': 0.98
+        "warm": {
+            "brightness": 1.22,
+            "contrast": 1.15,
+            "sharpness": 1.9,
+            "saturation": 0.78,
+            "white_overlay": 0.15,
+            "gamma": 0.91,
+            "color_temp_a": -6,
+            "color_temp_b": -5,
+            "original_blend": 0.08
         },
-        'cool': {
-            'brightness': 1.20,
-            'contrast': 1.14,
-            'white_overlay': 0.07,
-            'sharpness': 1.17,
-            'color_temp_a': -2,
-            'color_temp_b': -2,
-            'original_blend': 0.12,
-            'saturation': 1.03,
-            'gamma': 1.02
+        "cool": {
+            "brightness": 1.15,
+            "contrast": 1.1,
+            "sharpness": 1.82,
+            "saturation": 0.85,
+            "white_overlay": 0.1,
+            "gamma": 0.95,
+            "color_temp_a": -4,
+            "color_temp_b": -2,
+            "original_blend": 0.12
         }
     },
-    'rose_gold': {
-        'natural': {
-            'brightness': 1.14,
-            'contrast': 1.08,
-            'white_overlay': 0.06,
-            'sharpness': 1.11,
-            'color_temp_a': -1,
-            'color_temp_b': -1,
-            'original_blend': 0.20,
-            'saturation': 1.05,
-            'gamma': 1.00
+    "rose_gold": {
+        "natural": {
+            "brightness": 1.2,
+            "contrast": 1.15,
+            "sharpness": 1.88,
+            "saturation": 0.9,
+            "white_overlay": 0.08,
+            "gamma": 0.92,
+            "color_temp_a": -3,
+            "color_temp_b": -2,
+            "original_blend": 0.1
         },
-        'warm': {
-            'brightness': 1.12,
-            'contrast': 1.06,
-            'white_overlay': 0.08,
-            'sharpness': 1.09,
-            'color_temp_a': -2,
-            'color_temp_b': -2,
-            'original_blend': 0.22,
-            'saturation': 1.03,
-            'gamma': 0.97
+        "warm": {
+            "brightness": 1.25,
+            "contrast": 1.18,
+            "sharpness": 1.92,
+            "saturation": 0.88,
+            "white_overlay": 0.1,
+            "gamma": 0.9,
+            "color_temp_a": -4,
+            "color_temp_b": -3,
+            "original_blend": 0.08
         },
-        'cool': {
-            'brightness': 1.16,
-            'contrast': 1.10,
-            'white_overlay': 0.04,
-            'sharpness': 1.13,
-            'color_temp_a': 0,
-            'color_temp_b': 0,
-            'original_blend': 0.18,
-            'saturation': 1.07,
-            'gamma': 1.03
+        "cool": {
+            "brightness": 1.18,
+            "contrast": 1.12,
+            "sharpness": 1.85,
+            "saturation": 0.92,
+            "white_overlay": 0.06,
+            "gamma": 0.94,
+            "color_temp_a": -2,
+            "color_temp_b": -1,
+            "original_blend": 0.12
         }
     },
-    'yellow_gold': {
-        'natural': {
-            'brightness': 1.10,
-            'contrast': 1.04,
-            'white_overlay': 0.03,
-            'sharpness': 1.07,
-            'color_temp_a': 0,
-            'color_temp_b': 0,
-            'original_blend': 0.25,
-            'saturation': 1.08,
-            'gamma': 0.99
+    "yellow_gold": {
+        "natural": {
+            "brightness": 1.22,
+            "contrast": 1.18,
+            "sharpness": 1.9,
+            "saturation": 0.95,
+            "white_overlay": 0.05,
+            "gamma": 0.91,
+            "color_temp_a": -2,
+            "color_temp_b": -1,
+            "original_blend": 0.08
         },
-        'warm': {
-            'brightness': 1.08,
-            'contrast': 1.02,
-            'white_overlay': 0.05,
-            'sharpness': 1.05,
-            'color_temp_a': -1,
-            'color_temp_b': -1,
-            'original_blend': 0.27,
-            'saturation': 1.06,
-            'gamma': 0.96
+        "warm": {
+            "brightness": 1.28,
+            "contrast": 1.2,
+            "sharpness": 1.95,
+            "saturation": 0.92,
+            "white_overlay": 0.08,
+            "gamma": 0.89,
+            "color_temp_a": -3,
+            "color_temp_b": -2,
+            "original_blend": 0.06
         },
-        'cool': {
-            'brightness': 1.12,
-            'contrast': 1.06,
-            'white_overlay': 0.02,
-            'sharpness': 1.09,
-            'color_temp_a': 1,
-            'color_temp_b': 1,
-            'original_blend': 0.23,
-            'saturation': 1.10,
-            'gamma': 1.02
+        "cool": {
+            "brightness": 1.2,
+            "contrast": 1.15,
+            "sharpness": 1.88,
+            "saturation": 0.98,
+            "white_overlay": 0.03,
+            "gamma": 0.93,
+            "color_temp_a": -1,
+            "color_temp_b": 0,
+            "original_blend": 0.1
         }
     },
-    'silver': {
-        'natural': {
-            'brightness': 1.22,
-            'contrast': 1.16,
-            'white_overlay': 0.11,
-            'sharpness': 1.19,
-            'color_temp_a': -4,
-            'color_temp_b': -4,
-            'original_blend': 0.10,
-            'saturation': 0.98,
-            'gamma': 1.03
+    "white_noplating": {
+        "natural": {
+            "brightness": 1.3,
+            "contrast": 1.2,
+            "sharpness": 1.95,
+            "saturation": 0.75,
+            "white_overlay": 0.18,
+            "gamma": 0.88,
+            "color_temp_a": -8,
+            "color_temp_b": -6,
+            "original_blend": 0.05
         },
-        'warm': {
-            'brightness': 1.20,
-            'contrast': 1.14,
-            'white_overlay': 0.14,
-            'sharpness': 1.17,
-            'color_temp_a': -6,
-            'color_temp_b': -6,
-            'original_blend': 0.13,
-            'saturation': 0.96,
-            'gamma': 1.00
+        "warm": {
+            "brightness": 1.35,
+            "contrast": 1.22,
+            "sharpness": 2.0,
+            "saturation": 0.72,
+            "white_overlay": 0.2,
+            "gamma": 0.86,
+            "color_temp_a": -10,
+            "color_temp_b": -8,
+            "original_blend": 0.03
         },
-        'cool': {
-            'brightness': 1.24,
-            'contrast': 1.18,
-            'white_overlay': 0.09,
-            'sharpness': 1.21,
-            'color_temp_a': -3,
-            'color_temp_b': -3,
-            'original_blend': 0.08,
-            'saturation': 1.00,
-            'gamma': 1.04
+        "cool": {
+            "brightness": 1.28,
+            "contrast": 1.18,
+            "sharpness": 1.92,
+            "saturation": 0.78,
+            "white_overlay": 0.15,
+            "gamma": 0.9,
+            "color_temp_a": -6,
+            "color_temp_b": -4,
+            "original_blend": 0.08
         }
     }
 }
 
-def detect_black_borders_advanced(image_array: np.ndarray) -> Dict[str, int]:
+def detect_black_borders_advanced(image: np.ndarray, threshold: int = 50) -> Dict[str, int]:
     """Advanced black border detection with coordinate tracking"""
-    h, w = image_array.shape[:2]
-    gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
+    h, w = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Multiple threshold levels for robustness
-    thresholds = [30, 50, 70, 90]
-    
+    # Initialize borders
     borders = {
         'top': 0,
         'bottom': h,
@@ -166,138 +170,130 @@ def detect_black_borders_advanced(image_array: np.ndarray) -> Dict[str, int]:
         'right': w
     }
     
-    for threshold in thresholds:
-        # Top border
-        for y in range(min(h // 3, 200)):
-            if np.mean(gray[y, :]) > threshold:
-                borders['top'] = max(borders['top'], y)
-                break
-        
-        # Bottom border
-        for y in range(h - 1, max(2 * h // 3, h - 200), -1):
-            if np.mean(gray[y, :]) > threshold:
-                borders['bottom'] = min(borders['bottom'], y + 1)
-                break
-        
-        # Left border
-        for x in range(min(w // 3, 200)):
-            if np.mean(gray[:, x]) > threshold:
-                borders['left'] = max(borders['left'], x)
-                break
-        
-        # Right border
-        for x in range(w - 1, max(2 * w // 3, w - 200), -1):
-            if np.mean(gray[:, x]) > threshold:
-                borders['right'] = min(borders['right'], x + 1)
-                break
+    # Scan from edges with multiple thresholds
+    scan_depth = int(min(h, w) * 0.4)
     
-    # Add safety margin
-    margin = 5
-    borders['top'] = max(0, borders['top'] - margin)
-    borders['bottom'] = min(h, borders['bottom'] + margin)
-    borders['left'] = max(0, borders['left'] - margin)
-    borders['right'] = min(w, borders['right'] + margin)
+    # Top border
+    for y in range(scan_depth):
+        row = gray[y, :]
+        if np.mean(row) > threshold:
+            borders['top'] = y
+            break
+    
+    # Bottom border
+    for y in range(scan_depth):
+        row = gray[h-1-y, :]
+        if np.mean(row) > threshold:
+            borders['bottom'] = h - y
+            break
+    
+    # Left border
+    for x in range(scan_depth):
+        col = gray[:, x]
+        if np.mean(col) > threshold:
+            borders['left'] = x
+            break
+    
+    # Right border
+    for x in range(scan_depth):
+        col = gray[:, w-1-x]
+        if np.mean(col) > threshold:
+            borders['right'] = w - x
+            break
     
     return borders
 
-def create_inpainting_mask(image_array: np.ndarray, borders: Dict[str, int]) -> np.ndarray:
-    """Create mask for inpainting"""
-    h, w = image_array.shape[:2]
+def create_inpainting_mask(image: np.ndarray, borders: Dict[str, int]) -> np.ndarray:
+    """Create mask for inpainting black borders"""
+    h, w = image.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
     
-    # Mark black border areas for inpainting
-    if borders['top'] > 10:
+    # Mark border regions for inpainting
+    if borders['top'] > 0:
         mask[:borders['top'], :] = 255
-    if borders['bottom'] < h - 10:
+    if borders['bottom'] < h:
         mask[borders['bottom']:, :] = 255
-    if borders['left'] > 10:
+    if borders['left'] > 0:
         mask[:, :borders['left']] = 255
-    if borders['right'] < w - 10:
+    if borders['right'] < w:
         mask[:, borders['right']:] = 255
-    
-    # Dilate mask slightly for better blending
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=2)
     
     return mask
 
-def apply_cv2_inpainting(image_array: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Apply OpenCV inpainting"""
-    try:
-        # Ensure mask is binary
-        mask = (mask > 127).astype(np.uint8) * 255
-        
-        # Apply Telea inpainting first
-        result = cv2.inpaint(image_array, mask, 3, cv2.INPAINT_TELEA)
-        
-        # Apply NS inpainting for refinement
-        mask_dilated = cv2.dilate(mask, np.ones((5,5), np.uint8), iterations=1)
-        result = cv2.inpaint(result, mask_dilated, 5, cv2.INPAINT_NS)
-        
-        return result
-        
-    except Exception as e:
-        print(f"Inpainting error: {str(e)}")
-        return image_array
+def apply_cv2_inpainting(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Apply OpenCV's advanced inpainting algorithms"""
+    # First pass with Telea
+    result = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
+    
+    # Second pass with NS for smoother results
+    mask_dilated = cv2.dilate(mask, np.ones((5,5), np.uint8), iterations=1)
+    result = cv2.inpaint(result, mask_dilated, 5, cv2.INPAINT_NS)
+    
+    return result
 
 def detect_metal_type(image: Image.Image) -> str:
-    """Detect metal type from the ring image"""
-    img_array = np.array(image)
+    """Detect metal type from the ring"""
+    # Convert to RGB if needed
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
     
-    # Sample center area
-    height, width = img_array.shape[:2]
+    # Get center region for analysis
+    width, height = image.size
     center_y, center_x = height // 2, width // 2
     sample_size = min(height, width) // 4
     
-    center_region = img_array[
-        max(0, center_y - sample_size):min(height, center_y + sample_size),
-        max(0, center_x - sample_size):min(width, center_x + sample_size)
-    ]
+    # Create center crop
+    left = max(0, center_x - sample_size)
+    top = max(0, center_y - sample_size)
+    right = min(width, center_x + sample_size)
+    bottom = min(height, center_y + sample_size)
     
-    # Calculate color statistics
-    r_mean = np.mean(center_region[:, :, 0])
-    g_mean = np.mean(center_region[:, :, 1])
-    b_mean = np.mean(center_region[:, :, 2])
+    center_region = image.crop((left, top, right, bottom))
     
-    # Color ratios for metal detection
-    rg_ratio = r_mean / (g_mean + 1)
-    rb_ratio = r_mean / (b_mean + 1)
+    # Analyze colors
+    pixels = list(center_region.getdata())
+    if not pixels:
+        return "white_gold"
     
-    # Brightness
-    brightness = (r_mean + g_mean + b_mean) / 3
+    # Calculate average colors
+    avg_r = sum(p[0] for p in pixels) / len(pixels)
+    avg_g = sum(p[1] for p in pixels) / len(pixels)
+    avg_b = sum(p[2] for p in pixels) / len(pixels)
     
-    # Metal type detection logic
-    if brightness > 200 and abs(r_mean - g_mean) < 15 and abs(g_mean - b_mean) < 15:
-        return 'silver'
-    elif rg_ratio > 1.08 and rb_ratio > 1.15:
-        return 'rose_gold'
-    elif rg_ratio > 1.02 and rb_ratio > 1.05:
-        return 'yellow_gold'
+    # Determine metal type based on color ratios
+    brightness = (avg_r + avg_g + avg_b) / 3
+    rg_diff = avg_r - avg_g
+    
+    if brightness > 180 and abs(rg_diff) < 20:
+        return "white_gold"
+    elif rg_diff > 10:
+        return "rose_gold"
+    elif rg_diff > 0:
+        return "yellow_gold"
     else:
-        return 'white_gold'
+        return "white_noplating"
 
 def detect_lighting(image: Image.Image) -> str:
-    """Detect lighting condition from the image"""
+    """Detect lighting conditions"""
+    # Convert to numpy array
     img_array = np.array(image)
-    
-    # Convert to LAB color space
-    lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-    l_channel = lab[:, :, 0]
-    
-    # Calculate histogram
-    hist = cv2.calcHist([l_channel], [0], None, [256], [0, 256])
-    hist = hist.flatten() / hist.sum()
-    
-    # Find peak
-    peak_idx = np.argmax(hist)
-    
-    # Determine lighting based on histogram distribution
-    if peak_idx < 80:
-        return 'cool'
-    elif peak_idx > 170:
-        return 'warm'
+    if len(img_array.shape) == 2:
+        gray = img_array
     else:
-        return 'natural'
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    
+    # Calculate brightness in center region
+    h, w = gray.shape
+    center_region = gray[h//4:3*h//4, w//4:3*w//4]
+    
+    avg_brightness = np.mean(center_region)
+    
+    if avg_brightness > 180:
+        return "natural"
+    elif avg_brightness > 120:
+        return "warm"
+    else:
+        return "cool"
 
 def enhance_ring_colors(image: Image.Image, metal_type: str) -> Image.Image:
     """Enhance ring colors based on metal type"""
@@ -305,7 +301,7 @@ def enhance_ring_colors(image: Image.Image, metal_type: str) -> Image.Image:
     lighting = detect_lighting(image)
     
     # Get parameters
-    params = WEDDING_RING_PARAMS[metal_type][lighting]
+    params = WEDDING_RING_PARAMS.get(metal_type, WEDDING_RING_PARAMS["white_gold"])[lighting]
     
     # Apply enhancements
     enhanced = image.copy()
@@ -342,9 +338,9 @@ def enhance_ring_colors(image: Image.Image, metal_type: str) -> Image.Image:
     if params['color_temp_a'] != 0 or params['color_temp_b'] != 0:
         enhanced_array = np.array(enhanced)
         lab = cv2.cvtColor(enhanced_array, cv2.COLOR_RGB2LAB).astype(np.float32)
-        lab[:, :, 1] += params['color_temp_a']
-        lab[:, :, 2] += params['color_temp_b']
-        lab = np.clip(lab, 0, 255).astype(np.uint8)
+        lab[:, :, 1] = np.clip(lab[:, :, 1] + params['color_temp_a'], 0, 255)
+        lab[:, :, 2] = np.clip(lab[:, :, 2] + params['color_temp_b'], 0, 255)
+        lab = lab.astype(np.uint8)
         enhanced_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
         enhanced = Image.fromarray(enhanced_array)
     
@@ -408,6 +404,12 @@ def process_wedding_ring_v101(image_base64: str) -> Dict:
     """Main processing function with OpenCV inpainting"""
     try:
         print("Starting Wedding Ring AI v101 - Advanced Inpainting System")
+        
+        # Handle base64 padding
+        image_base64 = image_base64.strip()
+        missing_padding = len(image_base64) % 4
+        if missing_padding:
+            image_base64 += '=' * (4 - missing_padding)
         
         # Decode base64 image
         image_data = base64.b64decode(image_base64)
@@ -476,11 +478,17 @@ def process_wedding_ring_v101(image_base64: str) -> Dict:
         main_buffer.seek(0)
         main_base64 = base64.b64encode(main_buffer.read()).decode('utf-8')
         
+        # Remove padding for Make.com
+        main_base64 = main_base64.rstrip('=')
+        
         # Thumbnail
         thumb_buffer = BytesIO()
         thumbnail.save(thumb_buffer, format='JPEG', quality=95, optimize=True)
         thumb_buffer.seek(0)
         thumb_base64 = base64.b64encode(thumb_buffer.read()).decode('utf-8')
+        
+        # Remove padding for Make.com
+        thumb_base64 = thumb_base64.rstrip('=')
         
         return {
             "output": {
@@ -531,12 +539,13 @@ def handler(event):
                 ]
             }
         
-        # Get image
-        image_base64 = input_data.get("image")
+        # Get image - FIXED: Check both "image" and "image_base64"
+        image_base64 = input_data.get("image") or input_data.get("image_base64")
+        
         if not image_base64:
             return {
                 "output": {
-                    "error": "No image provided",
+                    "error": "No image provided in input",
                     "status": "error"
                 }
             }
