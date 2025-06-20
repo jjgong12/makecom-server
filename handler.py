@@ -392,33 +392,29 @@ def process_wedding_ring_v108(image_base64: str, metal_type: str = "auto") -> Di
         else:
             detected_metal = metal_type
             
-        # Step 3: Perfect crop to 1000x1300 (원본: 웨딩링이 45% 차지)
-        cropped = crop_to_target_size(img_array, bbox, (1000, 1300), ring_percentage=0.45)
+        # Step 3: Apply enhancement to original image (no crop, just color enhancement)
+        pil_original = Image.fromarray(cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB))
+        enhanced = enhance_wedding_ring_advanced(pil_original, detected_metal)
         
-        # Step 4: Convert to PIL and apply enhancement
-        pil_image = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
-        enhanced = enhance_wedding_ring_advanced(pil_image, detected_metal)
-        
-        # Step 5: Create thumbnail (800x800) - 웨딩링이 85% 차지하도록 별도 크롭
-        # 썸네일용으로 다시 크롭 (웨딩링이 더 크게)
-        thumb_cropped = crop_to_target_size(img_array, bbox, (800, 800), ring_percentage=0.85)
-        pil_thumb = Image.fromarray(cv2.cvtColor(thumb_cropped, cv2.COLOR_BGR2RGB))
+        # Step 4: Create thumbnail (1000x1300) - 웨딩링이 큰 크롭
+        thumbnail_cropped = crop_to_target_size(img_array, bbox, (1000, 1300), ring_percentage=0.85)
+        pil_thumb = Image.fromarray(cv2.cvtColor(thumbnail_cropped, cv2.COLOR_BGR2RGB))
         thumbnail = enhance_wedding_ring_advanced(pil_thumb, detected_metal)
         
         # Convert to base64
-        # Main image (1000x1300)
+        # Main image (original size)
         main_buffer = BytesIO()
         enhanced.save(main_buffer, format='PNG', quality=95, optimize=True)
         main_base64 = base64.b64encode(main_buffer.getvalue()).decode('utf-8')
         
-        # Thumbnail (800x800)
+        # Thumbnail (1000x1300)
         thumb_buffer = BytesIO()
         thumbnail.save(thumb_buffer, format='PNG', quality=95, optimize=True)
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         
         # Log sizes
-        print(f"Main image (1000x1300): ring at 45% - {len(main_base64)} bytes")
-        print(f"Thumbnail (800x800): ring at 85% - {len(thumb_base64)} bytes")
+        print(f"Main image (original size): color enhanced only - {len(main_base64)} bytes")
+        print(f"Thumbnail (1000x1300): ring at 85% - {len(thumb_base64)} bytes")
         print(f"Metal type used: {detected_metal}")
         
         # Return with nested output structure
@@ -429,8 +425,8 @@ def process_wedding_ring_v108(image_base64: str, metal_type: str = "auto") -> Di
                 "metal_type": detected_metal,
                 "processing_version": "v108_perfect_crop",
                 "dimensions": {
-                    "main": "1000x1300",
-                    "thumbnail": "800x800"
+                    "main": f"{enhanced.width}x{enhanced.height}",
+                    "thumbnail": "1000x1300"
                 },
                 "ring_detection": {
                     "bbox": bbox,
@@ -466,8 +462,8 @@ def handler(event):
                 "message": "Wedding Ring Processor v108 - Perfect Crop & Metal Detection",
                 "version": "v108_perfect_crop",
                 "features": [
-                    "Main image (1000x1300): ring at 45% size for full view",
-                    "Thumbnail (800x800): ring at 85% size for close-up",
+                    "Main image: Original size with color enhancement only",
+                    "Thumbnail (1000x1300): ring at 85% size for close-up",
                     "Auto metal type detection (white/rose_gold/white_gold/yellow_gold)",
                     "Special white metal processing",
                     "Improved ring detection accuracy"
