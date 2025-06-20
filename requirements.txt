@@ -1,4 +1,7 @@
-runpod==1.6.2
+runpod
 opencv-python-headless==4.8.1.78
 numpy==1.24.3
-pillow==10.0.1
+Pillow==10.0.1
+torch==2.0.1
+torchvision==0.15.2
+simple-lama==0.2.0
