@@ -192,8 +192,8 @@ def detect_wedding_ring_opencv(image: np.ndarray) -> Tuple[int, int, int, int]:
         if best_bbox:
             x, y, w, h = best_bbox
             
-            # 패딩 추가 (15%)
-            padding = int(max(w, h) * 0.15)
+            # 패딩 추가 (10% - 너무 크지 않게)
+            padding = int(max(w, h) * 0.1)
             x = max(0, x - padding)
             y = max(0, y - padding)
             w = min(width - x, w + 2 * padding)
@@ -209,9 +209,10 @@ def detect_wedding_ring_opencv(image: np.ndarray) -> Tuple[int, int, int, int]:
     return x, y, size, size
 
 def crop_to_target_size(image: np.ndarray, bbox: Tuple[int, int, int, int], 
-                       target_size: Tuple[int, int] = (1000, 1300)) -> np.ndarray:
+                       target_size: Tuple[int, int] = (1000, 1300), 
+                       ring_percentage: float = 0.45) -> np.ndarray:
     """
-    웨딩링을 중심으로 1000x1300으로 완벽하게 크롭
+    웨딩링을 중심으로 크롭 (ring_percentage로 크기 조절 가능)
     """
     x, y, w, h = bbox
     height, width = image.shape[:2]
@@ -223,9 +224,9 @@ def crop_to_target_size(image: np.ndarray, bbox: Tuple[int, int, int, int],
     # 타겟 비율 (1000:1300 = 0.77)
     target_ratio = target_size[0] / target_size[1]
     
-    # 웨딩링이 화면의 80%를 차지하도록 크기 계산
+    # 웨딩링이 화면의 ring_percentage를 차지하도록 크기 계산
     ring_size = max(w, h)
-    crop_size = int(ring_size / 0.8)  # 웨딩링이 80% 차지
+    crop_size = int(ring_size / ring_percentage)  # 웨딩링이 지정된 비율 차지
     
     # 세로가 더 긴 비율로 크롭 영역 계산
     crop_w = int(crop_size * target_ratio)
@@ -391,18 +392,18 @@ def process_wedding_ring_v108(image_base64: str, metal_type: str = "auto") -> Di
         else:
             detected_metal = metal_type
             
-        # Step 3: Perfect crop to 1000x1300
-        cropped = crop_to_target_size(img_array, bbox, (1000, 1300))
+        # Step 3: Perfect crop to 1000x1300 (원본: 웨딩링이 45% 차지)
+        cropped = crop_to_target_size(img_array, bbox, (1000, 1300), ring_percentage=0.45)
         
         # Step 4: Convert to PIL and apply enhancement
         pil_image = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
         enhanced = enhance_wedding_ring_advanced(pil_image, detected_metal)
         
-        # Step 5: Create thumbnail (800x800) - 중앙 정사각형 크롭
-        thumb_crop_size = 800
-        crop_x = (1000 - thumb_crop_size) // 2
-        crop_y = (1300 - thumb_crop_size) // 2
-        thumbnail = enhanced.crop((crop_x, crop_y, crop_x + thumb_crop_size, crop_y + thumb_crop_size))
+        # Step 5: Create thumbnail (800x800) - 웨딩링이 85% 차지하도록 별도 크롭
+        # 썸네일용으로 다시 크롭 (웨딩링이 더 크게)
+        thumb_cropped = crop_to_target_size(img_array, bbox, (800, 800), ring_percentage=0.85)
+        pil_thumb = Image.fromarray(cv2.cvtColor(thumb_cropped, cv2.COLOR_BGR2RGB))
+        thumbnail = enhance_wedding_ring_advanced(pil_thumb, detected_metal)
         
         # Convert to base64
         # Main image (1000x1300)
@@ -416,8 +417,8 @@ def process_wedding_ring_v108(image_base64: str, metal_type: str = "auto") -> Di
         thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         
         # Log sizes
-        print(f"Main image size: {len(main_base64)} bytes")
-        print(f"Thumbnail size: {len(thumb_base64)} bytes")
+        print(f"Main image (1000x1300): ring at 45% - {len(main_base64)} bytes")
+        print(f"Thumbnail (800x800): ring at 85% - {len(thumb_base64)} bytes")
         print(f"Metal type used: {detected_metal}")
         
         # Return with nested output structure
@@ -465,10 +466,10 @@ def handler(event):
                 "message": "Wedding Ring Processor v108 - Perfect Crop & Metal Detection",
                 "version": "v108_perfect_crop",
                 "features": [
-                    "Perfect 1000x1300 crop with ring at 80% size",
+                    "Main image (1000x1300): ring at 45% size for full view",
+                    "Thumbnail (800x800): ring at 85% size for close-up",
                     "Auto metal type detection (white/rose_gold/white_gold/yellow_gold)",
                     "Special white metal processing",
-                    "800x800 thumbnail from center",
                     "Improved ring detection accuracy"
                 ]
             }
