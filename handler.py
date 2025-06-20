@@ -86,68 +86,36 @@ WEDDING_RING_PARAMS = {
     }
 }
 
-def detect_black_borders_advanced(image):
-    """Detect black borders with advanced method"""
+def detect_black_borders_simple(image):
+    """Simple black border detection using threshold"""
     height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Multiple threshold levels
-    threshold_levels = [10, 20, 30]
-    borders_list = []
+    # Use a single threshold
+    _, binary = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)
     
-    for thresh in threshold_levels:
-        _, binary = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
-        
-        # Check each side
-        top = 0
-        for i in range(height // 2):
-            if np.mean(binary[i, :]) > 10:
-                top = i
-                break
-        
-        bottom = height
-        for i in range(height - 1, height // 2, -1):
-            if np.mean(binary[i, :]) > 10:
-                bottom = i + 1
-                break
-        
-        left = 0
-        for i in range(width // 2):
-            if np.mean(binary[:, i]) > 10:
-                left = i
-                break
-        
-        right = width
-        for i in range(width - 1, width // 2, -1):
-            if np.mean(binary[:, i]) > 10:
-                right = i + 1
-                break
-        
-        borders_list.append({
-            'top': top, 'bottom': bottom,
-            'left': left, 'right': right,
-            'max_border': max(top, height - bottom, left, width - right)
-        })
+    # Find the actual content area
+    coords = cv2.findNonZero(binary)
+    if coords is not None:
+        x, y, w, h = cv2.boundingRect(coords)
+        return {
+            'top': y,
+            'bottom': y + h,
+            'left': x,
+            'right': x + w,
+            'has_border': (y > 10 or x > 10 or (y + h) < height - 10 or (x + w) < width - 10)
+        }
     
-    # Choose the most conservative (smallest crop)
-    best_borders = min(borders_list, key=lambda x: x['max_border'])
-    
-    logger.info(f"Detected borders: {best_borders}")
-    return best_borders
+    return {
+        'top': 0,
+        'bottom': height,
+        'left': 0,
+        'right': width,
+        'has_border': False
+    }
 
-def apply_opencv_inpainting(image, mask):
-    """Apply OpenCV inpainting for small borders"""
-    # Dilate mask slightly
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=1)
-    
-    # Apply inpainting
-    result = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
-    
-    return result
-
-def apply_replicate_inpainting(image, mask, model_name):
-    """Apply Replicate AI inpainting"""
+def apply_replicate_inpainting(image, mask, use_flux=False):
+    """Apply Replicate AI inpainting - always use this instead of OpenCV"""
     try:
         # Convert image to base64
         pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
@@ -161,27 +129,29 @@ def apply_replicate_inpainting(image, mask, model_name):
         pil_mask.save(mask_buffered, format="PNG")
         mask_base64 = base64.b64encode(mask_buffered.getvalue()).decode()
         
-        if model_name == "ideogram-ai/ideogram-v2-turbo":
-            # Ideogram v2-turbo
-            output = replicate.run(
-                "ideogram-ai/ideogram-v2-turbo",
-                input={
-                    "prompt": "professional product photography background, clean white studio background, soft lighting",
-                    "image": f"data:image/png;base64,{img_base64}",
-                    "mask": f"data:image/png;base64,{mask_base64}",
-                    "mode": "inpaint",
-                    "num_inference_steps": 20,
-                    "guidance_scale": 7.5
-                }
-            )
-        else:
-            # FLUX Fill dev
+        if use_flux:
+            # Use FLUX for better quality
+            logger.info("Using FLUX Fill for high-quality inpainting")
             output = replicate.run(
                 "black-forest-labs/flux-fill-dev",
                 input={
-                    "prompt": "professional product photography, clean white seamless background, studio lighting",
+                    "prompt": "professional product photography, clean white seamless background, studio lighting, no shadows",
                     "image": f"data:image/png;base64,{img_base64}",
                     "mask": f"data:image/png;base64,{mask_base64}",
+                    "num_inference_steps": 30,
+                    "guidance_scale": 8.0
+                }
+            )
+        else:
+            # Use Ideogram for speed
+            logger.info("Using Ideogram v2-turbo for fast inpainting")
+            output = replicate.run(
+                "ideogram-ai/ideogram-v2-turbo",
+                input={
+                    "prompt": "professional product photography background, clean white studio background, soft even lighting",
+                    "image": f"data:image/png;base64,{img_base64}",
+                    "mask": f"data:image/png;base64,{mask_base64}",
+                    "mode": "inpaint",
                     "num_inference_steps": 25,
                     "guidance_scale": 7.5
                 }
@@ -206,43 +176,49 @@ def apply_replicate_inpainting(image, mask, model_name):
         
     except Exception as e:
         logger.error(f"Replicate inpainting failed: {str(e)}")
-        # Fallback to OpenCV
-        return apply_opencv_inpainting(image, mask)
+        # Return original image if failed
+        return image
 
-def remove_black_borders_smart(image):
-    """Remove black borders with smart model selection"""
-    borders = detect_black_borders_advanced(image)
+def remove_black_borders_replicate_only(image):
+    """Remove black borders using only Replicate models"""
+    borders = detect_black_borders_simple(image)
     
-    # Calculate border size
-    max_border = borders['max_border']
-    
-    # If no significant borders, return original
-    if max_border < 10:
-        logger.info("No significant borders detected")
+    # If no borders detected, return original
+    if not borders['has_border']:
+        logger.info("No black borders detected")
         return image
     
     # Create mask for borders
     height, width = image.shape[:2]
     mask = np.zeros((height, width), dtype=np.uint8)
     
-    # Fill border areas in mask
-    mask[:borders['top'], :] = 255
-    mask[borders['bottom']:, :] = 255
-    mask[:, :borders['left']] = 255
-    mask[:, borders['right']:] = 255
+    # Create a larger mask area for better inpainting
+    border_expansion = 20  # Expand border area for better results
     
-    # Select model based on border size
-    if max_border < 50:
-        logger.info(f"Using OpenCV for small borders ({max_border}px)")
-        result = apply_opencv_inpainting(image, mask)
-    elif max_border < 100:
-        logger.info(f"Using Ideogram v2-turbo for medium borders ({max_border}px)")
-        result = apply_replicate_inpainting(image, mask, "ideogram-ai/ideogram-v2-turbo")
+    # Fill border areas in mask with some expansion
+    mask[:max(0, borders['top'] + border_expansion), :] = 255
+    mask[min(height, borders['bottom'] - border_expansion):, :] = 255
+    mask[:, :max(0, borders['left'] + border_expansion)] = 255
+    mask[:, min(width, borders['right'] - border_expansion):] = 255
+    
+    # Calculate total border area
+    total_pixels = height * width
+    border_pixels = np.sum(mask > 0)
+    border_percentage = (border_pixels / total_pixels) * 100
+    
+    logger.info(f"Border area: {border_percentage:.1f}% of image")
+    
+    # Always use Replicate, choose model based on complexity
+    if border_percentage > 20:
+        # Large borders - use FLUX for better quality
+        logger.info("Large border area detected, using FLUX for quality")
+        result = apply_replicate_inpainting(image, mask, use_flux=True)
     else:
-        logger.info(f"Using FLUX Fill for large borders ({max_border}px)")
-        result = apply_replicate_inpainting(image, mask, "black-forest-labs/flux-fill-dev")
+        # Smaller borders - use Ideogram for speed
+        logger.info("Small/medium border area, using Ideogram for speed")
+        result = apply_replicate_inpainting(image, mask, use_flux=False)
     
-    # Crop to remove processed borders
+    # Crop to content area
     cropped = result[borders['top']:borders['bottom'], 
                      borders['left']:borders['right']]
     
@@ -311,49 +287,79 @@ def enhance_wedding_ring(image: Image.Image, metal_type: str, lighting: str) -> 
     
     return enhanced
 
-def create_thumbnail_ultra_zoom(original_image: Image.Image, enhanced_image: Image.Image) -> Image.Image:
-    """Create ultra-zoomed thumbnail focusing on ring only"""
+def create_thumbnail_center_focused(original_image: Image.Image, enhanced_image: Image.Image) -> Image.Image:
+    """Create thumbnail with better ring detection"""
     img_array = np.array(enhanced_image)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     
-    # Apply threshold to find ring
-    _, binary = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
+    # More aggressive threshold for ring detection
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+    
+    # Morphological operations to connect ring parts
+    kernel = np.ones((5,5), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     
     # Find contours
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    if not contours:
-        # Fallback to center crop
-        width, height = enhanced_image.size
-        crop_size = min(width, height) // 2
-        left = (width - crop_size) // 2
-        top = (height - crop_size) // 2
-        right = left + crop_size
-        bottom = top + crop_size
-        ring_crop = enhanced_image.crop((left, top, right, bottom))
-    else:
-        # Find largest contour (ring)
-        largest_contour = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(largest_contour)
+    if contours:
+        # Find the contour closest to center (likely the ring)
+        height, width = img_array.shape[:2]
+        center_x, center_y = width // 2, height // 2
         
-        # Add padding
-        padding = int(max(w, h) * 0.3)
-        x = max(0, x - padding)
-        y = max(0, y - padding)
-        w = min(img_array.shape[1] - x, w + 2 * padding)
-        h = min(img_array.shape[0] - y, h + 2 * padding)
+        best_contour = None
+        min_distance = float('inf')
         
-        # Make square
-        if w > h:
-            diff = w - h
-            y = max(0, y - diff // 2)
-            h = min(img_array.shape[0] - y, w)
+        for contour in contours:
+            # Get contour center
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                
+                # Calculate distance from image center
+                distance = np.sqrt((cx - center_x)**2 + (cy - center_y)**2)
+                
+                # Also check contour area (ring should be substantial)
+                area = cv2.contourArea(contour)
+                if area > 1000 and distance < min_distance:
+                    min_distance = distance
+                    best_contour = contour
+        
+        if best_contour is not None:
+            x, y, w, h = cv2.boundingRect(best_contour)
+            
+            # Make the crop area square and larger
+            size = int(max(w, h) * 2.0)  # 2x padding
+            
+            # Center the crop on the ring
+            center_x = x + w // 2
+            center_y = y + h // 2
+            
+            x = max(0, center_x - size // 2)
+            y = max(0, center_y - size // 2)
+            
+            # Ensure we don't exceed image boundaries
+            x = min(x, img_array.shape[1] - size)
+            y = min(y, img_array.shape[0] - size)
+            
+            ring_crop = enhanced_image.crop((x, y, x + size, y + size))
         else:
-            diff = h - w
-            x = max(0, x - diff // 2)
-            w = min(img_array.shape[1] - x, h)
-        
-        ring_crop = enhanced_image.crop((x, y, x + w, y + h))
+            # Fallback to center crop
+            logger.info("Using center crop for thumbnail")
+            width, height = enhanced_image.size
+            size = min(width, height) // 2
+            left = (width - size) // 2
+            top = (height - size) // 2
+            ring_crop = enhanced_image.crop((left, top, left + size, top + size))
+    else:
+        # Fallback to center crop
+        logger.info("No contours found, using center crop")
+        width, height = enhanced_image.size
+        size = min(width, height) // 2
+        left = (width - size) // 2
+        top = (height - size) // 2
+        ring_crop = enhanced_image.crop((left, top, left + size, top + size))
     
     # Resize to target size
     thumbnail = ring_crop.resize((1000, 1300), Image.Resampling.LANCZOS)
@@ -393,10 +399,10 @@ def handler(job):
         if metal_type not in WEDDING_RING_PARAMS:
             metal_type = 'white_gold'
         
-        logger.info(f"Processing: metal={metal_type}, size={img_array.shape}")
+        logger.info(f"Processing v104: metal={metal_type}, size={img_array.shape}")
         
-        # Step 1: Remove black borders with smart inpainting
-        no_border_img = remove_black_borders_smart(img_array)
+        # Step 1: Remove black borders using only Replicate
+        no_border_img = remove_black_borders_replicate_only(img_array)
         
         # Step 2: Analyze lighting
         lighting = analyze_lighting(no_border_img)
@@ -408,8 +414,8 @@ def handler(job):
         # Step 4: Apply wedding ring enhancement
         enhanced_image = enhance_wedding_ring(pil_image, metal_type, lighting)
         
-        # Step 5: Create thumbnail
-        thumbnail = create_thumbnail_ultra_zoom(pil_image, enhanced_image)
+        # Step 5: Create thumbnail with better centering
+        thumbnail = create_thumbnail_center_focused(pil_image, enhanced_image)
         
         # Convert to base64
         # Main image
@@ -434,7 +440,7 @@ def handler(job):
                     "enhanced_size": f"{enhanced_image.width}x{enhanced_image.height}",
                     "thumbnail_size": f"{thumbnail.width}x{thumbnail.height}",
                     "status": "success",
-                    "version": "v103-replicate"
+                    "version": "v104-replicate-only"
                 }
             }
         }
@@ -445,7 +451,7 @@ def handler(job):
             "output": {  # Even errors need the output wrapper!
                 "error": str(e),
                 "status": "failed",
-                "version": "v103-replicate"
+                "version": "v104-replicate-only"
             }
         }
 
