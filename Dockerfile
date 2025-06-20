@@ -1,8 +1,8 @@
-FROM python:3.10-slim
+FROM runpod/pytorch:2.0.1-py3.10-cuda11.8.0-devel-ubuntu22.04
 
 WORKDIR /
 
-# Install system dependencies (git 추가!)
+# Install system dependencies for OpenCV
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libsm6 \
@@ -10,13 +10,10 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     libgomp1 \
     libgl1-mesa-glx \
-    git \  # git 추가!
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# Copy and install Python dependencies
 COPY requirements.txt /requirements.txt
-
-# Install Python dependencies (순서 중요!)
 RUN pip install --no-cache-dir -r /requirements.txt
 
 # Copy handler
