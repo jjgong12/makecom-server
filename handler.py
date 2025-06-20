@@ -1,347 +1,268 @@
-#!/usr/bin/env python3
-"""
-Wedding Ring AI v102 - Simple LaMa AI Inpainting System
-Successfully integrated with HuggingFace Simple LaMa model
-"""
-
 import runpod
+import base64
 import cv2
 import numpy as np
-from PIL import Image, ImageEnhance
-import base64
+from PIL import Image, ImageEnhance, ImageFilter
 from io import BytesIO
-import traceback
-from typing import Dict, Tuple, List
-import torch
-import gc
+import os
+import requests
+import time
+import logging
+import replicate
 
-# Simple LaMa will be imported lazily to avoid initialization issues
-simple_lama = None
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def init_lama():
-    """Initialize LaMa model lazily"""
-    global simple_lama
-    if simple_lama is None:
-        try:
-            from simple_lama import SimpleLama
-            simple_lama = SimpleLama()
-            print("LaMa model initialized successfully")
-        except Exception as e:
-            print(f"Failed to initialize LaMa: {str(e)}")
-            simple_lama = None
-    return simple_lama is not None
-
-# Wedding ring enhancement parameters (28 pairs of training data)
+# Wedding ring enhancement parameters (28 pairs of learning data)
 WEDDING_RING_PARAMS = {
-    "white_gold": {
-        "natural": {
-            "brightness": 1.18,
-            "contrast": 1.12,
-            "sharpness": 1.85,
-            "saturation": 0.82,
-            "white_overlay": 0.12,
-            "gamma": 0.93,
-            "color_temp_a": -5,
-            "color_temp_b": -3,
-            "original_blend": 0.1
+    'yellow_gold': {
+        'low': {
+            'brightness': 1.15, 'contrast': 1.10, 'sharpness': 1.2,
+            'saturation': 1.15, 'white_overlay': 0.05, 'gamma': 0.95,
+            'color_temp_a': 3, 'color_temp_b': 5, 'original_blend': 0.15
         },
-        "warm": {
-            "brightness": 1.22,
-            "contrast": 1.15,
-            "sharpness": 1.9,
-            "saturation": 0.78,
-            "white_overlay": 0.15,
-            "gamma": 0.91,
-            "color_temp_a": -6,
-            "color_temp_b": -5,
-            "original_blend": 0.08
+        'medium': {
+            'brightness': 1.12, 'contrast': 1.08, 'sharpness': 1.15,
+            'saturation': 1.10, 'white_overlay': 0.03, 'gamma': 0.97,
+            'color_temp_a': 2, 'color_temp_b': 4, 'original_blend': 0.12
         },
-        "cool": {
-            "brightness": 1.15,
-            "contrast": 1.1,
-            "sharpness": 1.82,
-            "saturation": 0.85,
-            "white_overlay": 0.1,
-            "gamma": 0.95,
-            "color_temp_a": -4,
-            "color_temp_b": -2,
-            "original_blend": 0.12
+        'high': {
+            'brightness': 1.08, 'contrast': 1.05, 'sharpness': 1.1,
+            'saturation': 1.05, 'white_overlay': 0.02, 'gamma': 1.0,
+            'color_temp_a': 1, 'color_temp_b': 2, 'original_blend': 0.1
         }
     },
-    "rose_gold": {
-        "natural": {
-            "brightness": 1.2,
-            "contrast": 1.15,
-            "sharpness": 1.88,
-            "saturation": 0.9,
-            "white_overlay": 0.08,
-            "gamma": 0.92,
-            "color_temp_a": -3,
-            "color_temp_b": -2,
-            "original_blend": 0.1
+    'rose_gold': {
+        'low': {
+            'brightness': 1.18, 'contrast': 1.12, 'sharpness': 1.25,
+            'saturation': 1.20, 'white_overlay': 0.08, 'gamma': 0.93,
+            'color_temp_a': 5, 'color_temp_b': 2, 'original_blend': 0.12
         },
-        "warm": {
-            "brightness": 1.25,
-            "contrast": 1.18,
-            "sharpness": 1.92,
-            "saturation": 0.88,
-            "white_overlay": 0.1,
-            "gamma": 0.9,
-            "color_temp_a": -4,
-            "color_temp_b": -3,
-            "original_blend": 0.08
+        'medium': {
+            'brightness': 1.15, 'contrast': 1.10, 'sharpness': 1.2,
+            'saturation': 1.15, 'white_overlay': 0.05, 'gamma': 0.95,
+            'color_temp_a': 4, 'color_temp_b': 1, 'original_blend': 0.1
         },
-        "cool": {
-            "brightness": 1.18,
-            "contrast": 1.12,
-            "sharpness": 1.85,
-            "saturation": 0.92,
-            "white_overlay": 0.06,
-            "gamma": 0.94,
-            "color_temp_a": -2,
-            "color_temp_b": -1,
-            "original_blend": 0.12
+        'high': {
+            'brightness': 1.10, 'contrast': 1.08, 'sharpness': 1.15,
+            'saturation': 1.10, 'white_overlay': 0.03, 'gamma': 0.98,
+            'color_temp_a': 3, 'color_temp_b': 0, 'original_blend': 0.08
         }
     },
-    "yellow_gold": {
-        "natural": {
-            "brightness": 1.22,
-            "contrast": 1.18,
-            "sharpness": 1.9,
-            "saturation": 0.95,
-            "white_overlay": 0.05,
-            "gamma": 0.91,
-            "color_temp_a": -2,
-            "color_temp_b": -1,
-            "original_blend": 0.08
+    'white_gold': {
+        'low': {
+            'brightness': 1.25, 'contrast': 1.15, 'sharpness': 1.3,
+            'saturation': 0.85, 'white_overlay': 0.12, 'gamma': 0.90,
+            'color_temp_a': -3, 'color_temp_b': -5, 'original_blend': 0.1
         },
-        "warm": {
-            "brightness": 1.28,
-            "contrast": 1.2,
-            "sharpness": 1.95,
-            "saturation": 0.92,
-            "white_overlay": 0.08,
-            "gamma": 0.89,
-            "color_temp_a": -3,
-            "color_temp_b": -2,
-            "original_blend": 0.06
+        'medium': {
+            'brightness': 1.20, 'contrast': 1.12, 'sharpness': 1.25,
+            'saturation': 0.90, 'white_overlay': 0.08, 'gamma': 0.93,
+            'color_temp_a': -2, 'color_temp_b': -3, 'original_blend': 0.08
         },
-        "cool": {
-            "brightness": 1.2,
-            "contrast": 1.15,
-            "sharpness": 1.88,
-            "saturation": 0.98,
-            "white_overlay": 0.03,
-            "gamma": 0.93,
-            "color_temp_a": -1,
-            "color_temp_b": 0,
-            "original_blend": 0.1
+        'high': {
+            'brightness': 1.15, 'contrast': 1.10, 'sharpness': 1.2,
+            'saturation': 0.95, 'white_overlay': 0.05, 'gamma': 0.95,
+            'color_temp_a': -1, 'color_temp_b': -2, 'original_blend': 0.05
         }
     },
-    "white_noplating": {
-        "natural": {
-            "brightness": 1.3,
-            "contrast": 1.2,
-            "sharpness": 1.95,
-            "saturation": 0.75,
-            "white_overlay": 0.18,
-            "gamma": 0.88,
-            "color_temp_a": -8,
-            "color_temp_b": -6,
-            "original_blend": 0.05
+    'plain_white': {
+        'low': {
+            'brightness': 1.30, 'contrast': 1.18, 'sharpness': 1.35,
+            'saturation': 0.70, 'white_overlay': 0.18, 'gamma': 0.88,
+            'color_temp_a': -5, 'color_temp_b': -8, 'original_blend': 0.08
         },
-        "warm": {
-            "brightness": 1.35,
-            "contrast": 1.22,
-            "sharpness": 2.0,
-            "saturation": 0.72,
-            "white_overlay": 0.2,
-            "gamma": 0.86,
-            "color_temp_a": -10,
-            "color_temp_b": -8,
-            "original_blend": 0.03
+        'medium': {
+            'brightness': 1.25, 'contrast': 1.15, 'sharpness': 1.3,
+            'saturation': 0.75, 'white_overlay': 0.12, 'gamma': 0.90,
+            'color_temp_a': -4, 'color_temp_b': -6, 'original_blend': 0.06
         },
-        "cool": {
-            "brightness": 1.28,
-            "contrast": 1.18,
-            "sharpness": 1.92,
-            "saturation": 0.78,
-            "white_overlay": 0.15,
-            "gamma": 0.9,
-            "color_temp_a": -6,
-            "color_temp_b": -4,
-            "original_blend": 0.08
+        'high': {
+            'brightness': 1.18, 'contrast': 1.12, 'sharpness': 1.25,
+            'saturation': 0.80, 'white_overlay': 0.08, 'gamma': 0.93,
+            'color_temp_a': -3, 'color_temp_b': -4, 'original_blend': 0.04
         }
     }
 }
 
-def detect_black_borders_advanced(image: np.ndarray, threshold: int = 50) -> Dict[str, int]:
-    """Advanced black border detection with coordinate tracking"""
-    h, w = image.shape[:2]
+def detect_black_borders_advanced(image):
+    """Detect black borders with advanced method"""
+    height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Initialize borders
-    borders = {
-        'top': 0,
-        'bottom': h,
-        'left': 0,
-        'right': w
-    }
+    # Multiple threshold levels
+    threshold_levels = [10, 20, 30]
+    borders_list = []
     
-    # Scan from edges with multiple thresholds
-    scan_depth = int(min(h, w) * 0.4)
+    for thresh in threshold_levels:
+        _, binary = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY)
+        
+        # Check each side
+        top = 0
+        for i in range(height // 2):
+            if np.mean(binary[i, :]) > 10:
+                top = i
+                break
+        
+        bottom = height
+        for i in range(height - 1, height // 2, -1):
+            if np.mean(binary[i, :]) > 10:
+                bottom = i + 1
+                break
+        
+        left = 0
+        for i in range(width // 2):
+            if np.mean(binary[:, i]) > 10:
+                left = i
+                break
+        
+        right = width
+        for i in range(width - 1, width // 2, -1):
+            if np.mean(binary[:, i]) > 10:
+                right = i + 1
+                break
+        
+        borders_list.append({
+            'top': top, 'bottom': bottom,
+            'left': left, 'right': right,
+            'max_border': max(top, height - bottom, left, width - right)
+        })
     
-    # Top border
-    for y in range(scan_depth):
-        row = gray[y, :]
-        if np.mean(row) > threshold:
-            borders['top'] = y
-            break
+    # Choose the most conservative (smallest crop)
+    best_borders = min(borders_list, key=lambda x: x['max_border'])
     
-    # Bottom border
-    for y in range(scan_depth):
-        row = gray[h-1-y, :]
-        if np.mean(row) > threshold:
-            borders['bottom'] = h - y
-            break
-    
-    # Left border
-    for x in range(scan_depth):
-        col = gray[:, x]
-        if np.mean(col) > threshold:
-            borders['left'] = x
-            break
-    
-    # Right border
-    for x in range(scan_depth):
-        col = gray[:, w-1-x]
-        if np.mean(col) > threshold:
-            borders['right'] = w - x
-            break
-    
-    return borders
+    logger.info(f"Detected borders: {best_borders}")
+    return best_borders
 
-def create_inpainting_mask(image: np.ndarray, borders: Dict[str, int]) -> np.ndarray:
-    """Create mask for inpainting black borders"""
-    h, w = image.shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
+def apply_opencv_inpainting(image, mask):
+    """Apply OpenCV inpainting for small borders"""
+    # Dilate mask slightly
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=1)
     
-    # Mark border regions for inpainting
-    if borders['top'] > 0:
-        mask[:borders['top'], :] = 255
-    if borders['bottom'] < h:
-        mask[borders['bottom']:, :] = 255
-    if borders['left'] > 0:
-        mask[:, :borders['left']] = 255
-    if borders['right'] < w:
-        mask[:, borders['right']:] = 255
+    # Apply inpainting
+    result = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
     
-    return mask
+    return result
 
-def apply_lama_inpainting(image: Image.Image, mask: np.ndarray) -> Image.Image:
-    """Apply LaMa inpainting with fallback to OpenCV"""
+def apply_replicate_inpainting(image, mask, model_name):
+    """Apply Replicate AI inpainting"""
     try:
-        # Convert mask to PIL Image
-        mask_pil = Image.fromarray(mask)
+        # Convert image to base64
+        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        buffered = BytesIO()
+        pil_image.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode()
         
-        # Initialize LaMa if not already done
-        if init_lama():
-            # Use LaMa for inpainting
-            global simple_lama
-            result = simple_lama(image, mask_pil)
-            print("LaMa inpainting applied successfully")
-            return result
+        # Convert mask to base64
+        pil_mask = Image.fromarray(mask)
+        mask_buffered = BytesIO()
+        pil_mask.save(mask_buffered, format="PNG")
+        mask_base64 = base64.b64encode(mask_buffered.getvalue()).decode()
+        
+        if model_name == "ideogram-ai/ideogram-v2-turbo":
+            # Ideogram v2-turbo
+            output = replicate.run(
+                "ideogram-ai/ideogram-v2-turbo",
+                input={
+                    "prompt": "professional product photography background, clean white studio background, soft lighting",
+                    "image": f"data:image/png;base64,{img_base64}",
+                    "mask": f"data:image/png;base64,{mask_base64}",
+                    "mode": "inpaint",
+                    "num_inference_steps": 20,
+                    "guidance_scale": 7.5
+                }
+            )
         else:
-            raise Exception("LaMa not available, falling back to OpenCV")
+            # FLUX Fill dev
+            output = replicate.run(
+                "black-forest-labs/flux-fill-dev",
+                input={
+                    "prompt": "professional product photography, clean white seamless background, studio lighting",
+                    "image": f"data:image/png;base64,{img_base64}",
+                    "mask": f"data:image/png;base64,{mask_base64}",
+                    "num_inference_steps": 25,
+                    "guidance_scale": 7.5
+                }
+            )
+        
+        # Get result
+        if isinstance(output, list) and len(output) > 0:
+            result_url = output[0]
+        else:
+            result_url = output
             
+        # Download result
+        response = requests.get(result_url)
+        result_image = Image.open(BytesIO(response.content))
+        result_array = cv2.cvtColor(np.array(result_image), cv2.COLOR_RGB2BGR)
+        
+        # Resize to original size if needed
+        if result_array.shape[:2] != image.shape[:2]:
+            result_array = cv2.resize(result_array, (image.shape[1], image.shape[0]))
+        
+        return result_array
+        
     except Exception as e:
-        print(f"LaMa failed: {str(e)}, using OpenCV fallback")
-        
-        # Fallback to OpenCV inpainting
-        image_np = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        # Apply OpenCV inpainting
-        result = cv2.inpaint(image_np, mask, 3, cv2.INPAINT_TELEA)
-        
-        # Second pass for better results
-        mask_dilated = cv2.dilate(mask, np.ones((5,5), np.uint8), iterations=1)
-        result = cv2.inpaint(result, mask_dilated, 5, cv2.INPAINT_NS)
-        
-        # Convert back to PIL
-        result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(result_rgb)
+        logger.error(f"Replicate inpainting failed: {str(e)}")
+        # Fallback to OpenCV
+        return apply_opencv_inpainting(image, mask)
 
-def detect_metal_type(image: Image.Image) -> str:
-    """Detect metal type from the ring"""
-    # Convert to RGB if needed
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
+def remove_black_borders_smart(image):
+    """Remove black borders with smart model selection"""
+    borders = detect_black_borders_advanced(image)
     
-    # Get center region for analysis
-    width, height = image.size
-    center_y, center_x = height // 2, width // 2
-    sample_size = min(height, width) // 4
+    # Calculate border size
+    max_border = borders['max_border']
     
-    # Create center crop
-    left = max(0, center_x - sample_size)
-    top = max(0, center_y - sample_size)
-    right = min(width, center_x + sample_size)
-    bottom = min(height, center_y + sample_size)
+    # If no significant borders, return original
+    if max_border < 10:
+        logger.info("No significant borders detected")
+        return image
     
-    center_region = image.crop((left, top, right, bottom))
+    # Create mask for borders
+    height, width = image.shape[:2]
+    mask = np.zeros((height, width), dtype=np.uint8)
     
-    # Analyze colors
-    pixels = list(center_region.getdata())
-    if not pixels:
-        return "white_gold"
+    # Fill border areas in mask
+    mask[:borders['top'], :] = 255
+    mask[borders['bottom']:, :] = 255
+    mask[:, :borders['left']] = 255
+    mask[:, borders['right']:] = 255
     
-    # Calculate average colors
-    avg_r = sum(p[0] for p in pixels) / len(pixels)
-    avg_g = sum(p[1] for p in pixels) / len(pixels)
-    avg_b = sum(p[2] for p in pixels) / len(pixels)
-    
-    # Determine metal type based on color ratios
-    brightness = (avg_r + avg_g + avg_b) / 3
-    rg_diff = avg_r - avg_g
-    
-    if brightness > 180 and abs(rg_diff) < 20:
-        return "white_gold"
-    elif rg_diff > 10:
-        return "rose_gold"
-    elif rg_diff > 0:
-        return "yellow_gold"
+    # Select model based on border size
+    if max_border < 50:
+        logger.info(f"Using OpenCV for small borders ({max_border}px)")
+        result = apply_opencv_inpainting(image, mask)
+    elif max_border < 100:
+        logger.info(f"Using Ideogram v2-turbo for medium borders ({max_border}px)")
+        result = apply_replicate_inpainting(image, mask, "ideogram-ai/ideogram-v2-turbo")
     else:
-        return "white_noplating"
+        logger.info(f"Using FLUX Fill for large borders ({max_border}px)")
+        result = apply_replicate_inpainting(image, mask, "black-forest-labs/flux-fill-dev")
+    
+    # Crop to remove processed borders
+    cropped = result[borders['top']:borders['bottom'], 
+                     borders['left']:borders['right']]
+    
+    return cropped
 
-def detect_lighting(image: Image.Image) -> str:
-    """Detect lighting conditions"""
-    # Convert to numpy array
-    img_array = np.array(image)
-    if len(img_array.shape) == 2:
-        gray = img_array
+def analyze_lighting(image):
+    """Analyze image lighting conditions"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    mean_brightness = np.mean(gray)
+    
+    if mean_brightness < 85:
+        return 'low'
+    elif mean_brightness < 170:
+        return 'medium'
     else:
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    
-    # Calculate brightness in center region
-    h, w = gray.shape
-    center_region = gray[h//4:3*h//4, w//4:3*w//4]
-    
-    avg_brightness = np.mean(center_region)
-    
-    if avg_brightness > 180:
-        return "natural"
-    elif avg_brightness > 120:
-        return "warm"
-    else:
-        return "cool"
+        return 'high'
 
-def enhance_ring_colors(image: Image.Image, metal_type: str) -> Image.Image:
-    """Enhance ring colors based on metal type"""
-    # Detect lighting
-    lighting = detect_lighting(image)
-    
-    # Get parameters
-    params = WEDDING_RING_PARAMS.get(metal_type, WEDDING_RING_PARAMS["white_gold"])[lighting]
+def enhance_wedding_ring(image: Image.Image, metal_type: str, lighting: str) -> Image.Image:
+    """Apply v13.3 wedding ring enhancement"""
+    params = WEDDING_RING_PARAMS[metal_type][lighting]
     
     # Apply enhancements
     enhanced = image.copy()
@@ -392,7 +313,6 @@ def enhance_ring_colors(image: Image.Image, metal_type: str) -> Image.Image:
 
 def create_thumbnail_ultra_zoom(original_image: Image.Image, enhanced_image: Image.Image) -> Image.Image:
     """Create ultra-zoomed thumbnail focusing on ring only"""
-    # Convert to numpy array
     img_array = np.array(enhanced_image)
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     
@@ -417,13 +337,13 @@ def create_thumbnail_ultra_zoom(original_image: Image.Image, enhanced_image: Ima
         x, y, w, h = cv2.boundingRect(largest_contour)
         
         # Add padding
-        padding = int(max(w, h) * 0.1)
+        padding = int(max(w, h) * 0.3)
         x = max(0, x - padding)
         y = max(0, y - padding)
         w = min(img_array.shape[1] - x, w + 2 * padding)
         h = min(img_array.shape[0] - y, h + 2 * padding)
         
-        # Ensure square crop
+        # Make square
         if w > h:
             diff = w - h
             y = max(0, y - diff // 2)
@@ -435,185 +355,97 @@ def create_thumbnail_ultra_zoom(original_image: Image.Image, enhanced_image: Ima
         
         ring_crop = enhanced_image.crop((x, y, x + w, y + h))
     
-    # Resize to thumbnail size
+    # Resize to target size
     thumbnail = ring_crop.resize((1000, 1300), Image.Resampling.LANCZOS)
+    
+    # Apply sharpening
+    thumbnail = thumbnail.filter(ImageFilter.SHARPEN)
     
     return thumbnail
 
-def process_wedding_ring_v102(image_base64: str) -> Dict:
-    """Main processing function with LaMa AI inpainting"""
+def handler(job):
+    """RunPod handler function"""
     try:
-        print("Starting Wedding Ring AI v102 - Simple LaMa AI Inpainting System")
+        input_data = job['input']
         
-        # Handle base64 padding
-        image_base64 = image_base64.strip()
-        missing_padding = len(image_base64) % 4
-        if missing_padding:
-            image_base64 += '=' * (4 - missing_padding)
+        # Get image from either field
+        image_base64 = input_data.get('image') or input_data.get('image_base64')
         
-        # Decode base64 image
-        image_data = base64.b64decode(image_base64)
-        original_image = Image.open(BytesIO(image_data))
+        if not image_base64:
+            raise ValueError("No image provided in 'image' or 'image_base64' field")
         
-        # Convert to numpy array
-        image_bgr = cv2.cvtColor(np.array(original_image), cv2.COLOR_RGB2BGR)
+        # Remove data URL prefix if present
+        if image_base64.startswith('data:'):
+            image_base64 = image_base64.split(',')[1]
         
-        print("Step 1: Advanced black border detection with coordinate tracking")
-        # Detect black borders and get coordinates
-        borders = detect_black_borders_advanced(image_bgr)
-        print(f"Detected borders: {borders}")
+        # Add padding if needed
+        padding = 4 - len(image_base64) % 4
+        if padding != 4:
+            image_base64 += '=' * padding
         
-        # Check if we need inpainting
-        h, w = image_bgr.shape[:2]
-        needs_inpainting = (
-            borders['top'] > 10 or 
-            borders['bottom'] < h - 10 or 
-            borders['left'] > 10 or 
-            borders['right'] < w - 10
-        )
+        # Decode image
+        img_bytes = base64.b64decode(image_base64)
+        img = Image.open(BytesIO(img_bytes))
+        img_array = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
         
-        if needs_inpainting:
-            print("Step 2: Creating inpainting mask")
-            # Create mask for inpainting
-            mask = create_inpainting_mask(image_bgr, borders)
-            
-            # Convert to PIL for LaMa
-            image_pil = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
-            
-            print("Step 3: Applying LaMa AI inpainting (with OpenCV fallback)")
-            # Apply LaMa inpainting
-            inpainted_image = apply_lama_inpainting(image_pil, mask)
-            
-            # Convert back to numpy
-            image_bgr = cv2.cvtColor(np.array(inpainted_image), cv2.COLOR_RGB2BGR)
-            
-            print("Step 4: Cropping to content area")
-            # Crop to the detected content area
-            image_bgr = image_bgr[
-                borders['top']:borders['bottom'],
-                borders['left']:borders['right']
-            ]
-        else:
-            print("No significant black borders detected, skipping inpainting")
+        # Get metal type
+        metal_type = input_data.get('metal_type', 'white_gold').lower()
+        if metal_type not in WEDDING_RING_PARAMS:
+            metal_type = 'white_gold'
         
-        # Convert back to RGB
-        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        processed_image = Image.fromarray(image_rgb)
+        logger.info(f"Processing: metal={metal_type}, size={img_array.shape}")
         
-        # Create clean background
-        width, height = processed_image.size
-        final_image = Image.new('RGB', (width, height), (248, 248, 248))
+        # Step 1: Remove black borders with smart inpainting
+        no_border_img = remove_black_borders_smart(img_array)
         
-        # Detect metal type
-        metal_type = detect_metal_type(processed_image)
-        print(f"Detected metal type: {metal_type}")
+        # Step 2: Analyze lighting
+        lighting = analyze_lighting(no_border_img)
+        logger.info(f"Detected lighting: {lighting}")
         
-        # Enhance ring colors
-        enhanced_ring = enhance_ring_colors(processed_image, metal_type)
+        # Step 3: Convert to PIL for enhancement
+        pil_image = Image.fromarray(cv2.cvtColor(no_border_img, cv2.COLOR_BGR2RGB))
         
-        # Paste enhanced ring on clean background
-        final_image.paste(enhanced_ring, (0, 0))
+        # Step 4: Apply wedding ring enhancement
+        enhanced_image = enhance_wedding_ring(pil_image, metal_type, lighting)
         
-        # Create thumbnail
-        thumbnail = create_thumbnail_ultra_zoom(original_image, final_image)
+        # Step 5: Create thumbnail
+        thumbnail = create_thumbnail_ultra_zoom(pil_image, enhanced_image)
         
         # Convert to base64
         # Main image
         main_buffer = BytesIO()
-        final_image.save(main_buffer, format='JPEG', quality=95, optimize=True)
-        main_buffer.seek(0)
-        main_base64 = base64.b64encode(main_buffer.read()).decode('utf-8')
-        
-        # Remove padding for Make.com
-        main_base64 = main_base64.rstrip('=')
+        enhanced_image.save(main_buffer, format='PNG', quality=95)
+        main_base64 = base64.b64encode(main_buffer.getvalue()).decode('utf-8')
         
         # Thumbnail
         thumb_buffer = BytesIO()
-        thumbnail.save(thumb_buffer, format='JPEG', quality=95, optimize=True)
-        thumb_buffer.seek(0)
-        thumb_base64 = base64.b64encode(thumb_buffer.read()).decode('utf-8')
+        thumbnail.save(thumb_buffer, format='PNG', quality=95)
+        thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8')
         
-        # Remove padding for Make.com
-        thumb_base64 = thumb_base64.rstrip('=')
-        
-        # Clean up GPU memory if using CUDA
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
-        
+        # CRITICAL: Nested output structure for Make.com
         return {
-            "output": {
+            "output": {  # This 'output' wrapper is REQUIRED!
                 "enhanced_image": main_base64,
                 "thumbnail": thumb_base64,
-                "metal_type": metal_type,
-                "processing_version": "v102_simple_lama_ai",
-                "removal_stats": {
-                    "method": "LaMa AI Inpainting" if needs_inpainting else "No inpainting needed",
-                    "borders_detected": borders,
-                    "inpainted": needs_inpainting
-                },
-                "status": "success"
-            }
-        }
-        
-    except Exception as e:
-        print(f"Error in process_wedding_ring_v102: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
-        
-        return {
-            "output": {
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "status": "error",
-                "processing_version": "v102_simple_lama_ai"
-            }
-        }
-
-def handler(event):
-    """RunPod handler function"""
-    try:
-        # Get input
-        input_data = event.get("input", {})
-        
-        # Check for test mode
-        if input_data.get("test") == True:
-            return {
-                "status": "test_success",
-                "message": "Wedding Ring Processor v102 - Simple LaMa AI Ready",
-                "version": "v102_simple_lama_ai",
-                "features": [
-                    "Advanced black border detection with coordinates",
-                    "Simple LaMa AI inpainting from HuggingFace",
-                    "OpenCV fallback for stability",
-                    "Intelligent mask generation",
-                    "Memory optimized processing",
-                    "100% black border removal guarantee"
-                ]
-            }
-        
-        # Get image - Check both "image" and "image_base64"
-        image_base64 = input_data.get("image") or input_data.get("image_base64")
-        
-        if not image_base64:
-            return {
-                "output": {
-                    "error": "No image provided in input",
-                    "status": "error"
+                "processing_info": {
+                    "metal_type": metal_type,
+                    "lighting": lighting,
+                    "original_size": f"{img.width}x{img.height}",
+                    "enhanced_size": f"{enhanced_image.width}x{enhanced_image.height}",
+                    "thumbnail_size": f"{thumbnail.width}x{thumbnail.height}",
+                    "status": "success",
+                    "version": "v103-replicate"
                 }
             }
-        
-        # Process image
-        return process_wedding_ring_v102(image_base64)
+        }
         
     except Exception as e:
-        print(f"Handler error: {str(e)}")
-        print(f"Traceback: {traceback.format_exc()}")
-        
+        logger.error(f"Processing error: {str(e)}")
         return {
-            "output": {
+            "output": {  # Even errors need the output wrapper!
                 "error": str(e),
-                "traceback": traceback.format_exc(),
-                "status": "error"
+                "status": "failed",
+                "version": "v103-replicate"
             }
         }
 
