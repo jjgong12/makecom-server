@@ -1,183 +1,119 @@
-import runpod
-import cv2
-import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-import io
-import base64
-import json
 import os
-import requests
+import cv2
+import base64
+import numpy as np
+import runpod
+import io
+import json
+import re
 import time
-import replicate
+from datetime import datetime, timedelta
+from PIL import Image, ImageEnhance, ImageFilter, UnidentifiedImageError
+import requests
 
-# Replicate API configuration
-REPLICATE_API_TOKEN = os.environ.get('REPLICATE_API_TOKEN', '')
+# Replicate API token (optional)
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
+
+# Debug flag
+DEBUG = True
 
 def log_debug(message):
-    """Debug logging"""
-    print(f"[DEBUG v122] {message}")
+    """Print debug messages with timestamp"""
+    if DEBUG:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        print(f"[{timestamp}] {message}")
 
 def decode_base64_image(base64_string):
-    """Decode base64 image with comprehensive error handling for Make.com"""
-    try:
-        if not base64_string:
-            raise ValueError("Empty base64 string")
-        
-        # Log the first 100 chars for debugging
-        log_debug(f"Base64 string start: {base64_string[:100]}...")
-        
-        # Remove any whitespace and newlines
-        base64_string = base64_string.strip().replace('\n', '').replace('\r', '').replace(' ', '')
-        
-        # Remove data URL prefix if present (multiple formats)
-        if 'base64,' in base64_string:
-            base64_string = base64_string.split('base64,')[1]
-        elif 'base64:' in base64_string:
-            base64_string = base64_string.split('base64:')[1]
-        elif base64_string.startswith('data:'):
-            # Handle any data URL format
-            parts = base64_string.split(',')
-            if len(parts) > 1:
-                base64_string = parts[1]
-            else:
-                # Try splitting by semicolon
-                parts = base64_string.split(';')
-                if len(parts) > 1 and 'base64' in parts[-1]:
-                    base64_string = parts[-1].replace('base64', '').strip()
-        
-        # Clean the string again after prefix removal
-        base64_string = base64_string.strip()
-        
-        # Try standard decode first (without adding padding)
-        try:
-            image_data = base64.b64decode(base64_string, validate=True)
-            image = Image.open(io.BytesIO(image_data))
-            if image.mode == 'RGBA':
-                image = image.convert('RGB')
-            log_debug("Successfully decoded with standard method")
-            return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        except Exception as e1:
-            log_debug(f"Standard decode failed: {str(e1)}")
-        
-        # If failed, try with padding
-        try:
-            missing_padding = len(base64_string) % 4
-            if missing_padding:
-                base64_string_padded = base64_string + '=' * (4 - missing_padding)
-                image_data = base64.b64decode(base64_string_padded, validate=True)
-                image = Image.open(io.BytesIO(image_data))
-                if image.mode == 'RGBA':
-                    image = image.convert('RGB')
-                log_debug("Successfully decoded with padding")
-                return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        except Exception as e2:
-            log_debug(f"Padded decode failed: {str(e2)}")
-        
-        # Try URL-safe decode
-        try:
-            # Replace URL-safe characters
-            base64_string_safe = base64_string.replace('-', '+').replace('_', '/')
-            missing_padding = len(base64_string_safe) % 4
-            if missing_padding:
-                base64_string_safe += '=' * (4 - missing_padding)
-            image_data = base64.b64decode(base64_string_safe, validate=True)
-            image = Image.open(io.BytesIO(image_data))
-            if image.mode == 'RGBA':
-                image = image.convert('RGB')
-            log_debug("Successfully decoded with URL-safe method")
-            return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        except Exception as e3:
-            log_debug(f"URL-safe decode failed: {str(e3)}")
-        
-        # Last resort - try without validation
-        try:
-            # Remove any remaining non-base64 characters
-            import re
-            base64_string_clean = re.sub(r'[^A-Za-z0-9+/]', '', base64_string)
-            missing_padding = len(base64_string_clean) % 4
-            if missing_padding:
-                base64_string_clean += '=' * (4 - missing_padding)
-            image_data = base64.b64decode(base64_string_clean)
-            image = Image.open(io.BytesIO(image_data))
-            if image.mode == 'RGBA':
-                image = image.convert('RGB')
-            log_debug("Successfully decoded with regex cleaning")
-            return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        except Exception as e4:
-            log_debug(f"Regex cleaned decode failed: {str(e4)}")
-        
-        raise Exception("All decoding methods failed")
-        
-    except Exception as e:
-        log_debug(f"Final error decoding base64: {str(e)}")
-        log_debug(f"Base64 length: {len(base64_string) if base64_string else 0}")
-        raise Exception(f"Could not decode string.")
-
-def encode_image_to_base64(image, format='JPEG'):
-    """Encode image to base64 WITHOUT padding for Make.com"""
-    if isinstance(image, np.ndarray):
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(image)
+    """Decode base64 image with multiple fallback methods"""
+    log_debug("Starting base64 decode process")
     
-    buffered = io.BytesIO()
-    image.save(buffered, format=format, quality=95)
-    base64_string = base64.b64encode(buffered.getvalue()).decode('utf-8')
-    # Remove padding for Make.com
-    return base64_string.rstrip('=')
+    # Method 1: Remove data URL prefix if present
+    if ',' in base64_string:
+        base64_string = base64_string.split(',')[1]
+        log_debug("Removed data URL prefix")
+    
+    # Method 2: Clean the string
+    base64_string = base64_string.strip()
+    base64_string = re.sub(r'[^A-Za-z0-9+/]', '', base64_string)
+    
+    # Method 3: Fix padding
+    padding = 4 - len(base64_string) % 4
+    if padding != 4:
+        base64_string += '=' * padding
+        log_debug(f"Added {padding} padding characters")
+    
+    # Method 4: Try decoding
+    try:
+        image_data = base64.b64decode(base64_string)
+        image = Image.open(io.BytesIO(image_data))
+        return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        log_debug(f"Failed to decode: {str(e)}")
+        raise ValueError(f"Failed to decode base64 image: {str(e)}")
 
 def detect_actual_line_thickness(gray, bounds):
-    """Detect actual thickness of black lines - can handle up to 100px"""
-    left, top, right, bottom = bounds
-    h, w = gray.shape
+    """Detect the actual thickness of masking lines up to 200px"""
+    x1, y1, x2, y2 = bounds
+    max_thickness = min(200, min(x2 - x1, y2 - y1) // 4)
+    
     thicknesses = []
     
-    # Sample from multiple points for accurate measurement
-    # Top edge
-    if top > 0:
-        for x in range(left + 10, min(right - 10, w), 50):
-            for y in range(top, min(top + 200, h)):  # Check up to 200px
-                if gray[y, x] > 50:
-                    thicknesses.append(y - top)
+    # Sample from multiple points for accuracy
+    sample_points = min(20, (x2 - x1) // 10)
+    
+    # Sample from top edge
+    for i in range(sample_points):
+        offset = int((x2 - x1) * (i + 1) / (sample_points + 1))
+        for t in range(1, max_thickness):
+            if y1 + t < gray.shape[0]:
+                if gray[y1 + t, x1 + offset] > 50:
+                    thicknesses.append(t)
                     break
     
-    # Left edge
-    if left > 0:
-        for y in range(top + 10, min(bottom - 10, h), 50):
-            for x in range(left, min(left + 200, w)):  # Check up to 200px
-                if gray[y, x] > 50:
-                    thicknesses.append(x - left)
+    # Sample from left edge
+    for i in range(sample_points):
+        offset = int((y2 - y1) * (i + 1) / (sample_points + 1))
+        for t in range(1, max_thickness):
+            if x1 + t < gray.shape[1]:
+                if gray[y1 + offset, x1 + t] > 50:
+                    thicknesses.append(t)
                     break
     
-    # Bottom edge
-    if bottom < h:
-        for x in range(left + 10, min(right - 10, w), 50):
-            for y in range(bottom - 1, max(bottom - 200, 0), -1):
-                if gray[y, x] > 50:
-                    thicknesses.append(bottom - y)
+    # Sample from bottom edge
+    for i in range(sample_points):
+        offset = int((x2 - x1) * (i + 1) / (sample_points + 1))
+        for t in range(1, max_thickness):
+            if y2 - t >= 0:
+                if gray[y2 - t, x1 + offset] > 50:
+                    thicknesses.append(t)
                     break
     
-    # Right edge
-    if right < w:
-        for y in range(top + 10, min(bottom - 10, h), 50):
-            for x in range(right - 1, max(right - 200, 0), -1):
-                if gray[y, x] > 50:
-                    thicknesses.append(right - x)
+    # Sample from right edge
+    for i in range(sample_points):
+        offset = int((y2 - y1) * (i + 1) / (sample_points + 1))
+        for t in range(1, max_thickness):
+            if x2 - t >= 0:
+                if gray[y1 + offset, x2 - t] > 50:
+                    thicknesses.append(t)
                     break
     
     if thicknesses:
-        # Return median thickness with 50% safety margin
-        return int(np.median(thicknesses) * 1.5 + 20)
-    return 50  # Default safe thickness
+        # Use 75th percentile for robustness
+        avg_thickness = int(np.percentile(thicknesses, 75))
+        return min(avg_thickness + 10, max_thickness)
+    
+    return 20
 
 def validate_rectangular_mask(mask, img_w, img_h):
-    """Validate if the mask represents a proper rectangular masking"""
-    bounds = mask['bounds']
-    x1, y1, x2, y2 = bounds
+    """Validate if detected mask is rectangular and reasonable"""
+    if not mask or 'bounds' not in mask:
+        return False
     
-    # Check if bounds are reasonable
+    x1, y1, x2, y2 = mask['bounds']
     width = x2 - x1
     height = y2 - y1
     
+    # Check if dimensions are reasonable
     if width < img_w * 0.2 or height < img_h * 0.2:
         return False
         
@@ -279,688 +215,627 @@ def detect_center_masking_ultra_advanced(image):
     
     # Method 3: Morphological operations
     log_debug("Method 3: Morphological operations")
-    for kernel_size in [3, 5, 7]:
-        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    for kernel_size in [5, 7, 9, 11]:
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
         
-        # Try different morphological operations
-        for threshold in [30, 40, 50]:
-            binary = (gray < threshold).astype(np.uint8) * 255
-            
-            # Close to fill gaps
+        # Try different thresholds
+        for thresh_val in [30, 50, 70]:
+            _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY_INV)
             closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
             
-            # Find contours
             contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             for contour in contours:
                 x, y, cnt_w, cnt_h = cv2.boundingRect(contour)
                 
                 if cnt_w > w * 0.3 and cnt_h > h * 0.3:
-                    # Check if rectangular
-                    peri = cv2.arcLength(contour, True)
-                    approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                    thickness = detect_actual_line_thickness(gray, (x, y, x + cnt_w, y + cnt_h))
                     
-                    if len(approx) == 4:  # Rectangular
-                        thickness = detect_actual_line_thickness(gray, (x, y, x + cnt_w, y + cnt_h))
-                        
-                        inner_x = x + thickness
-                        inner_y = y + thickness
-                        inner_w = cnt_w - 2 * thickness
-                        inner_h = cnt_h - 2 * thickness
-                        
-                        if inner_w > 50 and inner_h > 50:
-                            methods_results[f'morph_{kernel_size}_{threshold}'] = {
-                                'bounds': (inner_x, inner_y, inner_x + inner_w, inner_y + inner_h),
-                                'thickness': thickness,
-                                'type': 'center',
-                                'method': f'morph_{kernel_size}_{threshold}'
-                            }
-                            break
-            if f'morph_{kernel_size}_{threshold}' in methods_results:
-                break
+                    inner_x = x + thickness
+                    inner_y = y + thickness
+                    inner_w = cnt_w - 2 * thickness
+                    inner_h = cnt_h - 2 * thickness
+                    
+                    if inner_w > 50 and inner_h > 50:
+                        methods_results[f'morph_{kernel_size}_{thresh_val}'] = {
+                            'bounds': (inner_x, inner_y, inner_x + inner_w, inner_y + inner_h),
+                            'thickness': thickness,
+                            'type': 'center',
+                            'method': f'morph_{kernel_size}_{thresh_val}'
+                        }
+                        break
     
-    # Cross-validate results
-    log_debug(f"Found {len(methods_results)} potential center maskings")
-    final_mask = cross_validate_detection(methods_results, (h, w))
+    # Cross-validate all detection methods
+    best_mask = cross_validate_detection(methods_results, image.shape)
     
-    if final_mask:
-        log_debug(f"Confirmed center masking: bounds={final_mask['bounds']}, thickness={final_mask['thickness']}")
-        return final_mask
+    if best_mask:
+        log_debug(f"Center masking detected: {best_mask}")
+        return best_mask
     
-    log_debug("No center masking detected")
     return None
 
-def detect_edge_masking_ultra(image):
-    """Ultra precise edge masking detection"""
+def detect_masking_comprehensive(image):
+    """Comprehensive masking detection using multiple strategies"""
+    log_debug("Starting comprehensive masking detection")
+    
+    # Strategy 1: Edge-based detection (original)
+    edge_mask = detect_edge_based_masking(image)
+    
+    # Strategy 2: Center-based detection (new)
+    center_mask = detect_center_masking_ultra_advanced(image)
+    
+    # Strategy 3: Contour-based detection
+    contour_mask = detect_contour_based_masking(image)
+    
+    # Combine results
+    if center_mask:
+        return center_mask
+    elif edge_mask:
+        return edge_mask
+    elif contour_mask:
+        return contour_mask
+    
+    return None
+
+def detect_edge_based_masking(image):
+    """Original edge-based masking detection"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     
-    # Check each edge with multiple scan depths
-    edges_with_black = []
-    best_scan_depth = 0
+    # Progressive scanning
+    scan_percentages = [0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+    threshold_values = [20, 30, 40, 50, 60, 70, 80]
     
-    # Try multiple scan depths
-    for scan_depth in [50, 100, 150, 200]:
-        if scan_depth > min(h, w) // 4:
-            continue
-            
-        # Adaptive threshold based on image
-        mean_brightness = np.mean(gray)
-        threshold = min(40, mean_brightness * 0.2)
+    for scan_pct, threshold in zip(scan_percentages, threshold_values):
+        scan_depth = int(min(w, h) * scan_pct)
         
-        current_edges = []
-        
-        # Top edge
-        if np.mean(gray[:scan_depth, :] < threshold) > 0.7:
-            current_edges.append('top')
-        
-        # Bottom edge
-        if np.mean(gray[-scan_depth:, :] < threshold) > 0.7:
-            current_edges.append('bottom')
-        
-        # Left edge
-        if np.mean(gray[:, :scan_depth] < threshold) > 0.7:
-            current_edges.append('left')
-        
-        # Right edge
-        if np.mean(gray[:, -scan_depth:] < threshold) > 0.7:
-            current_edges.append('right')
-        
-        if len(current_edges) >= 2:
-            edges_with_black = current_edges
-            best_scan_depth = scan_depth
-            break
-    
-    if not edges_with_black:
-        return None
-    
-    # Calculate bounds with detected edges
-    left, top, right, bottom = 0, 0, w, h
-    
-    if 'top' in edges_with_black:
-        for y in range(min(best_scan_depth * 2, h)):
-            if np.mean(gray[y, :] < 40) < 0.5:
-                top = y
-                break
-    
-    if 'bottom' in edges_with_black:
-        for y in range(h-1, max(h-best_scan_depth*2, -1), -1):
-            if np.mean(gray[y, :] < 40) < 0.5:
-                bottom = y + 1
-                break
-    
-    if 'left' in edges_with_black:
-        for x in range(min(best_scan_depth * 2, w)):
-            if np.mean(gray[:, x] < 40) < 0.5:
-                left = x
-                break
-    
-    if 'right' in edges_with_black:
-        for x in range(w-1, max(w-best_scan_depth*2, -1), -1):
-            if np.mean(gray[:, x] < 40) < 0.5:
-                right = x + 1
-                break
-    
-    if left < right and top < bottom:
-        thickness = detect_actual_line_thickness(gray, (left, top, right, bottom))
-        return {
-            'bounds': (left, top, right, bottom),
-            'thickness': thickness,
-            'type': 'edge',
-            'edges': edges_with_black
+        edges_found = {
+            'top': False, 'bottom': False,
+            'left': False, 'right': False
         }
+        
+        # Check edges
+        if np.mean(gray[:scan_depth, :]) < threshold:
+            edges_found['top'] = True
+        if np.mean(gray[-scan_depth:, :]) < threshold:
+            edges_found['bottom'] = True
+        if np.mean(gray[:, :scan_depth]) < threshold:
+            edges_found['left'] = True
+        if np.mean(gray[:, -scan_depth:]) < threshold:
+            edges_found['right'] = True
+        
+        # Need at least 2 edges
+        if sum(edges_found.values()) >= 2:
+            bounds = [0, 0, w, h]
+            
+            if edges_found['top']:
+                for y in range(scan_depth, h // 2):
+                    if np.mean(gray[y, :]) > threshold + 20:
+                        bounds[1] = y
+                        break
+            
+            if edges_found['bottom']:
+                for y in range(h - scan_depth, h // 2, -1):
+                    if np.mean(gray[y, :]) > threshold + 20:
+                        bounds[3] = y
+                        break
+            
+            if edges_found['left']:
+                for x in range(scan_depth, w // 2):
+                    if np.mean(gray[:, x]) > threshold + 20:
+                        bounds[0] = x
+                        break
+            
+            if edges_found['right']:
+                for x in range(w - scan_depth, w // 2, -1):
+                    if np.mean(gray[:, x]) > threshold + 20:
+                        bounds[2] = x
+                        break
+            
+            return {
+                'bounds': tuple(bounds),
+                'thickness': scan_depth,
+                'type': 'edge',
+                'method': f'edge_scan_{scan_pct}'
+            }
     
     return None
 
-def detect_metal_type_advanced(image):
-    """Advanced metal type detection with 28 pairs training data knowledge"""
-    # Convert to RGB for analysis
-    if len(image.shape) == 3:
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    else:
-        return "plain_white"
-    
-    # Get center region for analysis
-    h, w = rgb.shape[:2]
-    center_y, center_x = h // 2, w // 2
-    region_size = min(h, w) // 3  # Larger region for better analysis
-    
-    center_region = rgb[
-        max(0, center_y - region_size):min(h, center_y + region_size),
-        max(0, center_x - region_size):min(w, center_x + region_size)
-    ]
-    
-    # Convert to HSV for better color analysis
-    hsv = cv2.cvtColor(center_region, cv2.COLOR_RGB2HSV)
-    
-    # Calculate color statistics
-    avg_hue = np.mean(hsv[:, :, 0])
-    avg_saturation = np.mean(hsv[:, :, 1])
-    avg_brightness = np.mean(hsv[:, :, 2])
-    
-    # RGB analysis
-    avg_r = np.mean(center_region[:, :, 0])
-    avg_g = np.mean(center_region[:, :, 1])
-    avg_b = np.mean(center_region[:, :, 2])
-    
-    log_debug(f"Color analysis - H:{avg_hue:.1f}, S:{avg_saturation:.1f}, V:{avg_brightness:.1f}, R:{avg_r:.1f}, G:{avg_g:.1f}, B:{avg_b:.1f}")
-    
-    # Metal type detection based on 28 pairs knowledge
-    # Priority order: rose_gold -> yellow_gold -> white_gold -> plain_white
-    
-    # Rose gold detection
-    if (avg_r > avg_g * 1.15 and avg_r > avg_b * 1.2 and 
-        avg_saturation > 20 and avg_hue < 20):
-        return "rose_gold"
-    
-    # Yellow gold detection
-    elif (avg_r > avg_b * 1.2 and avg_g > avg_b * 1.15 and 
-          avg_saturation > 25 and 20 < avg_hue < 40):
-        return "yellow_gold"
-    
-    # White gold detection (includes bright silver)
-    elif avg_saturation < 20 and avg_brightness > 150:
-        return "white_gold"
-    
-    # Plain white / Champagne gold (무도금화이트)
-    else:
-        # If very low saturation and high brightness
-        if avg_saturation < 15 and avg_brightness > 180:
-            return "plain_white"  # This is champagne gold in Korean terms
-        else:
-            return "white_gold"  # Default to white gold
-
-def detect_lighting_condition(image):
-    """Detect lighting condition from image"""
-    # Convert to grayscale
+def detect_contour_based_masking(image):
+    """Contour-based masking detection"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Calculate brightness statistics
-    mean_brightness = np.mean(gray)
-    std_brightness = np.std(gray)
+    # Multiple threshold attempts
+    for thresh_val in [30, 50, 70, 90]:
+        _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY_INV)
+        
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Sort by area
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        
+        for contour in contours[:5]:  # Check top 5 largest
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Check if it's significant
+            if w > image.shape[1] * 0.5 and h > image.shape[0] * 0.5:
+                thickness = detect_actual_line_thickness(gray, (x, y, x + w, y + h))
+                
+                return {
+                    'bounds': (x + thickness, y + thickness, 
+                              x + w - thickness, y + h - thickness),
+                    'thickness': thickness,
+                    'type': 'contour',
+                    'method': f'contour_{thresh_val}'
+                }
     
-    # Calculate histogram
-    hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-    hist = hist.flatten() / hist.sum()
+    return None
+
+def detect_lighting_condition(image, mask_bounds=None):
+    """Detect lighting conditions with mask awareness"""
+    # Use only the area inside the mask if available
+    if mask_bounds:
+        x1, y1, x2, y2 = mask_bounds
+        roi = image[y1:y2, x1:x2]
+    else:
+        roi = image
     
-    # Analyze distribution
-    dark_pixels = np.sum(hist[:85])  # 0-85
-    mid_pixels = np.sum(hist[85:170])  # 85-170
-    bright_pixels = np.sum(hist[170:])  # 170-255
+    # Convert to LAB color space
+    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+    l_channel = lab[:, :, 0]
     
-    log_debug(f"Lighting - Mean: {mean_brightness:.1f}, Std: {std_brightness:.1f}, Dark: {dark_pixels:.2f}, Mid: {mid_pixels:.2f}, Bright: {bright_pixels:.2f}")
+    # Calculate statistics
+    mean_brightness = np.mean(l_channel)
+    std_brightness = np.std(l_channel)
     
     # Determine lighting condition
-    if mean_brightness < 100:
-        return "low"
-    elif mean_brightness > 160:
-        return "high"
+    if mean_brightness < 80:
+        return 'low'
+    elif mean_brightness > 170:
+        return 'high'
     else:
-        return "normal"
+        return 'normal'
 
-def enhance_wedding_ring_details(image, metal_type, lighting, is_ring_region=True):
-    """Enhanced wedding ring details based on 38 pairs of training data"""
-    # Parameters based on metal type and lighting (from 28+10 pairs)
-    params = {
+def detect_metal_type(image, mask_bounds=None):
+    """Detect metal type with improved accuracy"""
+    # Use only the area inside the mask if available
+    if mask_bounds:
+        x1, y1, x2, y2 = mask_bounds
+        roi = image[y1:y2, x1:x2]
+    else:
+        roi = image
+    
+    # Convert to different color spaces
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+    
+    # Calculate color statistics
+    h_mean = np.mean(hsv[:, :, 0])
+    s_mean = np.mean(hsv[:, :, 1])
+    v_mean = np.mean(hsv[:, :, 2])
+    
+    b_mean = np.mean(lab[:, :, 2])  # B channel in LAB
+    
+    # Metal type detection logic
+    if s_mean < 30 and v_mean > 180:
+        return 'white_gold'
+    elif 10 <= h_mean <= 25 and s_mean > 40:
+        return 'rose_gold'
+    elif 20 <= h_mean <= 40 and s_mean > 30:
+        return 'yellow_gold'
+    else:
+        return 'champagne_gold'
+
+def get_after_background_color(lighting, metal_type):
+    """Get background color from 28 pairs of AFTER training data"""
+    # Based on 28 pairs of before/after training data
+    after_bg_colors = {
+        'low': {
+            'white_gold': [195, 195, 200],
+            'yellow_gold': [200, 195, 185],
+            'rose_gold': [200, 195, 190],
+            'champagne_gold': [198, 198, 195]
+        },
+        'normal': {
+            'white_gold': [240, 240, 245],
+            'yellow_gold': [245, 240, 230],
+            'rose_gold': [245, 240, 235],
+            'champagne_gold': [242, 242, 240]
+        },
+        'high': {
+            'white_gold': [250, 250, 255],
+            'yellow_gold': [255, 250, 240],
+            'rose_gold': [255, 250, 245],
+            'champagne_gold': [252, 252, 250]
+        }
+    }
+    
+    return after_bg_colors.get(lighting, {}).get(metal_type, [240, 240, 240])
+
+def enhance_wedding_ring_details(image, lighting='normal', metal_type='white_gold'):
+    """Enhanced wedding ring detail enhancement with 38 training pairs"""
+    enhanced = image.copy()
+    
+    # v13.3 Complete parameters based on 28 training pairs
+    metal_params = {
+        'white_gold': {
+            'low': {
+                'brightness': 1.18, 'contrast': 1.20, 'saturation': 0.80, 
+                'highlights': 1.25, 'shadows': 1.05, 'clarity': 1.30,
+                'vibrance': 0.85, 'temperature': -5, 'white_overlay': 0.12,
+                'denoise': 5, 'sharpen': 1.4, 'gamma': 1.05
+            },
+            'normal': {
+                'brightness': 1.12, 'contrast': 1.15, 'saturation': 0.85,
+                'highlights': 1.20, 'shadows': 0.95, 'clarity': 1.25,
+                'vibrance': 0.90, 'temperature': -3, 'white_overlay': 0.10,
+                'denoise': 3, 'sharpen': 1.3, 'gamma': 1.02
+            },
+            'high': {
+                'brightness': 1.08, 'contrast': 1.10, 'saturation': 0.90,
+                'highlights': 0.95, 'shadows': 0.90, 'clarity': 1.20,
+                'vibrance': 0.95, 'temperature': -2, 'white_overlay': 0.08,
+                'denoise': 2, 'sharpen': 1.2, 'gamma': 0.98
+            }
+        },
         'yellow_gold': {
-            'low': {'brightness': 1.25, 'contrast': 1.20, 'saturation': 1.15, 'sharpness': 1.3, 'gamma': 0.85},
-            'normal': {'brightness': 1.18, 'contrast': 1.15, 'saturation': 1.10, 'sharpness': 1.2, 'gamma': 0.90},
-            'high': {'brightness': 1.10, 'contrast': 1.10, 'saturation': 1.05, 'sharpness': 1.1, 'gamma': 0.95}
+            'low': {
+                'brightness': 1.15, 'contrast': 1.18, 'saturation': 1.30,
+                'highlights': 1.20, 'shadows': 1.00, 'clarity': 1.25,
+                'vibrance': 1.35, 'temperature': 5, 'white_overlay': 0.08,
+                'denoise': 5, 'sharpen': 1.3, 'gamma': 1.03
+            },
+            'normal': {
+                'brightness': 1.08, 'contrast': 1.12, 'saturation': 1.25,
+                'highlights': 1.15, 'shadows': 0.90, 'clarity': 1.20,
+                'vibrance': 1.30, 'temperature': 3, 'white_overlay': 0.06,
+                'denoise': 3, 'sharpen': 1.2, 'gamma': 1.00
+            },
+            'high': {
+                'brightness': 1.05, 'contrast': 1.08, 'saturation': 1.20,
+                'highlights': 0.90, 'shadows': 0.85, 'clarity': 1.15,
+                'vibrance': 1.25, 'temperature': 2, 'white_overlay': 0.05,
+                'denoise': 2, 'sharpen': 1.1, 'gamma': 0.97
+            }
         },
         'rose_gold': {
-            'low': {'brightness': 1.22, 'contrast': 1.18, 'saturation': 1.12, 'sharpness': 1.3, 'gamma': 0.87},
-            'normal': {'brightness': 1.15, 'contrast': 1.12, 'saturation': 1.08, 'sharpness': 1.2, 'gamma': 0.92},
-            'high': {'brightness': 1.08, 'contrast': 1.08, 'saturation': 1.03, 'sharpness': 1.1, 'gamma': 0.96}
+            'low': {
+                'brightness': 1.16, 'contrast': 1.22, 'saturation': 1.25,
+                'highlights': 1.22, 'shadows': 1.02, 'clarity': 1.28,
+                'vibrance': 1.30, 'temperature': 0, 'white_overlay': 0.10,
+                'denoise': 5, 'sharpen': 1.35, 'gamma': 1.04
+            },
+            'normal': {
+                'brightness': 1.10, 'contrast': 1.18, 'saturation': 1.20,
+                'highlights': 1.18, 'shadows': 0.92, 'clarity': 1.22,
+                'vibrance': 1.25, 'temperature': -1, 'white_overlay': 0.08,
+                'denoise': 3, 'sharpen': 1.25, 'gamma': 1.01
+            },
+            'high': {
+                'brightness': 1.06, 'contrast': 1.12, 'saturation': 1.15,
+                'highlights': 0.92, 'shadows': 0.87, 'clarity': 1.18,
+                'vibrance': 1.20, 'temperature': -2, 'white_overlay': 0.06,
+                'denoise': 2, 'sharpen': 1.15, 'gamma': 0.98
+            }
         },
-        'white_gold': {
-            'low': {'brightness': 1.28, 'contrast': 1.22, 'saturation': 1.02, 'sharpness': 1.4, 'gamma': 0.83},
-            'normal': {'brightness': 1.20, 'contrast': 1.15, 'saturation': 1.00, 'sharpness': 1.3, 'gamma': 0.88},
-            'high': {'brightness': 1.12, 'contrast': 1.10, 'saturation': 0.98, 'sharpness': 1.2, 'gamma': 0.93}
-        },
-        'plain_white': {  # Champagne gold (무도금화이트)
-            'low': {'brightness': 1.30, 'contrast': 1.25, 'saturation': 0.95, 'sharpness': 1.4, 'gamma': 0.82},
-            'normal': {'brightness': 1.22, 'contrast': 1.18, 'saturation': 0.92, 'sharpness': 1.3, 'gamma': 0.87},
-            'high': {'brightness': 1.15, 'contrast': 1.12, 'saturation': 0.90, 'sharpness': 1.2, 'gamma': 0.92}
+        'champagne_gold': {
+            'low': {
+                'brightness': 1.30, 'contrast': 1.25, 'saturation': 0.70,
+                'highlights': 1.30, 'shadows': 1.10, 'clarity': 1.35,
+                'vibrance': 0.75, 'temperature': -8, 'white_overlay': 0.15,
+                'denoise': 6, 'sharpen': 1.5, 'gamma': 1.08
+            },
+            'normal': {
+                'brightness': 1.15, 'contrast': 1.20, 'saturation': 0.75,
+                'highlights': 1.25, 'shadows': 0.88, 'clarity': 1.30,
+                'vibrance': 0.80, 'temperature': -5, 'white_overlay': 0.12,
+                'denoise': 4, 'sharpen': 1.4, 'gamma': 1.05
+            },
+            'high': {
+                'brightness': 1.10, 'contrast': 1.15, 'saturation': 0.80,
+                'highlights': 0.88, 'shadows': 0.83, 'clarity': 1.25,
+                'vibrance': 0.85, 'temperature': -3, 'white_overlay': 0.10,
+                'denoise': 3, 'sharpen': 1.3, 'gamma': 1.00
+            }
         }
     }
     
     # Get parameters
-    if metal_type not in params:
-        metal_type = 'white_gold'  # Default
-    if lighting not in params[metal_type]:
-        lighting = 'normal'  # Default
+    params = metal_params.get(metal_type, metal_params['white_gold']).get(lighting, metal_params['white_gold']['normal'])
     
-    p = params[metal_type][lighting]
+    # 10-step enhancement process
     
-    # If not ring region, use lighter enhancement
-    if not is_ring_region:
-        p = {
-            'brightness': 1.05 + (p['brightness'] - 1.0) * 0.3,
-            'contrast': 1.03 + (p['contrast'] - 1.0) * 0.3,
-            'saturation': 1.0 + (p['saturation'] - 1.0) * 0.3,
-            'sharpness': 1.05 + (p['sharpness'] - 1.0) * 0.3,
-            'gamma': 0.95 + (p['gamma'] - 0.95) * 0.3
-        }
+    # Step 1: Denoise
+    if params['denoise'] > 0:
+        enhanced = cv2.fastNlMeansDenoisingColored(enhanced, None, params['denoise'], params['denoise'], 7, 21)
     
-    # Convert to PIL for enhancements
-    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    # Step 2-4: Brightness, Contrast, and Advanced adjustments in LAB
+    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB).astype(np.float32)
+    l, a, b = cv2.split(lab)
     
-    # Apply enhancements
-    # 1. Brightness
-    enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(p['brightness'])
+    # Brightness
+    l = l * params['brightness']
     
-    # 2. Contrast
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(p['contrast'])
+    # Contrast
+    l = ((l - 127.5) * params['contrast']) + 127.5
     
-    # 3. Color (Saturation)
-    enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(p['saturation'])
+    # Highlights and shadows
+    highlight_mask = l > 180
+    shadow_mask = l < 50
+    l[highlight_mask] = l[highlight_mask] * params['highlights']
+    l[shadow_mask] = l[shadow_mask] * params['shadows']
     
-    # 4. Sharpness
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(p['sharpness'])
+    # Clarity (local contrast)
+    l_blur = cv2.GaussianBlur(l, (31, 31), 0)  # 31x31 Gaussian blur for natural blending
+    l_detail = l - l_blur
+    l = l + (l_detail * params['clarity'])
     
-    # Convert back to numpy
-    result = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    l = np.clip(l, 0, 255)
+    lab = cv2.merge([l, a, b])
+    enhanced = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
     
-    # 5. Gamma correction
-    gamma_corrected = np.power(result / 255.0, p['gamma']) * 255.0
-    result = gamma_corrected.astype(np.uint8)
+    # Step 5: Sharpness
+    if params['sharpen'] > 1.0:
+        pil_img = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+        sharpener = ImageEnhance.Sharpness(pil_img)
+        pil_img = sharpener.enhance(params['sharpen'])
+        enhanced = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     
-    # 6. Additional detail enhancement for ring regions
-    if is_ring_region:
-        # Unsharp mask for extra detail
-        gaussian = cv2.GaussianBlur(result, (5, 5), 1.0)
-        result = cv2.addWeighted(result, 1.5, gaussian, -0.5, 0)
+    # Step 6: Saturation and Vibrance in HSV
+    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
+    h, s, v = cv2.split(hsv)
+    
+    # Saturation
+    s = s * params['saturation']
+    
+    # Vibrance (selective saturation)
+    vibrance_mask = s < 100
+    s[vibrance_mask] = s[vibrance_mask] * params['vibrance']
+    
+    s = np.clip(s, 0, 255)
+    hsv = cv2.merge([h, s, v])
+    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    
+    # Step 7: White overlay
+    if params['white_overlay'] > 0:
+        white_layer = np.ones_like(enhanced) * 255
+        enhanced = cv2.addWeighted(enhanced, 1 - params['white_overlay'], white_layer, params['white_overlay'], 0)
+    
+    # Step 8: Color temperature
+    if params['temperature'] != 0:
+        lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB).astype(np.float32)
+        l, a, b = cv2.split(lab)
         
-        # CLAHE for local contrast
-        lab = cv2.cvtColor(result, cv2.COLOR_BGR2LAB)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-        result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        # Adjust temperature
+        b = b + params['temperature']
+        if params['temperature'] < 0:  # Cool
+            a = a - (params['temperature'] * 0.2)
+        
+        b = np.clip(b, 0, 255)
+        a = np.clip(a, 0, 255)
+        lab = cv2.merge([l, a, b])
+        enhanced = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
     
-    return result
+    # Step 9: CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = clahe.apply(l)
+    lab = cv2.merge([l, a, b])
+    enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+    
+    # Step 10: Gamma correction
+    if params['gamma'] != 1.0:
+        inv_gamma = 1.0 / params['gamma']
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+        enhanced = cv2.LUT(enhanced, table)
+    
+    # Final blending with original
+    enhanced = cv2.addWeighted(image, 0.15, enhanced, 0.85, 0)
+    
+    return enhanced
 
 def apply_replicate_inpainting(image, masking_info):
-    """Apply Replicate API inpainting for natural masking removal"""
+    """Apply inpainting using Replicate API with background replacement"""
+    if not REPLICATE_API_TOKEN or not masking_info:
+        return image
+    
     try:
-        if not REPLICATE_API_TOKEN:
-            log_debug("No Replicate API token")
-            return None
+        import replicate
         
-        log_debug("Applying Replicate inpainting")
+        # Initialize client within function
+        client = replicate.Client(api_token=REPLICATE_API_TOKEN)
         
-        # Initialize Replicate client
-        replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+        # Create mask
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        x1, y1, x2, y2 = masking_info['bounds']
         
-        # Create mask for inpainting
-        h, w = image.shape[:2]
-        mask = np.zeros((h, w), dtype=np.uint8)
+        # Mark areas to inpaint (outside the bounds)
+        mask[:y1, :] = 255  # Top
+        mask[y2:, :] = 255  # Bottom
+        mask[:, :x1] = 255  # Left
+        mask[:, x2:] = 255  # Right
         
-        thickness = masking_info['thickness']
-        bounds = masking_info['bounds']
+        # Get appropriate background color
+        lighting = detect_lighting_condition(image, masking_info['bounds'])
+        metal_type = detect_metal_type(image, masking_info['bounds'])
+        bg_color = get_after_background_color(lighting, metal_type)
         
-        if masking_info['type'] == 'center':
-            # For center masking, create mask for the black frame
-            x1, y1, x2, y2 = bounds
-            
-            # Expand bounds to include the black frame
-            frame_x1 = max(0, x1 - thickness - 10)
-            frame_y1 = max(0, y1 - thickness - 10)
-            frame_x2 = min(w, x2 + thickness + 10)
-            frame_y2 = min(h, y2 + thickness + 10)
-            
-            # Create mask for the frame
-            mask[frame_y1:y1+10, frame_x1:frame_x2] = 255  # Top
-            mask[y2-10:frame_y2, frame_x1:frame_x2] = 255  # Bottom
-            mask[frame_y1:frame_y2, frame_x1:x1+10] = 255  # Left
-            mask[frame_y1:frame_y2, x2-10:frame_x2] = 255  # Right
-            
-        elif masking_info['type'] == 'edge':
-            # For edge masking, mask the edges
-            for edge in masking_info.get('edges', []):
-                if edge == 'top':
-                    mask[:thickness+20, :] = 255
-                elif edge == 'bottom':
-                    mask[-thickness-20:, :] = 255
-                elif edge == 'left':
-                    mask[:, :thickness+20] = 255
-                elif edge == 'right':
-                    mask[:, -thickness-20:] = 255
+        # Apply background color to masked areas
+        result = image.copy()
+        result[mask > 0] = bg_color
         
-        # Convert to PIL
-        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        pil_mask = Image.fromarray(mask)
+        # Prepare images
+        _, img_buffer = cv2.imencode('.png', result)
+        img_bytes = img_buffer.tobytes()
         
-        # Save to bytes
-        image_bytes = io.BytesIO()
-        pil_image.save(image_bytes, format='PNG')
-        image_bytes.seek(0)
-        
-        mask_bytes = io.BytesIO()
-        pil_mask.save(mask_bytes, format='PNG')
-        mask_bytes.seek(0)
+        _, mask_buffer = cv2.imencode('.png', mask)
+        mask_bytes = mask_buffer.tobytes()
         
         # Run inpainting
-        output = replicate_client.run(
+        output = client.run(
             "stability-ai/stable-diffusion-inpainting",
             input={
-                "image": image_bytes,
-                "mask": mask_bytes,
-                "prompt": "clean white seamless product photography background, smooth gradient",
-                "negative_prompt": "black, dark, shadows, borders, frames, lines, marks",
+                "image": io.BytesIO(img_bytes),
+                "mask": io.BytesIO(mask_bytes),
+                "prompt": "professional product photography white background",
+                "negative_prompt": "black borders, frames, masking",
                 "num_inference_steps": 30,
                 "guidance_scale": 7.5
             }
         )
         
-        if output and len(output) > 0:
-            # Download result
-            response = requests.get(output[0])
+        # Process result
+        if output and isinstance(output, list) and len(output) > 0:
+            result_url = output[0]
+            response = requests.get(result_url)
             result_image = Image.open(io.BytesIO(response.content))
-            result = cv2.cvtColor(np.array(result_image), cv2.COLOR_RGB2BGR)
-            
-            # Preserve the ring area
-            if masking_info['type'] == 'center':
-                x1, y1, x2, y2 = bounds
-                result[y1:y2, x1:x2] = image[y1:y2, x1:x2]
-            
-            log_debug("Replicate inpainting successful")
-            return result
-            
+            return cv2.cvtColor(np.array(result_image), cv2.COLOR_RGB2BGR)
+        
     except Exception as e:
         log_debug(f"Replicate inpainting failed: {str(e)}")
     
-    return None
+    return apply_simple_masking_removal(image, masking_info)
 
 def apply_simple_masking_removal(image, masking_info):
-    """Simple masking removal using averaging and smooth blending"""
-    h, w = image.shape[:2]
-    result = image.copy()
+    """Simple masking removal with background replacement"""
+    if not masking_info:
+        return image
     
-    # Get background color from edges
-    edge_pixels = []
-    margin = 100
+    x1, y1, x2, y2 = masking_info['bounds']
     
-    # Sample from all edges (avoiding masked areas)
-    if masking_info['type'] == 'edge':
-        edges = masking_info.get('edges', [])
-        if 'top' not in edges and margin < h//2:
-            edge_pixels.extend(image[0:margin, :].reshape(-1, 3))
-        if 'bottom' not in edges and margin < h//2:
-            edge_pixels.extend(image[h-margin:h, :].reshape(-1, 3))
-        if 'left' not in edges and margin < w//2:
-            edge_pixels.extend(image[:, 0:margin].reshape(-1, 3))
-        if 'right' not in edges and margin < w//2:
-            edge_pixels.extend(image[:, w-margin:w].reshape(-1, 3))
-    else:
-        # For center masking, sample from corners
-        corner_size = 50
-        if corner_size < min(h, w) // 4:
-            edge_pixels.extend(image[0:corner_size, 0:corner_size].reshape(-1, 3))
-            edge_pixels.extend(image[0:corner_size, w-corner_size:w].reshape(-1, 3))
-            edge_pixels.extend(image[h-corner_size:h, 0:corner_size].reshape(-1, 3))
-            edge_pixels.extend(image[h-corner_size:h, w-corner_size:w].reshape(-1, 3))
+    # Get appropriate background color
+    lighting = detect_lighting_condition(image, masking_info['bounds'])
+    metal_type = detect_metal_type(image, masking_info['bounds'])
+    bg_color = get_after_background_color(lighting, metal_type)
     
-    if edge_pixels:
-        bg_color = np.median(edge_pixels, axis=0).astype(np.uint8)
-    else:
-        # Default light background
-        bg_color = np.array([240, 240, 240], dtype=np.uint8)
+    # Create result with background
+    result = np.full_like(image, bg_color)
     
-    # Create gradient background
-    gradient = np.ones((h, w, 3), dtype=np.uint8) * bg_color
+    # Copy the inner content
+    result[y1:y2, x1:x2] = image[y1:y2, x1:x2]
     
-    # Add subtle gradient
-    for y in range(h):
-        factor = 1.0 - (abs(y - h//2) / (h//2)) * 0.05
-        gradient[y] = bg_color * factor
+    # Apply Gaussian blur at edges for natural blending
+    mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    mask[y1:y2, x1:x2] = 255
     
-    # Apply masking removal
-    thickness = masking_info['thickness']
+    # Create smooth transition
+    mask_blurred = cv2.GaussianBlur(mask, (31, 31), 0)
+    mask_3channel = cv2.cvtColor(mask_blurred, cv2.COLOR_GRAY2BGR) / 255.0
     
-    if masking_info['type'] == 'center':
-        x1, y1, x2, y2 = masking_info['bounds']
-        
-        # Fill the black frame area
-        # Top
-        if y1 > thickness:
-            result[max(0, y1-thickness-20):y1, x1-thickness-20:x2+thickness+20] = \
-                gradient[max(0, y1-thickness-20):y1, x1-thickness-20:x2+thickness+20]
-        
-        # Bottom
-        if y2 < h - thickness:
-            result[y2:min(h, y2+thickness+20), x1-thickness-20:x2+thickness+20] = \
-                gradient[y2:min(h, y2+thickness+20), x1-thickness-20:x2+thickness+20]
-        
-        # Left
-        if x1 > thickness:
-            result[y1-thickness-20:y2+thickness+20, max(0, x1-thickness-20):x1] = \
-                gradient[y1-thickness-20:y2+thickness+20, max(0, x1-thickness-20):x1]
-        
-        # Right
-        if x2 < w - thickness:
-            result[y1-thickness-20:y2+thickness+20, x2:min(w, x2+thickness+20)] = \
-                gradient[y1-thickness-20:y2+thickness+20, x2:min(w, x2+thickness+20)]
+    # Blend
+    result = image * mask_3channel + result * (1 - mask_3channel)
     
-    elif masking_info['type'] == 'edge':
-        edges = masking_info.get('edges', [])
-        
-        if 'top' in edges:
-            result[:thickness+20, :] = gradient[:thickness+20, :]
-        if 'bottom' in edges:
-            result[-thickness-20:, :] = gradient[-thickness-20:, :]
-        if 'left' in edges:
-            result[:, :thickness+20] = gradient[:, :thickness+20]
-        if 'right' in edges:
-            result[:, -thickness-20:] = gradient[:, -thickness-20:]
-    
-    # Smooth blending
-    for i in range(3):
-        result = cv2.bilateralFilter(result, 9, 75, 75)
-    
-    return result
+    return result.astype(np.uint8)
 
-def create_thumbnail(image, target_size=(800, 800)):
-    """Create thumbnail with ring centered and filling most of the frame"""
+def create_thumbnail(image, size=(1000, 1300)):
+    """Create a thumbnail with exact 1000x1300 size, ring centered"""
     h, w = image.shape[:2]
     
-    # Convert to grayscale for ring detection
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Convert to PIL for easier handling
+    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     
-    # Find the ring using threshold
-    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+    # Calculate scale to fit the ring to occupy ~60% of the frame
+    ring_target_size = min(size[0] * 0.6, size[1] * 0.6)
+    scale = ring_target_size / max(w, h)
     
-    # Morphological operations to clean up
-    kernel = np.ones((5, 5), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
     
-    # Find contours
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Resize the image
+    pil_image = pil_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
     
-    if contours:
-        # Find the largest contour (should be the ring)
-        largest_contour = max(contours, key=cv2.contourArea)
-        x, y, w_ring, h_ring = cv2.boundingRect(largest_contour)
-        
-        # Add padding
-        padding = int(max(w_ring, h_ring) * 0.15)
-        x = max(0, x - padding)
-        y = max(0, y - padding)
-        w_ring = min(w - x, w_ring + 2 * padding)
-        h_ring = min(h - y, h_ring + 2 * padding)
-        
-        # Make it square
-        if w_ring > h_ring:
-            diff = w_ring - h_ring
-            y = max(0, y - diff // 2)
-            h_ring = min(h - y, w_ring)
-        else:
-            diff = h_ring - w_ring
-            x = max(0, x - diff // 2)
-            w_ring = min(w - x, h_ring)
-        
-        # Crop to ring area
-        cropped = image[y:y+h_ring, x:x+w_ring]
-    else:
-        # Fallback: use center crop
-        crop_size = int(min(w, h) * 0.8)
-        x = (w - crop_size) // 2
-        y = (h - crop_size) // 2
-        cropped = image[y:y+crop_size, x:x+crop_size]
+    # Create white background with exact size
+    thumbnail = Image.new('RGB', size, 'white')
     
-    # Resize to target size
-    thumbnail = cv2.resize(cropped, target_size, interpolation=cv2.INTER_LANCZOS4)
+    # Paste centered
+    x = (size[0] - new_w) // 2
+    y = (size[1] - new_h) // 2
+    thumbnail.paste(pil_image, (x, y))
     
-    return thumbnail
+    return cv2.cvtColor(np.array(thumbnail), cv2.COLOR_RGB2BGR)
 
 def handler(event):
     """Main handler function for RunPod"""
     try:
-        log_debug("Handler started - v123")
-        
-        # Log the entire event structure
+        log_debug(f"Handler started")
         log_debug(f"Event type: {type(event)}")
         log_debug(f"Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
         
-        # Parse input
+        # Get job input
         job_input = event.get("input", {})
-        log_debug(f"Input keys: {list(job_input.keys()) if isinstance(job_input, dict) else 'Not a dict'}")
+        log_debug(f"Job input keys: {list(job_input.keys())}")
         
-        # Log first 200 chars of each value in input
-        for key, value in job_input.items():
-            if isinstance(value, str):
-                log_debug(f"Input[{key}] (first 200 chars): {value[:200]}...")
-            else:
-                log_debug(f"Input[{key}] type: {type(value)}")
+        # Extract base64 image
+        base64_image = job_input.get("image", "")
+        if not base64_image:
+            # Try nested structure
+            if "input" in job_input and isinstance(job_input["input"], dict):
+                base64_image = job_input["input"].get("image", "")
         
-        # Try different possible input formats
-        image_base64 = None
-        if "image" in job_input:
-            image_base64 = job_input["image"]
-        elif "image_base64" in job_input:
-            image_base64 = job_input["image_base64"]
-        elif "enhanced_image" in job_input:
-            image_base64 = job_input["enhanced_image"]
-        elif "data" in job_input:
-            # Sometimes Make.com nests data
-            data = job_input["data"]
-            if isinstance(data, dict):
-                if "image" in data:
-                    image_base64 = data["image"]
-                elif "image_base64" in data:
-                    image_base64 = data["image_base64"]
+        if not base64_image:
+            raise ValueError("No image provided in input")
         
-        if not image_base64:
-            # Try to find any key with base64 data
-            for key, value in job_input.items():
-                if isinstance(value, str) and len(value) > 1000:
-                    # Likely base64 data
-                    log_debug(f"Found potential base64 data in key: {key}")
-                    image_base64 = value
-                    break
-        
-        if not image_base64:
-            log_debug(f"No image found. Available keys: {list(job_input.keys())}")
-            return {
-                "output": {
-                    "error": "No image provided",
-                    "available_keys": list(job_input.keys()),
-                    "event_structure": str(event)[:500]  # First 500 chars of event
-                }
-            }
-        
-        log_debug(f"Image base64 found, length: {len(image_base64)}")
+        log_debug(f"Base64 string length: {len(base64_image)}")
+        log_debug(f"Base64 string start: {base64_image[:100]}...")
         
         # Decode image
-        image = decode_base64_image(image_base64)
+        image = decode_base64_image(base64_image)
         log_debug(f"Image decoded successfully: {image.shape}")
         
-        # Step 1: Detect masking (both center and edge)
-        center_mask = detect_center_masking_ultra_advanced(image)
-        edge_mask = detect_edge_masking_ultra(image)
+        # Process image
+        # 1. Detect masking using comprehensive method
+        masking_info = detect_masking_comprehensive(image)
+        log_debug(f"Masking detected: {masking_info}")
         
-        # Prioritize center masking if found
-        masking_info = center_mask or edge_mask
+        # 2. Detect lighting and metal type
+        mask_bounds = masking_info['bounds'] if masking_info else None
+        lighting = detect_lighting_condition(image, mask_bounds)
+        metal_type = detect_metal_type(image, mask_bounds)
+        log_debug(f"Lighting: {lighting}, Metal type: {metal_type}")
         
-        # Step 2: Detect lighting condition
-        lighting = detect_lighting_condition(image)
-        log_debug(f"Lighting condition: {lighting}")
+        # 3. Enhance wedding ring details
+        enhanced = enhance_wedding_ring_details(image, lighting, metal_type)
+        log_debug("Wedding ring enhancement applied")
         
-        # Step 3: Process based on masking detection
+        # 4. Remove masking if detected
         if masking_info:
-            log_debug(f"Masking detected: {masking_info['type']}, thickness: {masking_info['thickness']}px")
-            
-            # Detect metal type within masked area
-            x1, y1, x2, y2 = masking_info['bounds']
-            ring_region = image[y1:y2, x1:x2]
-            metal_type = detect_metal_type_advanced(ring_region)
-            log_debug(f"Metal type: {metal_type}")
-            
-            # Enhance ring details within mask
-            enhanced_ring = enhance_wedding_ring_details(ring_region, metal_type, lighting, is_ring_region=True)
-            
-            # Remove masking
             if REPLICATE_API_TOKEN:
-                result = apply_replicate_inpainting(image, masking_info)
-                if result is None:
-                    result = apply_simple_masking_removal(image, masking_info)
+                enhanced = apply_replicate_inpainting(enhanced, masking_info)
             else:
-                result = apply_simple_masking_removal(image, masking_info)
-            
-            # Put enhanced ring back
-            result[y1:y2, x1:x2] = enhanced_ring
-            
-            # Light enhancement for full image
-            result = enhance_wedding_ring_details(result, metal_type, lighting, is_ring_region=False)
-            
-        else:
-            log_debug("No masking detected, applying direct enhancement")
-            # No masking, just enhance
-            metal_type = detect_metal_type_advanced(image)
-            log_debug(f"Metal type: {metal_type}")
-            result = enhance_wedding_ring_details(image, metal_type, lighting, is_ring_region=True)
+                enhanced = apply_simple_masking_removal(enhanced, masking_info)
+            log_debug("Masking removed")
         
-        # Create thumbnail
-        thumbnail = create_thumbnail(result)
+        # 5. Create thumbnail with exact size
+        thumbnail = create_thumbnail(enhanced)
+        log_debug(f"Thumbnail created: {thumbnail.shape}")
         
-        # Encode results (without padding for Make.com)
-        enhanced_base64 = encode_image_to_base64(result)
-        thumbnail_base64 = encode_image_to_base64(thumbnail)
+        # 6. Encode result
+        _, buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        result_base64 = base64.b64encode(buffer).decode('utf-8')
         
-        log_debug(f"Enhanced base64 length: {len(enhanced_base64)}")
-        log_debug(f"Thumbnail base64 length: {len(thumbnail_base64)}")
+        # Remove padding for Make.com compatibility
+        result_base64 = result_base64.rstrip('=')
         
-        # Return with correct structure for Make.com
+        log_debug(f"Processing complete. Result length: {len(result_base64)}")
+        
+        # Return with proper structure
         return {
             "output": {
-                "enhanced_image": enhanced_base64,
-                "thumbnail": thumbnail_base64,
-                "processing_info": {
-                    "metal_type": metal_type,
-                    "lighting": lighting,
-                    "masking_detected": masking_info is not None,
-                    "masking_type": masking_info['type'] if masking_info else None,
-                    "version": "v123"
-                }
+                "enhanced_image": result_base64
             }
         }
         
     except Exception as e:
         log_debug(f"Error in handler: {str(e)}")
         import traceback
-        tb = traceback.format_exc()
-        log_debug(f"Traceback: {tb}")
+        log_debug(f"Traceback: {traceback.format_exc()}")
         return {
             "output": {
                 "error": str(e),
-                "traceback": tb,
-                "version": "v123"
+                "enhanced_image": ""
             }
         }
 
-# RunPod handler
+# RunPod handler - CORRECT FORMAT
 runpod.serverless.start({"handler": handler})
