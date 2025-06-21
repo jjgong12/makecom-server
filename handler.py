@@ -23,6 +23,76 @@ def log_debug(message):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         print(f"[{timestamp}] {message}")
 
+def find_image_in_event(event):
+    """Find image data in various possible locations in the event"""
+    log_debug("Searching for image in event structure...")
+    
+    # Log entire event structure for debugging
+    log_debug(f"Full event: {json.dumps(event, default=str)[:1000]}...")
+    
+    # List of possible paths to check
+    paths_to_check = [
+        lambda e: e.get("image"),
+        lambda e: e.get("image_base64"),
+        lambda e: e.get("input", {}).get("image"),
+        lambda e: e.get("input", {}).get("image_base64"),
+        lambda e: e.get("input", {}).get("data", {}).get("image"),
+        lambda e: e.get("input", {}).get("data", {}).get("image_base64"),
+        lambda e: e.get("data", {}).get("image"),
+        lambda e: e.get("data", {}).get("image_base64"),
+        lambda e: e.get("input", {}).get("input", {}).get("image"),
+        lambda e: e.get("input", {}).get("input", {}).get("image_base64"),
+    ]
+    
+    # Try each path
+    for i, path_func in enumerate(paths_to_check):
+        try:
+            result = path_func(event)
+            if result and isinstance(result, str) and len(result) > 100:
+                log_debug(f"Found image at path {i}")
+                return result
+        except Exception as e:
+            continue
+    
+    # If not found in standard paths, search recursively
+    def search_dict(d, depth=0, max_depth=5):
+        if depth > max_depth:
+            return None
+        if isinstance(d, dict):
+            for key, value in d.items():
+                log_debug(f"Checking key '{key}' at depth {depth}")
+                if key in ['image', 'image_base64', 'enhanced_image', 'base64']:
+                    if isinstance(value, str) and len(value) > 100:
+                        log_debug(f"Found image in key '{key}'")
+                        return value
+                elif isinstance(value, dict):
+                    result = search_dict(value, depth + 1)
+                    if result:
+                        return result
+        return None
+    
+    # Try recursive search
+    image_data = search_dict(event)
+    if image_data:
+        return image_data
+    
+    # Last resort: find any large string that might be base64
+    def find_large_strings(d, min_length=1000):
+        if isinstance(d, dict):
+            for key, value in d.items():
+                if isinstance(value, str) and len(value) > min_length:
+                    # Check if it looks like base64
+                    if re.match(r'^[A-Za-z0-9+/]*={0,2}$', value[:100]):
+                        log_debug(f"Found potential base64 in key '{key}'")
+                        return value
+                elif isinstance(value, dict):
+                    result = find_large_strings(value)
+                    if result:
+                        return result
+        return None
+    
+    return find_large_strings(event)
+
 def decode_base64_image(base64_string):
     """Decode base64 image with multiple fallback methods"""
     log_debug("Starting base64 decode process")
@@ -758,25 +828,22 @@ def create_thumbnail(image, size=(1000, 1300)):
 def handler(event):
     """Main handler function for RunPod"""
     try:
-        log_debug(f"Handler started")
+        log_debug(f"Handler started - v131")
         log_debug(f"Event type: {type(event)}")
-        log_debug(f"Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
         
-        # Get job input
-        job_input = event.get("input", {})
-        log_debug(f"Job input keys: {list(job_input.keys())}")
-        
-        # Extract base64 image
-        base64_image = job_input.get("image", "")
-        if not base64_image:
-            # Try nested structure
-            if "input" in job_input and isinstance(job_input["input"], dict):
-                base64_image = job_input["input"].get("image", "")
+        # Find image in event structure
+        base64_image = find_image_in_event(event)
         
         if not base64_image:
-            raise ValueError("No image provided in input")
+            log_debug("No image found after extensive search")
+            return {
+                "output": {
+                    "error": "No image provided in input",
+                    "enhanced_image": ""
+                }
+            }
         
-        log_debug(f"Base64 string length: {len(base64_image)}")
+        log_debug(f"Image found! Length: {len(base64_image)}")
         log_debug(f"Base64 string start: {base64_image[:100]}...")
         
         # Decode image
