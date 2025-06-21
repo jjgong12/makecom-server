@@ -23,35 +23,55 @@ def decode_base64_image(base64_string):
         if not base64_string:
             raise ValueError("Empty base64 string")
         
-        # Remove data URL prefix if present
-        if ',' in base64_string:
-            base64_string = base64_string.split(',')[1]
+        # Log the first 100 chars for debugging
+        log_debug(f"Base64 string start: {base64_string[:100]}...")
         
-        # Clean the string
+        # Remove any whitespace and newlines
+        base64_string = base64_string.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+        
+        # Remove data URL prefix if present (multiple formats)
+        if 'base64,' in base64_string:
+            base64_string = base64_string.split('base64,')[1]
+        elif 'base64:' in base64_string:
+            base64_string = base64_string.split('base64:')[1]
+        elif base64_string.startswith('data:'):
+            # Handle any data URL format
+            parts = base64_string.split(',')
+            if len(parts) > 1:
+                base64_string = parts[1]
+            else:
+                # Try splitting by semicolon
+                parts = base64_string.split(';')
+                if len(parts) > 1 and 'base64' in parts[-1]:
+                    base64_string = parts[-1].replace('base64', '').strip()
+        
+        # Clean the string again after prefix removal
         base64_string = base64_string.strip()
         
         # Try standard decode first (without adding padding)
         try:
-            image_data = base64.b64decode(base64_string)
+            image_data = base64.b64decode(base64_string, validate=True)
             image = Image.open(io.BytesIO(image_data))
             if image.mode == 'RGBA':
                 image = image.convert('RGB')
+            log_debug("Successfully decoded with standard method")
             return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        except:
-            pass
+        except Exception as e1:
+            log_debug(f"Standard decode failed: {str(e1)}")
         
         # If failed, try with padding
-        missing_padding = len(base64_string) % 4
-        if missing_padding:
-            base64_string_padded = base64_string + '=' * (4 - missing_padding)
-            try:
-                image_data = base64.b64decode(base64_string_padded)
+        try:
+            missing_padding = len(base64_string) % 4
+            if missing_padding:
+                base64_string_padded = base64_string + '=' * (4 - missing_padding)
+                image_data = base64.b64decode(base64_string_padded, validate=True)
                 image = Image.open(io.BytesIO(image_data))
                 if image.mode == 'RGBA':
                     image = image.convert('RGB')
+                log_debug("Successfully decoded with padding")
                 return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-            except:
-                pass
+        except Exception as e2:
+            log_debug(f"Padded decode failed: {str(e2)}")
         
         # Try URL-safe decode
         try:
@@ -60,19 +80,38 @@ def decode_base64_image(base64_string):
             missing_padding = len(base64_string_safe) % 4
             if missing_padding:
                 base64_string_safe += '=' * (4 - missing_padding)
-            image_data = base64.b64decode(base64_string_safe)
+            image_data = base64.b64decode(base64_string_safe, validate=True)
             image = Image.open(io.BytesIO(image_data))
             if image.mode == 'RGBA':
                 image = image.convert('RGB')
+            log_debug("Successfully decoded with URL-safe method")
             return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        except:
-            pass
+        except Exception as e3:
+            log_debug(f"URL-safe decode failed: {str(e3)}")
+        
+        # Last resort - try without validation
+        try:
+            # Remove any remaining non-base64 characters
+            import re
+            base64_string_clean = re.sub(r'[^A-Za-z0-9+/]', '', base64_string)
+            missing_padding = len(base64_string_clean) % 4
+            if missing_padding:
+                base64_string_clean += '=' * (4 - missing_padding)
+            image_data = base64.b64decode(base64_string_clean)
+            image = Image.open(io.BytesIO(image_data))
+            if image.mode == 'RGBA':
+                image = image.convert('RGB')
+            log_debug("Successfully decoded with regex cleaning")
+            return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        except Exception as e4:
+            log_debug(f"Regex cleaned decode failed: {str(e4)}")
         
         raise Exception("All decoding methods failed")
         
     except Exception as e:
-        log_debug(f"Error decoding base64: {str(e)}")
-        raise Exception(f"Could not decode image: {str(e)}")
+        log_debug(f"Final error decoding base64: {str(e)}")
+        log_debug(f"Base64 length: {len(base64_string) if base64_string else 0}")
+        raise Exception(f"Could not decode string.")
 
 def encode_image_to_base64(image, format='JPEG'):
     """Encode image to base64 WITHOUT padding for Make.com"""
@@ -781,10 +820,22 @@ def create_thumbnail(image, target_size=(800, 800)):
 def handler(event):
     """Main handler function for RunPod"""
     try:
-        log_debug("Handler started")
+        log_debug("Handler started - v123")
+        
+        # Log the entire event structure
+        log_debug(f"Event type: {type(event)}")
+        log_debug(f"Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
         
         # Parse input
         job_input = event.get("input", {})
+        log_debug(f"Input keys: {list(job_input.keys()) if isinstance(job_input, dict) else 'Not a dict'}")
+        
+        # Log first 200 chars of each value in input
+        for key, value in job_input.items():
+            if isinstance(value, str):
+                log_debug(f"Input[{key}] (first 200 chars): {value[:200]}...")
+            else:
+                log_debug(f"Input[{key}] type: {type(value)}")
         
         # Try different possible input formats
         image_base64 = None
@@ -794,15 +845,35 @@ def handler(event):
             image_base64 = job_input["image_base64"]
         elif "enhanced_image" in job_input:
             image_base64 = job_input["enhanced_image"]
+        elif "data" in job_input:
+            # Sometimes Make.com nests data
+            data = job_input["data"]
+            if isinstance(data, dict):
+                if "image" in data:
+                    image_base64 = data["image"]
+                elif "image_base64" in data:
+                    image_base64 = data["image_base64"]
         
         if not image_base64:
-            log_debug(f"Available keys: {list(job_input.keys())}")
+            # Try to find any key with base64 data
+            for key, value in job_input.items():
+                if isinstance(value, str) and len(value) > 1000:
+                    # Likely base64 data
+                    log_debug(f"Found potential base64 data in key: {key}")
+                    image_base64 = value
+                    break
+        
+        if not image_base64:
+            log_debug(f"No image found. Available keys: {list(job_input.keys())}")
             return {
                 "output": {
                     "error": "No image provided",
-                    "available_keys": list(job_input.keys())
+                    "available_keys": list(job_input.keys()),
+                    "event_structure": str(event)[:500]  # First 500 chars of event
                 }
             }
+        
+        log_debug(f"Image base64 found, length: {len(image_base64)}")
         
         # Decode image
         image = decode_base64_image(image_base64)
@@ -860,6 +931,9 @@ def handler(event):
         enhanced_base64 = encode_image_to_base64(result)
         thumbnail_base64 = encode_image_to_base64(thumbnail)
         
+        log_debug(f"Enhanced base64 length: {len(enhanced_base64)}")
+        log_debug(f"Thumbnail base64 length: {len(thumbnail_base64)}")
+        
         # Return with correct structure for Make.com
         return {
             "output": {
@@ -870,7 +944,7 @@ def handler(event):
                     "lighting": lighting,
                     "masking_detected": masking_info is not None,
                     "masking_type": masking_info['type'] if masking_info else None,
-                    "version": "v122"
+                    "version": "v123"
                 }
             }
         }
@@ -878,10 +952,13 @@ def handler(event):
     except Exception as e:
         log_debug(f"Error in handler: {str(e)}")
         import traceback
+        tb = traceback.format_exc()
+        log_debug(f"Traceback: {tb}")
         return {
             "output": {
                 "error": str(e),
-                "traceback": traceback.format_exc()
+                "traceback": tb,
+                "version": "v123"
             }
         }
 
