@@ -17,6 +17,15 @@ REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
 # Debug flag
 DEBUG = True
 
+# CRITICAL MASKING PARAMETERS FOR 6720x4480 IMAGES
+MASKING_PARAMS = {
+    'color_threshold': 50,  # RGB values below this are considered black/dark gray
+    'min_thickness': 80,    # Minimum expected thickness in pixels
+    'max_thickness': 150,   # Maximum expected thickness in pixels
+    'scan_depth': 200,      # How deep to scan from edges
+    'detection_confidence': 0.8  # 80% of pixels must be dark to confirm masking
+}
+
 def log_debug(message):
     """Print debug messages with timestamp"""
     if DEBUG:
@@ -122,205 +131,128 @@ def decode_base64_image(base64_string):
         raise ValueError(f"Failed to decode base64 image: {str(e)}")
 
 def detect_actual_line_thickness(gray, bounds):
-    """Detect the actual thickness of masking lines up to 200px"""
+    """Detect the actual thickness of masking lines (80-150px for 6720x4480)"""
     x1, y1, x2, y2 = bounds
-    max_thickness = min(200, min(x2 - x1, y2 - y1) // 4)
+    
+    # For high-res images, expect thicker lines
+    max_thickness = MASKING_PARAMS['max_thickness']
     
     thicknesses = []
     
     # Sample from multiple points for accuracy
-    sample_points = min(20, (x2 - x1) // 10)
+    sample_points = 30  # More samples for better accuracy
     
-    # Sample from top edge
-    for i in range(sample_points):
-        offset = int((x2 - x1) * (i + 1) / (sample_points + 1))
-        for t in range(1, max_thickness):
-            if y1 + t < gray.shape[0]:
-                if gray[y1 + t, x1 + offset] > 50:
-                    thicknesses.append(t)
-                    break
-    
-    # Sample from left edge
-    for i in range(sample_points):
-        offset = int((y2 - y1) * (i + 1) / (sample_points + 1))
-        for t in range(1, max_thickness):
-            if x1 + t < gray.shape[1]:
-                if gray[y1 + offset, x1 + t] > 50:
-                    thicknesses.append(t)
-                    break
-    
-    # Sample from bottom edge
-    for i in range(sample_points):
-        offset = int((x2 - x1) * (i + 1) / (sample_points + 1))
-        for t in range(1, max_thickness):
-            if y2 - t >= 0:
-                if gray[y2 - t, x1 + offset] > 50:
-                    thicknesses.append(t)
-                    break
-    
-    # Sample from right edge
-    for i in range(sample_points):
-        offset = int((y2 - y1) * (i + 1) / (sample_points + 1))
-        for t in range(1, max_thickness):
-            if x2 - t >= 0:
-                if gray[y1 + offset, x2 - t] > 50:
-                    thicknesses.append(t)
-                    break
+    # Sample from all edges
+    for edge in ['top', 'left', 'bottom', 'right']:
+        for i in range(sample_points):
+            if edge == 'top':
+                offset = int((x2 - x1) * (i + 1) / (sample_points + 1))
+                for t in range(1, max_thickness):
+                    if y1 + t < gray.shape[0]:
+                        if gray[y1 + t, x1 + offset] > MASKING_PARAMS['color_threshold']:
+                            thicknesses.append(t)
+                            break
+            elif edge == 'left':
+                offset = int((y2 - y1) * (i + 1) / (sample_points + 1))
+                for t in range(1, max_thickness):
+                    if x1 + t < gray.shape[1]:
+                        if gray[y1 + offset, x1 + t] > MASKING_PARAMS['color_threshold']:
+                            thicknesses.append(t)
+                            break
+            elif edge == 'bottom':
+                offset = int((x2 - x1) * (i + 1) / (sample_points + 1))
+                for t in range(1, max_thickness):
+                    if y2 - t >= 0:
+                        if gray[y2 - t, x1 + offset] > MASKING_PARAMS['color_threshold']:
+                            thicknesses.append(t)
+                            break
+            elif edge == 'right':
+                offset = int((y2 - y1) * (i + 1) / (sample_points + 1))
+                for t in range(1, max_thickness):
+                    if x2 - t >= 0:
+                        if gray[y1 + offset, x2 - t] > MASKING_PARAMS['color_threshold']:
+                            thicknesses.append(t)
+                            break
     
     if thicknesses:
-        # Use 75th percentile for robustness
-        avg_thickness = int(np.percentile(thicknesses, 75))
-        return min(avg_thickness + 10, max_thickness)
+        # Use median for robustness
+        median_thickness = int(np.median(thicknesses))
+        log_debug(f"Detected masking thickness: {median_thickness}px (samples: {len(thicknesses)})")
+        return max(median_thickness + 10, MASKING_PARAMS['min_thickness'])
     
-    return 20
+    # Default to expected thickness for high-res images
+    return MASKING_PARAMS['min_thickness']
 
-def validate_rectangular_mask(mask, img_w, img_h):
-    """Validate if detected mask is rectangular and reasonable"""
-    if not mask or 'bounds' not in mask:
-        return False
-    
-    x1, y1, x2, y2 = mask['bounds']
-    width = x2 - x1
-    height = y2 - y1
-    
-    # Check if dimensions are reasonable
-    if width < img_w * 0.2 or height < img_h * 0.2:
-        return False
-        
-    if width > img_w * 0.98 or height > img_h * 0.98:
-        return False
-    
-    return True
-
-def cross_validate_detection(methods_results, image_shape):
-    """Cross-validate results from multiple detection methods"""
-    valid_masks = []
-    
-    for method, mask in methods_results.items():
-        if mask and validate_rectangular_mask(mask, image_shape[1], image_shape[0]):
-            valid_masks.append(mask)
-    
-    if not valid_masks:
-        return None
-    
-    # If multiple valid detections, prioritize center masks
-    center_masks = [m for m in valid_masks if m['type'] == 'center']
-    if center_masks:
-        # Return the one with most reasonable bounds
-        return max(center_masks, key=lambda m: (m['bounds'][2] - m['bounds'][0]) * (m['bounds'][3] - m['bounds'][1]))
-    
-    # Otherwise use edge masks
-    return max(valid_masks, key=lambda m: (m['bounds'][2] - m['bounds'][0]) * (m['bounds'][3] - m['bounds'][1]))
-
-def detect_center_masking_ultra_advanced(image):
-    """Ultra advanced detection for center-positioned masking with multiple methods"""
-    log_debug("Starting ultra advanced center masking detection")
-    
+def detect_dark_gray_masking(image):
+    """Specialized detection for dark gray masking (RGB 25-45)"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     
-    methods_results = {}
+    log_debug(f"Detecting dark gray masking on {w}x{h} image")
     
-    # Method 1: Multi-threshold scanning with adaptive levels
-    log_debug("Method 1: Multi-threshold adaptive scanning")
-    threshold_levels = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80]
+    # Initial aggressive crop (2% from each edge)
+    initial_crop = int(min(w, h) * 0.02)
     
-    for threshold in threshold_levels:
-        binary = gray < threshold
+    # Create mask for dark pixels (RGB < 50)
+    dark_mask = gray < MASKING_PARAMS['color_threshold']
+    
+    # Find edges where dark pixels end
+    bounds = {
+        'top': initial_crop,
+        'bottom': h - initial_crop,
+        'left': initial_crop,
+        'right': w - initial_crop
+    }
+    
+    # Scan from edges inward up to scan_depth
+    scan_depth = min(MASKING_PARAMS['scan_depth'], min(w, h) // 4)
+    
+    # Top edge
+    for y in range(initial_crop, min(scan_depth, h // 2)):
+        dark_ratio = np.mean(dark_mask[y, :])
+        if dark_ratio < MASKING_PARAMS['detection_confidence']:
+            bounds['top'] = y + 10  # Add small margin
+            break
+    
+    # Bottom edge
+    for y in range(h - initial_crop, max(h - scan_depth, h // 2), -1):
+        dark_ratio = np.mean(dark_mask[y, :])
+        if dark_ratio < MASKING_PARAMS['detection_confidence']:
+            bounds['bottom'] = y - 10
+            break
+    
+    # Left edge
+    for x in range(initial_crop, min(scan_depth, w // 2)):
+        dark_ratio = np.mean(dark_mask[:, x])
+        if dark_ratio < MASKING_PARAMS['detection_confidence']:
+            bounds['left'] = x + 10
+            break
+    
+    # Right edge
+    for x in range(w - initial_crop, max(w - scan_depth, w // 2), -1):
+        dark_ratio = np.mean(dark_mask[:, x])
+        if dark_ratio < MASKING_PARAMS['detection_confidence']:
+            bounds['right'] = x - 10
+            break
+    
+    # Verify we found significant masking
+    if (bounds['top'] > initial_crop or bounds['bottom'] < h - initial_crop or
+        bounds['left'] > initial_crop or bounds['right'] < w - initial_crop):
         
-        # Find contours
-        contours, _ = cv2.findContours(binary.astype(np.uint8) * 255, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        masking_info = {
+            'bounds': (bounds['left'], bounds['top'], bounds['right'], bounds['bottom']),
+            'thickness': max(
+                bounds['top'] - initial_crop,
+                h - initial_crop - bounds['bottom'],
+                bounds['left'] - initial_crop,
+                w - initial_crop - bounds['right']
+            ),
+            'type': 'dark_gray_frame',
+            'method': 'specialized_dark_detection'
+        }
         
-        for contour in contours:
-            x, y, cnt_w, cnt_h = cv2.boundingRect(contour)
-            
-            # Check if it's a significant rectangular mask
-            if cnt_w > w * 0.3 and cnt_h > h * 0.3:
-                # Detect actual thickness
-                thickness = detect_actual_line_thickness(gray, (x, y, x + cnt_w, y + cnt_h))
-                
-                # Calculate inner bounds
-                inner_x = x + thickness
-                inner_y = y + thickness
-                inner_w = cnt_w - 2 * thickness
-                inner_h = cnt_h - 2 * thickness
-                
-                if inner_w > 50 and inner_h > 50:
-                    methods_results[f'threshold_{threshold}'] = {
-                        'bounds': (inner_x, inner_y, inner_x + inner_w, inner_y + inner_h),
-                        'thickness': thickness,
-                        'type': 'center',
-                        'method': f'threshold_{threshold}'
-                    }
-                    break
-    
-    # Method 2: Canny edge detection with multiple parameters
-    log_debug("Method 2: Multi-parameter Canny edge detection")
-    for low, high in [(30, 100), (50, 150), (20, 80), (40, 120)]:
-        edges = cv2.Canny(gray, low, high)
-        kernel = np.ones((5, 5), np.uint8)
-        edges_dilated = cv2.dilate(edges, kernel, iterations=2)
-        
-        contours, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for contour in contours:
-            x, y, cnt_w, cnt_h = cv2.boundingRect(contour)
-            
-            if cnt_w > w * 0.3 and cnt_h > h * 0.3:
-                thickness = detect_actual_line_thickness(gray, (x, y, x + cnt_w, y + cnt_h))
-                
-                inner_x = x + thickness
-                inner_y = y + thickness
-                inner_w = cnt_w - 2 * thickness
-                inner_h = cnt_h - 2 * thickness
-                
-                if inner_w > 50 and inner_h > 50:
-                    methods_results[f'edge_{low}_{high}'] = {
-                        'bounds': (inner_x, inner_y, inner_x + inner_w, inner_y + inner_h),
-                        'thickness': thickness,
-                        'type': 'center',
-                        'method': f'edge_{low}_{high}'
-                    }
-                    break
-    
-    # Method 3: Morphological operations
-    log_debug("Method 3: Morphological operations")
-    for kernel_size in [5, 7, 9, 11]:
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
-        
-        # Try different thresholds
-        for thresh_val in [30, 50, 70]:
-            _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY_INV)
-            closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-            
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for contour in contours:
-                x, y, cnt_w, cnt_h = cv2.boundingRect(contour)
-                
-                if cnt_w > w * 0.3 and cnt_h > h * 0.3:
-                    thickness = detect_actual_line_thickness(gray, (x, y, x + cnt_w, y + cnt_h))
-                    
-                    inner_x = x + thickness
-                    inner_y = y + thickness
-                    inner_w = cnt_w - 2 * thickness
-                    inner_h = cnt_h - 2 * thickness
-                    
-                    if inner_w > 50 and inner_h > 50:
-                        methods_results[f'morph_{kernel_size}_{thresh_val}'] = {
-                            'bounds': (inner_x, inner_y, inner_x + inner_w, inner_y + inner_h),
-                            'thickness': thickness,
-                            'type': 'center',
-                            'method': f'morph_{kernel_size}_{thresh_val}'
-                        }
-                        break
-    
-    # Cross-validate all detection methods
-    best_mask = cross_validate_detection(methods_results, image.shape)
-    
-    if best_mask:
-        log_debug(f"Center masking detected: {best_mask}")
-        return best_mask
+        log_debug(f"Dark gray masking detected: {masking_info}")
+        return masking_info
     
     return None
 
@@ -328,117 +260,107 @@ def detect_masking_comprehensive(image):
     """Comprehensive masking detection using multiple strategies"""
     log_debug("Starting comprehensive masking detection")
     
-    # Strategy 1: Edge-based detection (original)
-    edge_mask = detect_edge_based_masking(image)
+    # First try specialized dark gray detection (for RGB 25-45)
+    dark_mask = detect_dark_gray_masking(image)
+    if dark_mask:
+        return dark_mask
     
-    # Strategy 2: Center-based detection (new)
-    center_mask = detect_center_masking_ultra_advanced(image)
-    
-    # Strategy 3: Contour-based detection
-    contour_mask = detect_contour_based_masking(image)
-    
-    # Combine results
-    if center_mask:
-        return center_mask
-    elif edge_mask:
-        return edge_mask
-    elif contour_mask:
-        return contour_mask
-    
-    return None
-
-def detect_edge_based_masking(image):
-    """Original edge-based masking detection"""
+    # Then try other methods
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     
-    # Progressive scanning
-    scan_percentages = [0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
-    threshold_values = [20, 30, 40, 50, 60, 70, 80]
-    
-    for scan_pct, threshold in zip(scan_percentages, threshold_values):
-        scan_depth = int(min(w, h) * scan_pct)
-        
-        edges_found = {
-            'top': False, 'bottom': False,
-            'left': False, 'right': False
+    # Method 1: Progressive threshold scanning
+    for threshold in [30, 40, 50, 60, 70, 80, 90, 100, 120]:
+        # Check edges for dark pixels
+        edge_samples = {
+            'top': gray[:50, :].flatten(),
+            'bottom': gray[-50:, :].flatten(),
+            'left': gray[:, :50].flatten(),
+            'right': gray[:, -50:].flatten()
         }
         
-        # Check edges
-        if np.mean(gray[:scan_depth, :]) < threshold:
-            edges_found['top'] = True
-        if np.mean(gray[-scan_depth:, :]) < threshold:
-            edges_found['bottom'] = True
-        if np.mean(gray[:, :scan_depth]) < threshold:
-            edges_found['left'] = True
-        if np.mean(gray[:, -scan_depth:]) < threshold:
-            edges_found['right'] = True
+        dark_edges = sum(1 for edge, pixels in edge_samples.items() 
+                        if np.mean(pixels < threshold) > 0.8)
         
-        # Need at least 2 edges
-        if sum(edges_found.values()) >= 2:
+        if dark_edges >= 2:  # At least 2 edges are dark
+            # Find exact boundaries
             bounds = [0, 0, w, h]
             
-            if edges_found['top']:
-                for y in range(scan_depth, h // 2):
-                    if np.mean(gray[y, :]) > threshold + 20:
-                        bounds[1] = y
-                        break
+            # Scan inward from each edge
+            for y in range(min(200, h // 2)):
+                if np.mean(gray[y, :] < threshold) < 0.8:
+                    bounds[1] = y
+                    break
             
-            if edges_found['bottom']:
-                for y in range(h - scan_depth, h // 2, -1):
-                    if np.mean(gray[y, :]) > threshold + 20:
-                        bounds[3] = y
-                        break
+            for y in range(h - 1, max(h - 200, h // 2), -1):
+                if np.mean(gray[y, :] < threshold) < 0.8:
+                    bounds[3] = y + 1
+                    break
             
-            if edges_found['left']:
-                for x in range(scan_depth, w // 2):
-                    if np.mean(gray[:, x]) > threshold + 20:
-                        bounds[0] = x
-                        break
+            for x in range(min(200, w // 2)):
+                if np.mean(gray[:, x] < threshold) < 0.8:
+                    bounds[0] = x
+                    break
             
-            if edges_found['right']:
-                for x in range(w - scan_depth, w // 2, -1):
-                    if np.mean(gray[:, x]) > threshold + 20:
-                        bounds[2] = x
-                        break
+            for x in range(w - 1, max(w - 200, w // 2), -1):
+                if np.mean(gray[:, x] < threshold) < 0.8:
+                    bounds[2] = x + 1
+                    break
             
-            return {
-                'bounds': tuple(bounds),
-                'thickness': scan_depth,
-                'type': 'edge',
-                'method': f'edge_scan_{scan_pct}'
-            }
+            # Verify significant masking found
+            if (bounds[0] > 20 or bounds[1] > 20 or 
+                bounds[2] < w - 20 or bounds[3] < h - 20):
+                
+                thickness = detect_actual_line_thickness(gray, tuple(bounds))
+                
+                return {
+                    'bounds': tuple(bounds),
+                    'thickness': thickness,
+                    'type': 'edge_frame',
+                    'method': f'threshold_{threshold}'
+                }
     
-    return None
-
-def detect_contour_based_masking(image):
-    """Contour-based masking detection"""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # Multiple threshold attempts
+    # Method 2: Contour-based detection
     for thresh_val in [30, 50, 70, 90]:
         _, binary = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY_INV)
         
+        # Morphological operations to connect nearby dark regions
+        kernel = np.ones((5, 5), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Sort by area
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        
-        for contour in contours[:5]:  # Check top 5 largest
-            x, y, w, h = cv2.boundingRect(contour)
+        # Find largest contour that touches image edges
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:3]:
+            x, y, cnt_w, cnt_h = cv2.boundingRect(contour)
             
-            # Check if it's significant
-            if w > image.shape[1] * 0.5 and h > image.shape[0] * 0.5:
-                thickness = detect_actual_line_thickness(gray, (x, y, x + w, y + h))
+            # Check if contour touches at least 2 edges
+            touches_edges = sum([
+                x <= 10,  # Left edge
+                y <= 10,  # Top edge
+                x + cnt_w >= w - 10,  # Right edge
+                y + cnt_h >= h - 10   # Bottom edge
+            ])
+            
+            if touches_edges >= 2 and cnt_w > w * 0.8 and cnt_h > h * 0.8:
+                thickness = detect_actual_line_thickness(gray, (x, y, x + cnt_w, y + cnt_h))
+                
+                # Calculate inner bounds
+                inner_bounds = (
+                    x + thickness,
+                    y + thickness,
+                    x + cnt_w - thickness,
+                    y + cnt_h - thickness
+                )
                 
                 return {
-                    'bounds': (x + thickness, y + thickness, 
-                              x + w - thickness, y + h - thickness),
+                    'bounds': inner_bounds,
                     'thickness': thickness,
-                    'type': 'contour',
+                    'type': 'contour_frame',
                     'method': f'contour_{thresh_val}'
                 }
     
+    log_debug("No masking detected")
     return None
 
 def detect_lighting_condition(image, mask_bounds=None):
@@ -456,7 +378,6 @@ def detect_lighting_condition(image, mask_bounds=None):
     
     # Calculate statistics
     mean_brightness = np.mean(l_channel)
-    std_brightness = np.std(l_channel)
     
     # Determine lighting condition
     if mean_brightness < 80:
@@ -768,67 +689,71 @@ def apply_replicate_inpainting(image, masking_info):
     return apply_simple_masking_removal(image, masking_info)
 
 def apply_simple_masking_removal(image, masking_info):
-    """Simple masking removal with background replacement"""
+    """Simple masking removal by cropping to inner bounds"""
     if not masking_info:
         return image
     
     x1, y1, x2, y2 = masking_info['bounds']
     
-    # Get appropriate background color
-    lighting = detect_lighting_condition(image, masking_info['bounds'])
-    metal_type = detect_metal_type(image, masking_info['bounds'])
-    bg_color = get_after_background_color(lighting, metal_type)
+    # Ensure bounds are within image
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(image.shape[1], x2)
+    y2 = min(image.shape[0], y2)
     
-    # Create result with background
-    result = np.full_like(image, bg_color)
+    # Crop to inner content
+    cropped = image[y1:y2, x1:x2]
     
-    # Copy the inner content
-    result[y1:y2, x1:x2] = image[y1:y2, x1:x2]
+    log_debug(f"Cropped from {image.shape} to {cropped.shape}")
     
-    # Apply Gaussian blur at edges for natural blending
-    mask = np.zeros(image.shape[:2], dtype=np.uint8)
-    mask[y1:y2, x1:x2] = 255
-    
-    # Create smooth transition
-    mask_blurred = cv2.GaussianBlur(mask, (31, 31), 0)
-    mask_3channel = cv2.cvtColor(mask_blurred, cv2.COLOR_GRAY2BGR) / 255.0
-    
-    # Blend
-    result = image * mask_3channel + result * (1 - mask_3channel)
-    
-    return result.astype(np.uint8)
+    return cropped
 
 def create_thumbnail(image, size=(1000, 1300)):
-    """Create a thumbnail with exact 1000x1300 size, ring centered"""
+    """Create a thumbnail with exact 1000x1300 size, ring centered and filling frame"""
     h, w = image.shape[:2]
     
     # Convert to PIL for easier handling
     pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
     
-    # Calculate scale to fit the ring to occupy ~60% of the frame
-    ring_target_size = min(size[0] * 0.6, size[1] * 0.6)
-    scale = ring_target_size / max(w, h)
+    # Calculate aspect ratios
+    img_aspect = w / h
+    target_aspect = size[0] / size[1]
     
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    if img_aspect > target_aspect:
+        # Image is wider than target - fit by height
+        new_h = size[1]
+        new_w = int(new_h * img_aspect)
+    else:
+        # Image is taller than target - fit by width
+        new_w = size[0]
+        new_h = int(new_w / img_aspect)
     
-    # Resize the image
+    # Resize to ensure it fills the frame
     pil_image = pil_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
     
     # Create white background with exact size
     thumbnail = Image.new('RGB', size, 'white')
     
-    # Paste centered
-    x = (size[0] - new_w) // 2
-    y = (size[1] - new_h) // 2
-    thumbnail.paste(pil_image, (x, y))
+    # Center crop to fit exactly
+    x = (new_w - size[0]) // 2
+    y = (new_h - size[1]) // 2
+    
+    # If resized image is smaller than target, paste centered
+    if new_w < size[0] or new_h < size[1]:
+        x = (size[0] - new_w) // 2
+        y = (size[1] - new_h) // 2
+        thumbnail.paste(pil_image, (x, y))
+    else:
+        # Crop to fit
+        cropped = pil_image.crop((x, y, x + size[0], y + size[1]))
+        thumbnail.paste(cropped, (0, 0))
     
     return cv2.cvtColor(np.array(thumbnail), cv2.COLOR_RGB2BGR)
 
 def handler(event):
     """Main handler function for RunPod"""
     try:
-        log_debug(f"Handler started - v131")
+        log_debug(f"Handler started - v133")
         log_debug(f"Event type: {type(event)}")
         
         # Find image in event structure
@@ -857,25 +782,27 @@ def handler(event):
         masking_info = detect_masking_comprehensive(image)
         log_debug(f"Masking detected: {masking_info}")
         
-        # 2. Detect lighting and metal type
-        mask_bounds = masking_info['bounds'] if masking_info else None
-        lighting = detect_lighting_condition(image, mask_bounds)
-        metal_type = detect_metal_type(image, mask_bounds)
+        # 2. Remove masking first if detected
+        if masking_info:
+            # Remove masking
+            if REPLICATE_API_TOKEN:
+                processed = apply_replicate_inpainting(image, masking_info)
+            else:
+                processed = apply_simple_masking_removal(image, masking_info)
+            log_debug("Masking removed")
+        else:
+            processed = image
+        
+        # 3. Detect lighting and metal type from processed image
+        lighting = detect_lighting_condition(processed)
+        metal_type = detect_metal_type(processed)
         log_debug(f"Lighting: {lighting}, Metal type: {metal_type}")
         
-        # 3. Enhance wedding ring details
-        enhanced = enhance_wedding_ring_details(image, lighting, metal_type)
+        # 4. Enhance wedding ring details
+        enhanced = enhance_wedding_ring_details(processed, lighting, metal_type)
         log_debug("Wedding ring enhancement applied")
         
-        # 4. Remove masking if detected
-        if masking_info:
-            if REPLICATE_API_TOKEN:
-                enhanced = apply_replicate_inpainting(enhanced, masking_info)
-            else:
-                enhanced = apply_simple_masking_removal(enhanced, masking_info)
-            log_debug("Masking removed")
-        
-        # 5. Create thumbnail with exact size
+        # 5. Create thumbnail from enhanced image
         thumbnail = create_thumbnail(enhanced)
         log_debug(f"Thumbnail created: {thumbnail.shape}")
         
@@ -899,7 +826,10 @@ def handler(event):
             "thickness": masking_info['thickness'] if masking_info else None,
             "lighting": lighting,
             "metal_type": metal_type,
-            "replicate_used": bool(REPLICATE_API_TOKEN and masking_info)
+            "replicate_used": bool(REPLICATE_API_TOKEN and masking_info),
+            "original_size": f"{image.shape[1]}x{image.shape[0]}",
+            "enhanced_size": f"{enhanced.shape[1]}x{enhanced.shape[0]}",
+            "thumbnail_size": f"{thumbnail.shape[1]}x{thumbnail.shape[0]}"
         }
         
         log_debug(f"Processing complete. Enhanced: {len(enhanced_base64)}, Thumbnail: {len(thumb_base64)}")
