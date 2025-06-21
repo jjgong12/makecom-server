@@ -839,7 +839,9 @@ def handler(event):
             return {
                 "output": {
                     "error": "No image provided in input",
-                    "enhanced_image": ""
+                    "enhanced_image": "",
+                    "thumbnail": "",
+                    "processing_info": {}
                 }
             }
         
@@ -877,19 +879,38 @@ def handler(event):
         thumbnail = create_thumbnail(enhanced)
         log_debug(f"Thumbnail created: {thumbnail.shape}")
         
-        # 6. Encode result
-        _, buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        result_base64 = base64.b64encode(buffer).decode('utf-8')
+        # 6. Encode results
+        # Enhanced image
+        _, enhanced_buffer = cv2.imencode('.jpg', enhanced, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        enhanced_base64 = base64.b64encode(enhanced_buffer).decode('utf-8')
+        enhanced_base64 = enhanced_base64.rstrip('=')  # Remove padding for Make.com
         
-        # Remove padding for Make.com compatibility
-        result_base64 = result_base64.rstrip('=')
+        # Thumbnail
+        _, thumb_buffer = cv2.imencode('.jpg', thumbnail, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        thumb_base64 = base64.b64encode(thumb_buffer).decode('utf-8')
+        thumb_base64 = thumb_base64.rstrip('=')  # Remove padding for Make.com
         
-        log_debug(f"Processing complete. Result length: {len(result_base64)}")
+        # Processing info
+        processing_info = {
+            "masking_detected": bool(masking_info),
+            "masking_removed": bool(masking_info),
+            "masking_type": masking_info['type'] if masking_info else None,
+            "masking_method": masking_info['method'] if masking_info else None,
+            "thickness": masking_info['thickness'] if masking_info else None,
+            "lighting": lighting,
+            "metal_type": metal_type,
+            "replicate_used": bool(REPLICATE_API_TOKEN and masking_info)
+        }
+        
+        log_debug(f"Processing complete. Enhanced: {len(enhanced_base64)}, Thumbnail: {len(thumb_base64)}")
+        log_debug(f"Processing info: {processing_info}")
         
         # Return with proper structure
         return {
             "output": {
-                "enhanced_image": result_base64
+                "enhanced_image": enhanced_base64,
+                "thumbnail": thumb_base64,
+                "processing_info": processing_info
             }
         }
         
@@ -900,7 +921,9 @@ def handler(event):
         return {
             "output": {
                 "error": str(e),
-                "enhanced_image": ""
+                "enhanced_image": "",
+                "thumbnail": "",
+                "processing_info": {}
             }
         }
 
