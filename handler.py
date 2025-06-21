@@ -11,11 +11,6 @@ import replicate
 import os
 from collections import Counter
 
-# Initialize Replicate
-replicate_api_token = os.environ.get("REPLICATE_API_TOKEN")
-if replicate_api_token:
-    replicate.Client(api_token=replicate_api_token)
-
 def log_debug(message):
     """Enhanced debug logging"""
     print(f"[DEBUG v120] {message}", file=sys.stderr)
