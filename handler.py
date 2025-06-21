@@ -18,7 +18,7 @@ if replicate_api_token:
 
 def log_debug(message):
     """Enhanced debug logging"""
-    print(f"[DEBUG v119] {message}", file=sys.stderr)
+    print(f"[DEBUG v120] {message}", file=sys.stderr)
 
 def calculate_bounds_from_edges(gray, edges_with_black, scan_depth, threshold):
     """Calculate exact bounds of black borders"""
@@ -709,39 +709,48 @@ def create_thumbnail(image, target_size=(1000, 1300)):
     
     return canvas
 
-def process_request(job):
-    """Main processing function with cross-validation detection"""
+def handler(event):
+    """Main handler function for RunPod - FIXED FOR MAKE.COM"""
     try:
-        log_debug("=== Starting v119 Cross-Validation Processing ===")
+        log_debug("=== Starting v120 Handler Processing ===")
         
-        # Get input with multiple fallbacks
-        job_input = job.get("input", {})
+        # Get input - Make.com sends data in event["input"]
+        job_input = event.get("input", {})
+        log_debug(f"Available keys in input: {list(job_input.keys())}")
         
-        # Try different ways to get the image
+        # Try to get image from multiple possible fields
         image_base64 = None
         
-        # Method 1: Direct image field
+        # Method 1: Direct 'image' field
         if "image" in job_input:
             image_base64 = job_input["image"]
-            log_debug("Found image in direct field")
+            log_debug("Found image in 'image' field")
         
-        # Method 2: Inside data.input
-        elif "data" in job_input and "input" in job_input["data"]:
-            data_input = job_input["data"]["input"]
-            if "image" in data_input:
-                image_base64 = data_input["image"]
-                log_debug("Found image in data.input")
+        # Method 2: 'image_base64' field
+        elif "image_base64" in job_input:
+            image_base64 = job_input["image_base64"]
+            log_debug("Found image in 'image_base64' field")
         
-        # Method 3: Inside input.input (double nested)
-        elif "input" in job_input and "image" in job_input["input"]:
-            image_base64 = job_input["input"]["image"]
-            log_debug("Found image in input.input")
+        # Method 3: Check if there's nested structure
+        elif "data" in job_input and isinstance(job_input["data"], dict):
+            if "image" in job_input["data"]:
+                image_base64 = job_input["data"]["image"]
+                log_debug("Found image in 'data.image' field")
+            elif "image_base64" in job_input["data"]:
+                image_base64 = job_input["data"]["image_base64"]
+                log_debug("Found image in 'data.image_base64' field")
         
         if not image_base64:
-            log_debug("No image found in input")
-            return {"output": {"error": "No image provided", "status": "error"}}
+            log_debug(f"No image found. Full input structure: {job_input}")
+            return {
+                "output": {
+                    "error": "No image provided in 'image' or 'image_base64' field",
+                    "status": "error",
+                    "available_keys": list(job_input.keys())
+                }
+            }
         
-        # Decode image
+        # Decode image - DO NOT add padding
         if image_base64.startswith('data:'):
             image_base64 = image_base64.split(',')[1]
         
@@ -750,10 +759,14 @@ def process_request(job):
         
         # Convert to numpy array
         img_array = np.array(image)
-        if img_array.shape[2] == 4:  # RGBA
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
-        else:  # RGB
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        if len(img_array.shape) == 3:
+            if img_array.shape[2] == 4:  # RGBA
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+            else:  # RGB
+                img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        else:
+            # Grayscale
+            img_array = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
         
         original_shape = img_array.shape
         log_debug(f"Original image shape: {original_shape}")
@@ -802,6 +815,7 @@ def process_request(job):
         thumbnail_base64 = base64.b64encode(thumbnail_buffer.getvalue()).decode()
         
         # Return with proper nesting for Make.com
+        # Make.com expects: {{4.data.output.output.enhanced_image}}
         return {
             "output": {
                 "enhanced_image": f"data:image/png;base64,{enhanced_base64}",
@@ -820,9 +834,10 @@ def process_request(job):
         return {
             "output": {
                 "error": str(e),
-                "status": "error"
+                "status": "error",
+                "traceback": traceback.format_exc()
             }
         }
 
-# RunPod handler
-runpod.serverless.start({"handler": process_request})
+# RunPod handler - CORRECT FORMAT
+runpod.serverless.start(handler)
