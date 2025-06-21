@@ -840,4 +840,4 @@ def handler(event):
         }
 
 # RunPod handler - CORRECT FORMAT
-runpod.serverless.start(handler)
+runpod.serverless.start({"handler": handler})
