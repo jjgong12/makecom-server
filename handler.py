@@ -1,795 +1,919 @@
-import runpod
-import os
+#!/usr/bin/env python3
+"""
+Wedding Ring Enhancement v145 - Ring Detection & Enhancement Pipeline
+- Grounding DINO for ring detection
+- GFPGAN for damage removal
+- Real-ESRGAN for upscaling
+- Metal type detection and color correction
+- Make.com compatible (padding removed)
+"""
+
 import sys
+import os
 import json
-import base64
-import io
 import time
-import traceback
-import threading
-from typing import Dict, Any, Tuple, List, Optional
-from dataclasses import dataclass
-from enum import Enum
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+import functools
 
 # Safe imports with fallbacks
-print("[v142] Starting imports...")
-
 try:
-    import numpy as np
-    print("[v141] NumPy imported successfully")
-    NUMPY_AVAILABLE = True
-except ImportError as e:
-    print(f"[v141] NumPy import failed: {e}")
-    NUMPY_AVAILABLE = False
-    np = None
-
-try:
-    from PIL import Image, ImageEnhance, ImageDraw, ImageFilter, ImageOps
-    print("[v141] PIL imported successfully")
-    PIL_AVAILABLE = True
-except ImportError as e:
-    print(f"[v141] PIL import failed: {e}")
-    PIL_AVAILABLE = False
+    import runpod
+    RUNPOD_AVAILABLE = True
+except ImportError:
+    print("[v145] Warning: runpod not available")
+    RUNPOD_AVAILABLE = False
 
 try:
     import cv2
-    print("[v141] OpenCV imported successfully")
     CV2_AVAILABLE = True
-except ImportError as e:
-    print(f"[v141] OpenCV import failed: {e}")
+except ImportError:
+    print("[v145] Warning: cv2 not available")
     CV2_AVAILABLE = False
-    cv2 = None
 
-# DO NOT import replicate globally - causes crashes in RunPod
-REPLICATE_AVAILABLE = False
 try:
-    import importlib.util
-    spec = importlib.util.find_spec("replicate")
-    if spec is not None:
-        print("[v141] Replicate module found but NOT imported globally (safety)")
-        REPLICATE_AVAILABLE = True
-except:
-    print("[v141] Replicate module not found")
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    print("[v145] Warning: numpy not available")
+    NUMPY_AVAILABLE = False
 
-# Metal types
-class MetalType(Enum):
-    YELLOW_GOLD = "yellow_gold"
-    ROSE_GOLD = "rose_gold"
-    WHITE_GOLD = "white_gold"
-    PLATINUM = "platinum"
-    UNPLATED_WHITE = "unplated_white"
+try:
+    from PIL import Image, ImageEnhance, ImageFilter
+    PIL_AVAILABLE = True
+except ImportError:
+    print("[v145] Warning: PIL not available")
+    PIL_AVAILABLE = False
 
-# Detection result
-@dataclass
-class RingDetection:
-    bbox: Tuple[int, int, int, int]
-    confidence: float
-    metal_type: Optional[MetalType] = None
-    has_masking: bool = False
+try:
+    import io
+    import base64
+    import requests
+    BASE_MODULES_AVAILABLE = True
+except ImportError:
+    print("[v145] Warning: base modules not available")
+    BASE_MODULES_AVAILABLE = False
 
-# 38-pair trained enhancement parameters
-ENHANCEMENT_PARAMS = {
-    'yellow_gold': {
-        'natural': {
-            'brightness': 1.15, 'contrast': 1.12, 'saturation': 1.20, 
-            'sharpness': 1.25, 'white_overlay': 0.08, 'color_temp': 5,
-            'gamma': 1.05, 'noise_reduction': 0.3
-        },
-        'studio': {
-            'brightness': 1.20, 'contrast': 1.15, 'saturation': 1.25,
-            'sharpness': 1.30, 'white_overlay': 0.10, 'color_temp': 3,
-            'gamma': 1.08, 'noise_reduction': 0.2
-        },
-        'outdoor': {
-            'brightness': 1.10, 'contrast': 1.10, 'saturation': 1.15,
-            'sharpness': 1.20, 'white_overlay': 0.06, 'color_temp': 7,
-            'gamma': 1.02, 'noise_reduction': 0.4
-        }
-    },
-    'rose_gold': {
-        'natural': {
-            'brightness': 1.12, 'contrast': 1.10, 'saturation': 1.15,
-            'sharpness': 1.22, 'white_overlay': 0.06, 'color_temp': 2,
-            'gamma': 1.03, 'noise_reduction': 0.3
-        },
-        'studio': {
-            'brightness': 1.18, 'contrast': 1.13, 'saturation': 1.18,
-            'sharpness': 1.28, 'white_overlay': 0.08, 'color_temp': 0,
-            'gamma': 1.05, 'noise_reduction': 0.2
-        },
-        'outdoor': {
-            'brightness': 1.08, 'contrast': 1.08, 'saturation': 1.12,
-            'sharpness': 1.18, 'white_overlay': 0.04, 'color_temp': 4,
-            'gamma': 1.00, 'noise_reduction': 0.4
-        }
-    },
-    'white_gold': {
-        'natural': {
-            'brightness': 1.18, 'contrast': 1.15, 'saturation': 1.05,
-            'sharpness': 1.28, 'white_overlay': 0.12, 'color_temp': -3,
-            'gamma': 1.02, 'noise_reduction': 0.2
-        },
-        'studio': {
-            'brightness': 1.22, 'contrast': 1.18, 'saturation': 1.08,
-            'sharpness': 1.32, 'white_overlay': 0.15, 'color_temp': -5,
-            'gamma': 1.05, 'noise_reduction': 0.1
-        },
-        'outdoor': {
-            'brightness': 1.15, 'contrast': 1.12, 'saturation': 1.03,
-            'sharpness': 1.25, 'white_overlay': 0.10, 'color_temp': -2,
-            'gamma': 1.00, 'noise_reduction': 0.3
-        }
-    },
-    'platinum': {
-        'natural': {
-            'brightness': 1.20, 'contrast': 1.17, 'saturation': 1.02,
-            'sharpness': 1.30, 'white_overlay': 0.14, 'color_temp': -4,
-            'gamma': 1.03, 'noise_reduction': 0.2
-        },
-        'studio': {
-            'brightness': 1.25, 'contrast': 1.20, 'saturation': 1.05,
-            'sharpness': 1.35, 'white_overlay': 0.17, 'color_temp': -6,
-            'gamma': 1.06, 'noise_reduction': 0.1
-        },
-        'outdoor': {
-            'brightness': 1.17, 'contrast': 1.15, 'saturation': 1.00,
-            'sharpness': 1.28, 'white_overlay': 0.12, 'color_temp': -3,
-            'gamma': 1.01, 'noise_reduction': 0.3
-        }
-    },
-    'unplated_white': {
-        'natural': {
-            'brightness': 1.16, 'contrast': 1.13, 'saturation': 1.08,
-            'sharpness': 1.26, 'white_overlay': 0.10, 'color_temp': -2,
-            'gamma': 1.04, 'noise_reduction': 0.25
-        },
-        'studio': {
-            'brightness': 1.20, 'contrast': 1.16, 'saturation': 1.10,
-            'sharpness': 1.30, 'white_overlay': 0.13, 'color_temp': -4,
-            'gamma': 1.07, 'noise_reduction': 0.15
-        },
-        'outdoor': {
-            'brightness': 1.13, 'contrast': 1.10, 'saturation': 1.05,
-            'sharpness': 1.23, 'white_overlay': 0.08, 'color_temp': -1,
-            'gamma': 1.02, 'noise_reduction': 0.35
-        }
-    }
-}
+try:
+    import replicate
+    REPLICATE_AVAILABLE = True
+except ImportError:
+    print("[v145] Warning: replicate not available")
+    REPLICATE_AVAILABLE = False
 
-def decode_base64_image(base64_string: str) -> Image.Image:
-    """Decode base64 image with multiple fallback methods"""
-    try:
-        print(f"[v141] Base64 string length: {len(base64_string)}")
-        
-        # Clean the string first
-        base64_string = base64_string.strip().replace('\n', '').replace('\r', '').replace(' ', '')
-        
-        # Remove data URL prefix if present
-        if 'base64,' in base64_string:
-            base64_string = base64_string.split('base64,')[1]
-        
-        # Try different decoding methods
-        decoded = None
-        
-        # Method 1: Direct decode (no padding modification)
-        try:
-            decoded = base64.b64decode(base64_string, validate=True)
-            print("[v141] Method 1 (direct with validation) successful")
-        except:
-            pass
-        
-        # Method 2: Add padding if needed
-        if decoded is None:
-            try:
-                missing_padding = len(base64_string) % 4
-                if missing_padding:
-                    base64_string += '=' * (4 - missing_padding)
-                decoded = base64.b64decode(base64_string)
-                print(f"[v141] Method 2 (added {4-missing_padding} padding) successful")
-            except:
-                pass
-        
-        # Method 3: URL-safe decode
-        if decoded is None:
-            try:
-                decoded = base64.urlsafe_b64decode(base64_string)
-                print("[v141] Method 3 (URL-safe) successful")
-            except:
-                pass
-        
-        # Method 4: Force decode with padding variations
-        if decoded is None:
-            for pad in ['', '=', '==', '===']:
-                try:
-                    decoded = base64.b64decode(base64_string + pad)
-                    print(f"[v141] Method 4 (padding: '{pad}') successful")
-                    break
-                except:
-                    continue
-        
-        if decoded is None:
-            raise ValueError("All base64 decoding methods failed")
-        
-        # Convert to PIL Image
-        image = Image.open(io.BytesIO(decoded))
-        print(f"[v141] Image decoded successfully: {image.size}")
-        return image
-        
-    except Exception as e:
-        print(f"[v141] Failed to decode base64: {str(e)}")
-        raise
 
-class WeddingRingEnhancerV142:
-    """Wedding ring enhancer with Make.com and GAS compatibility"""
+def encode_image_to_base64(image):
+    """Global function to encode image to base64 without padding for Make.com"""
+    if isinstance(image, np.ndarray):
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        elif len(image.shape) == 3 and image.shape[2] == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_BGRA2RGB)
+        elif len(image.shape) == 3 and image.shape[2] == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(image)
+    else:
+        img_pil = image
     
+    buffered = io.BytesIO()
+    img_pil.save(buffered, format="PNG", quality=95, optimize=True)
+    img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    # CRITICAL: Remove padding for Make.com
+    return img_base64.rstrip('=')
+
+
+class WeddingRingEnhancerV145:
     def __init__(self):
-        print("[v142] Initializing WeddingRingEnhancerV142...")
-        self.replicate_enabled = False
-        self.replicate_timeout = 20  # 20 second timeout
-        self.replicate_client = None
+        """Initialize without Replicate client to avoid RunPod issues"""
+        print("[v145] Initializing WeddingRingEnhancerV145 - Ring Detection Pipeline")
+        self.replicate_client = None  # Will be created when needed
+        self.training_completed = True
         
-        # Check if Replicate should be enabled
-        if REPLICATE_AVAILABLE and os.environ.get('REPLICATE_API_TOKEN'):
-            print("[v142] Replicate token found, will initialize on first use")
-            self.replicate_enabled = True
-        else:
-            print("[v142] Replicate disabled (no token or module)")
-            
-    def _init_replicate_lazy(self):
-        """Lazy initialization of Replicate to avoid startup crashes"""
-        if self.replicate_client is not None:
-            return True
-            
-        try:
-            print("[v141] Lazy loading Replicate module...")
-            import replicate
-            self.replicate_client = replicate.Client(
-                api_token=os.environ.get('REPLICATE_API_TOKEN')
-            )
-            print("[v141] Replicate client initialized successfully")
-            return True
-        except Exception as e:
-            print(f"[v141] Failed to initialize Replicate: {e}")
-            self.replicate_enabled = False
-            return False
-    
-    def enhance_image(self, image: Image.Image) -> Dict[str, Any]:
-        """Main enhancement pipeline"""
-        try:
-            start_time = time.time()
-            print(f"[v141] Starting enhancement for image size: {image.size}")
-            
-            # Step 1: Detect rings and analyze
-            detections = self._detect_rings(image)
-            print(f"[v141] Found {len(detections)} rings")
-            
-            # Step 2: Detect masking if any rings found
-            has_masking = False
-            if detections:
-                has_masking = self._detect_masking(image, detections)
-                print(f"[v141] Masking detected: {has_masking}")
-            
-            # Step 3: Determine metal type and lighting
-            metal_type = self._detect_metal_type(image, detections)
-            lighting = self._detect_lighting(image)
-            print(f"[v141] Metal: {metal_type}, Lighting: {lighting}")
-            
-            # Step 4: Apply enhancement
-            enhanced = self._apply_enhancement(image, metal_type, lighting)
-            
-            # Step 5: Remove masking if detected and Replicate available
-            if has_masking and self.replicate_enabled:
-                print("[v141] Attempting masking removal with Replicate...")
-                enhanced = self._remove_masking_safe(enhanced, detections)
-            
-            # Step 6: Create thumbnail
-            thumbnail = self._create_thumbnail(enhanced)
-            
-            # Convert to base64 - DO NOT REMOVE PADDING FOR GAS COMPATIBILITY
-            enhanced_base64 = self._image_to_base64(enhanced)
-            thumbnail_base64 = self._image_to_base64(thumbnail) if thumbnail else None
-            
-            processing_time = time.time() - start_time
-            print(f"[v141] Enhancement completed in {processing_time:.2f}s")
-            
-            response = {
-                "enhanced_image": f"data:image/png;base64,{enhanced_base64}",
-                "status": "success",
-                "metal_type": metal_type,
-                "lighting": lighting,
-                "rings_detected": len(detections),
-                "masking_removed": has_masking and self.replicate_enabled,
-                "processing_time": f"{processing_time:.2f}s",
-                "version": "v141-gas-compatible"
+        # Color calibration data (28 pairs + 10 correction pairs)
+        self.color_corrections = {
+            'yellow_gold': {
+                'h_shift': 5,
+                's_mult': 1.15,
+                'v_mult': 1.08,
+                'warmth': 1.12,
+                'target_rgb': (255, 215, 0)
+            },
+            'rose_gold': {
+                'h_shift': -8,
+                's_mult': 1.20,
+                'v_mult': 1.05,
+                'warmth': 1.08,
+                'target_rgb': (183, 110, 121)
+            },
+            'white_gold': {
+                'h_shift': 0,
+                's_mult': 0.85,
+                'v_mult': 1.15,
+                'warmth': 0.95,
+                'target_rgb': (245, 245, 240)
+            },
+            'plain_white': {
+                'h_shift': 2,
+                's_mult': 0.80,
+                'v_mult': 1.10,
+                'warmth': 1.02,
+                'target_rgb': (252, 247, 232)
             }
-            
-            if thumbnail_base64:
-                response["thumbnail"] = f"data:image/png;base64,{thumbnail_base64}"
-                
-            return response
-            
-        except Exception as e:
-            print(f"[v141] Enhancement error: {str(e)}")
-            print(traceback.format_exc())
-            
-            # Return original with error info
-            try:
-                original_base64 = self._image_to_base64(image)
-                return {
-                    "enhanced_image": f"data:image/png;base64,{original_base64}",
-                    "status": "error",
-                    "error": str(e),
-                    "version": "v141-gas-compatible"
-                }
-            except:
-                return {
-                    "status": "error",
-                    "error": "Critical error in processing",
-                    "version": "v141-gas-compatible"
-                }
-    
-    def _detect_rings(self, image: Image.Image) -> List[RingDetection]:
-        """Detect wedding rings using fallback methods"""
-        detections = []
+        }
+
+    def _init_replicate_client(self):
+        """Initialize Replicate client only when needed"""
+        if self.replicate_client is None and REPLICATE_AVAILABLE:
+            api_token = os.environ.get('REPLICATE_API_TOKEN')
+            if api_token:
+                try:
+                    print("[v145] Initializing Replicate client...")
+                    self.replicate_client = replicate.Client(api_token=api_token)
+                    print("[v145] Replicate client initialized successfully")
+                except Exception as e:
+                    print(f"[v145] Failed to initialize Replicate client: {e}")
+                    self.replicate_client = None
+            else:
+                print("[v145] No REPLICATE_API_TOKEN found")
+
+    def decode_base64_image(self, base64_string):
+        """Decode base64 image with comprehensive error handling"""
+        print(f"[v145] Decoding base64 image, length: {len(base64_string)}")
         
         try:
-            if CV2_AVAILABLE and NUMPY_AVAILABLE:
-                # Convert to OpenCV format
-                img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-                gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            # Clean the string
+            base64_string = base64_string.strip()
+            
+            # Remove data URL prefix if present
+            if ',' in base64_string:
+                base64_string = base64_string.split(',')[1]
+                print("[v145] Removed data URL prefix")
+            
+            # Try multiple decoding approaches
+            image_data = None
+            
+            # Method 1: Direct decode
+            try:
+                image_data = base64.b64decode(base64_string, validate=True)
+                print("[v145] Direct decode successful")
+            except Exception as e1:
+                print(f"[v145] Direct decode failed: {e1}")
                 
-                # Detect circles (rings)
-                circles = cv2.HoughCircles(
-                    gray,
-                    cv2.HOUGH_GRADIENT,
-                    dp=1,
-                    minDist=50,
-                    param1=50,
-                    param2=30,
-                    minRadius=20,
-                    maxRadius=300
-                )
-                
-                if circles is not None:
-                    circles = np.uint16(np.around(circles))
-                    for circle in circles[0, :]:
-                        x, y, r = circle
-                        # Create bounding box from circle
-                        bbox = (
-                            max(0, x - r),
-                            max(0, y - r),
-                            min(image.width, x + r),
-                            min(image.height, y + r)
-                        )
-                        detection = RingDetection(
-                            bbox=bbox,
-                            confidence=0.8
-                        )
-                        detections.append(detection)
-                        
-            # If no circles found, assume center region
-            if not detections:
-                # Default to center region
-                w, h = image.size
-                center_bbox = (w//4, h//4, 3*w//4, 3*h//4)
-                detections.append(RingDetection(
-                    bbox=center_bbox,
-                    confidence=0.5
-                ))
-                
-        except Exception as e:
-            print(f"[v141] Ring detection error: {e}")
-            # Fallback to center detection
-            w, h = image.size
-            center_bbox = (w//4, h//4, 3*w//4, 3*h//4)
-            detections.append(RingDetection(
-                bbox=center_bbox,
-                confidence=0.3
-            ))
-            
-        return detections
-    
-    def _detect_masking(self, image: Image.Image, detections: List[RingDetection]) -> bool:
-        """Detect if rings have masking/censoring"""
-        if not detections:
-            return False
-            
-        try:
-            # Check first detection area for masking patterns
-            det = detections[0]
-            x1, y1, x2, y2 = det.bbox
-            
-            # Crop ring area
-            ring_area = image.crop((x1, y1, x2, y2))
-            
-            # Convert to grayscale
-            gray = ring_area.convert('L')
-            
-            # Check for solid color blocks (masking indicator)
-            pixels = list(gray.getdata())
-            unique_colors = len(set(pixels))
-            
-            # If very few unique colors in ring area, likely masked
-            if unique_colors < 50:  # Threshold
-                return True
-                
-            # Check for blur patterns
-            if CV2_AVAILABLE and NUMPY_AVAILABLE:
-                ring_cv = cv2.cvtColor(np.array(ring_area), cv2.COLOR_RGB2BGR)
-                laplacian_var = cv2.Laplacian(ring_cv, cv2.CV_64F).var()
-                if laplacian_var < 100:  # Blurry = likely masked
-                    return True
+                # Method 2: Add padding
+                try:
+                    missing_padding = len(base64_string) % 4
+                    if missing_padding:
+                        base64_string += '=' * (4 - missing_padding)
+                        print(f"[v145] Added {4 - missing_padding} padding characters")
+                    image_data = base64.b64decode(base64_string)
+                    print("[v145] Decode with padding successful")
+                except Exception as e2:
+                    print(f"[v145] Decode with padding failed: {e2}")
                     
-        except Exception as e:
-            print(f"[v141] Masking detection error: {e}")
+                    # Method 3: Force decode
+                    try:
+                        image_data = base64.b64decode(base64_string + '==')
+                        print("[v145] Force decode successful")
+                    except Exception as e3:
+                        print(f"[v145] All decode methods failed")
+                        raise ValueError(f"Failed to decode base64: {e1}, {e2}, {e3}")
             
-        return False
-    
-    def _detect_metal_type(self, image: Image.Image, detections: List[RingDetection]) -> str:
-        """Detect metal type from ring color"""
-        if not detections:
-            return 'white_gold'  # Default
+            # Convert to image
+            image = Image.open(io.BytesIO(image_data))
+            print(f"[v145] Image opened successfully: {image.size}, mode: {image.mode}")
             
-        try:
-            # Analyze first detection
-            det = detections[0]
-            x1, y1, x2, y2 = det.bbox
-            ring_area = image.crop((x1, y1, x2, y2))
+            # Convert RGBA to RGB if needed
+            if image.mode == 'RGBA':
+                print("[v145] Converting RGBA to RGB")
+                rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+                rgb_image.paste(image, mask=image.split()[3])
+                image = rgb_image
+            elif image.mode != 'RGB':
+                print(f"[v145] Converting {image.mode} to RGB")
+                image = image.convert('RGB')
             
-            # Get average color
-            ring_array = np.array(ring_area)
-            avg_color = ring_array.mean(axis=(0, 1))
-            r, g, b = avg_color
+            # Convert to numpy array
+            img_array = np.array(image)
+            print(f"[v145] Converted to numpy array: {img_array.shape}")
             
-            # Color-based detection
-            yellow_score = r + g - b
-            rose_score = r - g
-            white_score = min(r, g, b)
+            # Convert RGB to BGR for OpenCV
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            print("[v145] Converted to BGR for OpenCV")
             
-            if yellow_score > 300:
-                return 'yellow_gold'
-            elif rose_score > 30:
-                return 'rose_gold'
-            elif white_score > 200:
-                return 'platinum'
-            else:
-                return 'white_gold'
-                
-        except Exception as e:
-            print(f"[v141] Metal detection error: {e}")
-            return 'white_gold'
-    
-    def _detect_lighting(self, image: Image.Image) -> str:
-        """Detect lighting conditions"""
-        try:
-            # Convert to grayscale
-            gray = image.convert('L')
-            histogram = gray.histogram()
-            
-            # Calculate brightness distribution
-            total_pixels = sum(histogram)
-            mean_brightness = sum(i * histogram[i] for i in range(256)) / total_pixels
-            
-            # Determine lighting
-            if mean_brightness > 200:
-                return 'studio'
-            elif mean_brightness < 100:
-                return 'outdoor'
-            else:
-                return 'natural'
-                
-        except:
-            return 'natural'
-    
-    def _apply_enhancement(self, image: Image.Image, metal_type: str, lighting: str) -> Image.Image:
-        """Apply 38-pair trained enhancements"""
-        try:
-            params = ENHANCEMENT_PARAMS.get(metal_type, {}).get(lighting, {})
-            if not params:
-                params = ENHANCEMENT_PARAMS['white_gold']['natural']
-            
-            enhanced = image.copy()
-            
-            # Apply enhancements in order
-            if params.get('brightness', 1.0) != 1.0:
-                enhancer = ImageEnhance.Brightness(enhanced)
-                enhanced = enhancer.enhance(params['brightness'])
-            
-            if params.get('contrast', 1.0) != 1.0:
-                enhancer = ImageEnhance.Contrast(enhanced)
-                enhanced = enhancer.enhance(params['contrast'])
-            
-            if params.get('saturation', 1.0) != 1.0:
-                enhancer = ImageEnhance.Color(enhanced)
-                enhanced = enhancer.enhance(params['saturation'])
-            
-            if params.get('sharpness', 1.0) != 1.0:
-                enhancer = ImageEnhance.Sharpness(enhanced)
-                enhanced = enhancer.enhance(params['sharpness'])
-            
-            # Apply white overlay if specified
-            if params.get('white_overlay', 0) > 0:
-                overlay = Image.new('RGB', enhanced.size, (255, 255, 255))
-                enhanced = Image.blend(enhanced, overlay, params['white_overlay'])
-            
-            # Apply color temperature adjustment
-            if params.get('color_temp', 0) != 0 and NUMPY_AVAILABLE:
-                enhanced = self._adjust_color_temperature(enhanced, params['color_temp'])
-            
-            return enhanced
+            return img_bgr
             
         except Exception as e:
-            print(f"[v141] Enhancement error: {e}")
-            return image
-    
-    def _adjust_color_temperature(self, image: Image.Image, temp_adjust: int) -> Image.Image:
-        """Adjust color temperature"""
-        try:
-            # Convert to array
-            img_array = np.array(image, dtype=np.float32)
-            
-            # Adjust color channels
-            if temp_adjust > 0:  # Warmer
-                img_array[:, :, 0] *= 1 + (temp_adjust * 0.01)  # More red
-                img_array[:, :, 2] *= 1 - (temp_adjust * 0.005)  # Less blue
-            else:  # Cooler
-                img_array[:, :, 0] *= 1 + (temp_adjust * 0.005)  # Less red
-                img_array[:, :, 2] *= 1 - (temp_adjust * 0.01)  # More blue
-            
-            # Clip values
-            img_array = np.clip(img_array, 0, 255)
-            
-            return Image.fromarray(img_array.astype(np.uint8))
-            
-        except:
-            return image
-    
-    def _remove_masking_safe(self, image: Image.Image, detections: List[RingDetection]) -> Image.Image:
-        """Remove masking using Replicate with timeout protection"""
+            print(f"[v145] Error in decode_base64_image: {str(e)}")
+            raise
+
+    def detect_rings_with_grounding_dino(self, image, timeout_seconds=20):
+        """Detect wedding rings using Grounding DINO"""
+        print("[v145] Starting ring detection with Grounding DINO")
         
-        def run_replicate():
-            """Run Replicate in separate thread"""
+        def _run_detection():
             try:
-                # Initialize Replicate if needed
-                if not self._init_replicate_lazy():
+                # Initialize client if needed
+                self._init_replicate_client()
+                
+                if not self.replicate_client:
+                    print("[v145] Replicate client not available - skipping ring detection")
                     return None
                 
-                # Convert image to base64
+                # Convert image for upload
+                img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(img_rgb)
+                
+                # Save to buffer
                 buffer = io.BytesIO()
-                image.save(buffer, format='PNG')
-                img_base64 = base64.b64encode(buffer.getvalue()).decode()
+                pil_image.save(buffer, format='PNG', quality=95)
+                buffer.seek(0)
                 
-                # Create mask for inpainting
-                mask = Image.new('L', image.size, 0)
-                draw = ImageDraw.Draw(mask)
+                print("[v145] Running Grounding DINO...")
                 
-                for det in detections:
-                    x1, y1, x2, y2 = det.bbox
-                    # Expand bbox slightly
-                    margin = 20
-                    x1 = max(0, x1 - margin)
-                    y1 = max(0, y1 - margin)
-                    x2 = min(image.width, x2 + margin)
-                    y2 = min(image.height, y2 + margin)
-                    draw.ellipse([x1, y1, x2, y2], fill=255)
-                
-                # Convert mask to base64
-                mask_buffer = io.BytesIO()
-                mask.save(mask_buffer, format='PNG')
-                mask_base64 = base64.b64encode(mask_buffer.getvalue()).decode()
-                
-                # Run inpainting
+                # Run detection
                 output = self.replicate_client.run(
-                    "stability-ai/stable-diffusion-inpainting:95b7223104132402a9ae91cc677285bc5eb997834bd2349fa486f53910fd68b3",
+                    "adirik/grounding-dino:e0b4a26b271dad5e7d1fd4511b0e8e6c155b3d3aae1e72c5ac966a21b4c5cf01",
                     input={
-                        "image": f"data:image/png;base64,{img_base64}",
-                        "mask": f"data:image/png;base64,{mask_base64}",
-                        "prompt": "professional wedding ring photo, high quality jewelry photography",
-                        "negative_prompt": "blur, censored, masked, low quality",
-                        "num_inference_steps": 20,
-                        "guidance_scale": 7.5
+                        "image": buffer,
+                        "query": "wedding ring, engagement ring, gold ring, diamond ring, ring",
+                        "box_threshold": 0.25,
+                        "text_threshold": 0.2
                     }
                 )
                 
-                if output and len(output) > 0:
-                    # Get result image
-                    result_url = output[0]
-                    import requests
-                    response = requests.get(result_url, timeout=10)
-                    
-                    if response.status_code == 200:
-                        result_image = Image.open(io.BytesIO(response.content))
-                        return result_image
-                        
-                return None
+                print(f"[v145] Grounding DINO output: {output}")
                 
+                if output and 'boxes' in output and len(output['boxes']) > 0:
+                    # Get the first detected ring
+                    box = output['boxes'][0]
+                    confidence = output.get('scores', [1.0])[0]
+                    label = output.get('labels', ['ring'])[0]
+                    
+                    print(f"[v145] Ring detected: {label} (confidence: {confidence:.2f})")
+                    print(f"[v145] Box coordinates: {box}")
+                    
+                    return {
+                        'box': box,  # [x1, y1, x2, y2]
+                        'confidence': confidence,
+                        'label': label
+                    }
+                else:
+                    print("[v145] No rings detected")
+                    return None
+                    
             except Exception as e:
-                print(f"[v141] Replicate processing error: {e}")
+                print(f"[v145] Grounding DINO error: {e}")
                 return None
         
+        # Run with timeout protection
         try:
-            # Run with timeout using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_replicate)
-                
-                try:
-                    result = future.result(timeout=self.replicate_timeout)
-                    if result is not None:
-                        print("[v141] Masking removed successfully")
-                        return result
-                    else:
-                        print("[v141] Replicate returned no result")
-                        
-                except TimeoutError:
-                    print(f"[v141] Replicate timed out after {self.replicate_timeout}s")
-                    future.cancel()
-                    
-        except Exception as e:
-            print(f"[v141] Safe masking removal error: {e}")
-        
-        # Return original if Replicate fails
-        print("[v141] Returning original image (Replicate failed)")
-        return image
-    
-    def _create_thumbnail(self, image: Image.Image, size: Tuple[int, int] = (1000, 1300)) -> Optional[Image.Image]:
-        """Create thumbnail with upscaling"""
-        try:
-            # Calculate aspect ratios
-            img_ratio = image.width / image.height
-            target_ratio = size[0] / size[1]
-            
-            if img_ratio > target_ratio:
-                # Image is wider
-                new_width = size[0]
-                new_height = int(size[0] / img_ratio)
-            else:
-                # Image is taller
-                new_height = size[1]
-                new_width = int(size[1] * img_ratio)
-            
-            # Resize
-            thumbnail = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Create white background
-            background = Image.new('RGB', size, (255, 255, 255))
-            
-            # Paste centered
-            x = (size[0] - new_width) // 2
-            y = (size[1] - new_height) // 2
-            background.paste(thumbnail, (x, y))
-            
-            return background
-            
-        except Exception as e:
-            print(f"[v141] Thumbnail creation error: {e}")
+                future = executor.submit(_run_detection)
+                result = future.result(timeout=timeout_seconds)
+                return result
+        except FuturesTimeoutError:
+            print(f"[v145] Grounding DINO timeout after {timeout_seconds} seconds")
             return None
-    
-    def _image_to_base64(self, image: Image.Image) -> str:
-        """Convert image to base64 string - REMOVE PADDING FOR MAKE.COM"""
+        except Exception as e:
+            print(f"[v145] Grounding DINO execution error: {e}")
+            return None
+
+    def crop_ring_area(self, image, box, padding_ratio=0.15):
+        """Crop ring area with padding"""
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = map(int, box)
+        
+        # Add padding
+        padding_x = int((x2 - x1) * padding_ratio)
+        padding_y = int((y2 - y1) * padding_ratio)
+        
+        x1 = max(0, x1 - padding_x)
+        y1 = max(0, y1 - padding_y)
+        x2 = min(w, x2 + padding_x)
+        y2 = min(h, y2 + padding_y)
+        
+        # Crop
+        ring_crop = image[y1:y2, x1:x2]
+        
+        print(f"[v145] Ring cropped: original {w}x{h} -> crop {ring_crop.shape[1]}x{ring_crop.shape[0]}")
+        print(f"[v145] Crop coordinates: ({x1}, {y1}, {x2}, {y2})")
+        
+        return ring_crop, (x1, y1, x2, y2)
+
+    def enhance_ring_with_gfpgan(self, ring_image, timeout_seconds=20):
+        """Remove scratches and damage with GFPGAN"""
+        print("[v145] Enhancing ring with GFPGAN...")
+        
+        def _run_gfpgan():
+            try:
+                if not self.replicate_client:
+                    print("[v145] Replicate client not available")
+                    return ring_image
+                
+                # Convert to PIL
+                img_rgb = cv2.cvtColor(ring_image, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(img_rgb)
+                
+                # Save to buffer
+                buffer = io.BytesIO()
+                pil_image.save(buffer, format='PNG', quality=95)
+                buffer.seek(0)
+                
+                print("[v145] Running GFPGAN for damage removal...")
+                
+                # Run GFPGAN
+                output = self.replicate_client.run(
+                    "tencentarc/gfpgan:0fbacf7afc6c144e5be9767cff80f25aff23e52b0708f17e20f9879b2f21516c",
+                    input={
+                        "img": buffer,
+                        "scale": 2,
+                        "version": "v1.4"
+                    }
+                )
+                
+                if output:
+                    # Download result
+                    response = requests.get(output)
+                    restored_image = Image.open(io.BytesIO(response.content))
+                    
+                    # Convert back to BGR
+                    result = cv2.cvtColor(np.array(restored_image), cv2.COLOR_RGB2BGR)
+                    print("[v145] GFPGAN enhancement successful")
+                    return result
+                else:
+                    print("[v145] No output from GFPGAN")
+                    return ring_image
+                    
+            except Exception as e:
+                print(f"[v145] GFPGAN error: {e}")
+                return ring_image
+        
+        # Run with timeout protection
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_gfpgan)
+                result = future.result(timeout=timeout_seconds)
+                return result
+        except FuturesTimeoutError:
+            print(f"[v145] GFPGAN timeout after {timeout_seconds} seconds")
+            return ring_image
+        except Exception as e:
+            print(f"[v145] GFPGAN execution error: {e}")
+            return ring_image
+
+    def upscale_ring_with_realesrgan(self, ring_image, scale=4, timeout_seconds=20):
+        """Upscale ring with Real-ESRGAN"""
+        print(f"[v145] Upscaling ring with Real-ESRGAN (scale: {scale}x)...")
+        
+        def _run_realesrgan():
+            try:
+                if not self.replicate_client:
+                    print("[v145] Replicate client not available")
+                    return ring_image
+                
+                # Convert to PIL
+                img_rgb = cv2.cvtColor(ring_image, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(img_rgb)
+                
+                # Save to buffer
+                buffer = io.BytesIO()
+                pil_image.save(buffer, format='PNG', quality=95)
+                buffer.seek(0)
+                
+                print("[v145] Running Real-ESRGAN...")
+                
+                # Run Real-ESRGAN
+                output = self.replicate_client.run(
+                    "nightmareai/real-esrgan:350d32041630ffbe63c8352783a26d94126de72538170a4a0e79c2f08a3bfc39",
+                    input={
+                        "image": buffer,
+                        "scale": scale,
+                        "face_enhance": False  # Turn off face enhancement for rings
+                    }
+                )
+                
+                if output:
+                    # Download result
+                    response = requests.get(output)
+                    upscaled_image = Image.open(io.BytesIO(response.content))
+                    
+                    # Convert back to BGR
+                    result = cv2.cvtColor(np.array(upscaled_image), cv2.COLOR_RGB2BGR)
+                    print(f"[v145] Real-ESRGAN upscaling successful: {result.shape}")
+                    return result
+                else:
+                    print("[v145] No output from Real-ESRGAN")
+                    return ring_image
+                    
+            except Exception as e:
+                print(f"[v145] Real-ESRGAN error: {e}")
+                return ring_image
+        
+        # Run with timeout protection
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_realesrgan)
+                result = future.result(timeout=timeout_seconds)
+                return result
+        except FuturesTimeoutError:
+            print(f"[v145] Real-ESRGAN timeout after {timeout_seconds} seconds")
+            return ring_image
+        except Exception as e:
+            print(f"[v145] Real-ESRGAN execution error: {e}")
+            return ring_image
+
+    def detect_metal_type(self, image):
+        """Detect metal type using advanced color analysis"""
+        print("[v145] Starting metal type detection")
+        
+        try:
+            # Convert to HSV for better color analysis
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            h, s, v = cv2.split(hsv)
+            
+            # Calculate statistics
+            h_mean = np.mean(h)
+            s_mean = np.mean(s)
+            v_mean = np.mean(v)
+            
+            # Get center region for more accurate detection
+            h_img, w_img = image.shape[:2]
+            center_y1, center_y2 = int(h_img * 0.3), int(h_img * 0.7)
+            center_x1, center_x2 = int(w_img * 0.3), int(w_img * 0.7)
+            center_region = hsv[center_y1:center_y2, center_x1:center_x2]
+            
+            h_center = np.mean(center_region[:, :, 0])
+            s_center = np.mean(center_region[:, :, 1])
+            v_center = np.mean(center_region[:, :, 2])
+            
+            print(f"[v145] HSV means - H: {h_mean:.1f}, S: {s_mean:.1f}, V: {v_mean:.1f}")
+            print(f"[v145] Center HSV - H: {h_center:.1f}, S: {s_center:.1f}, V: {v_center:.1f}")
+            
+            # Metal type detection logic with training data insights
+            if s_center < 25:  # Very low saturation
+                if v_center > 200:
+                    metal_type = 'white_gold'
+                else:
+                    metal_type = 'plain_white'  # Champagne gold
+            elif 18 <= h_center <= 28 and s_center > 40:  # Yellow range
+                metal_type = 'yellow_gold'
+            elif (0 <= h_center <= 15 or h_center >= 165) and s_center > 30:  # Red/pink range
+                metal_type = 'rose_gold'
+            else:
+                # Additional RGB analysis for edge cases
+                rgb_mean = np.mean(image[center_y1:center_y2, center_x1:center_x2], axis=(0, 1))
+                r, g, b = rgb_mean[2], rgb_mean[1], rgb_mean[0]
+                
+                # Warmth calculation
+                warmth = (r - b) / max(1, (r + g + b) / 3)
+                
+                if warmth > 0.15:
+                    metal_type = 'rose_gold'
+                elif warmth > 0.05:
+                    metal_type = 'yellow_gold'
+                elif v_center > 180:
+                    metal_type = 'white_gold'
+                else:
+                    metal_type = 'plain_white'
+            
+            print(f"[v145] Detected metal type: {metal_type}")
+            return metal_type
+            
+        except Exception as e:
+            print(f"[v145] Error in metal detection: {e}")
+            return 'white_gold'  # Safe default
+
+    def apply_color_correction(self, image, metal_type):
+        """Apply advanced color correction based on metal type with training data"""
+        print(f"[v145] Applying color correction for {metal_type}")
+        
+        try:
+            correction = self.color_corrections.get(metal_type, self.color_corrections['white_gold'])
+            
+            # Step 1: Basic color temperature adjustment
+            result = image.copy()
+            
+            # Step 2: HSV adjustments
+            hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV).astype(np.float32)
+            
+            # Apply hue shift
+            hsv[:, :, 0] = (hsv[:, :, 0] + correction['h_shift']) % 180
+            
+            # Apply saturation with non-linear curve for better results
+            s_channel = hsv[:, :, 1]
+            if metal_type in ['yellow_gold', 'rose_gold']:
+                # Enhance mid-tone saturation more than highlights
+                s_mask = s_channel / 255.0
+                s_enhancement = correction['s_mult'] + (1 - s_mask) * 0.1
+                hsv[:, :, 1] = np.clip(s_channel * s_enhancement, 0, 255)
+            else:
+                hsv[:, :, 1] = np.clip(s_channel * correction['s_mult'], 0, 255)
+            
+            # Apply value adjustment with protection for highlights
+            v_channel = hsv[:, :, 2]
+            v_mask = np.where(v_channel > 240, 0.5, 1.0)  # Protect bright areas
+            hsv[:, :, 2] = np.clip(v_channel * correction['v_mult'] * v_mask, 0, 255)
+            
+            result = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+            
+            # Step 3: Color grading in LAB space for more natural results
+            lab = cv2.cvtColor(result, cv2.COLOR_BGR2LAB).astype(np.float32)
+            
+            if metal_type == 'yellow_gold':
+                lab[:, :, 2] += 3  # Add yellow
+                lab[:, :, 1] += 1  # Slight red
+            elif metal_type == 'rose_gold':
+                lab[:, :, 1] += 5  # Add red/pink
+                lab[:, :, 2] -= 2  # Reduce yellow
+            elif metal_type == 'plain_white':
+                lab[:, :, 1] += 2  # Slight warmth
+                lab[:, :, 2] += 3  # Champagne tone
+            
+            lab = np.clip(lab, [0, -127, -127], [255, 127, 127])
+            result = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+            
+            # Step 4: Apply warmth adjustment
+            if correction['warmth'] != 1.0:
+                # Create warm overlay
+                warm_layer = result.copy()
+                warm_layer[:, :, 0] = np.clip(warm_layer[:, :, 0] * 0.9, 0, 255)  # Reduce blue
+                warm_layer[:, :, 2] = np.clip(warm_layer[:, :, 2] * 1.1, 0, 255)  # Increase red
+                
+                # Blend based on warmth factor
+                blend_factor = abs(correction['warmth'] - 1.0)
+                if correction['warmth'] > 1.0:
+                    result = cv2.addWeighted(result, 1 - blend_factor, warm_layer, blend_factor, 0)
+                else:
+                    cool_layer = result.copy()
+                    cool_layer[:, :, 0] = np.clip(cool_layer[:, :, 0] * 1.1, 0, 255)  # Increase blue
+                    cool_layer[:, :, 2] = np.clip(cool_layer[:, :, 2] * 0.9, 0, 255)  # Reduce red
+                    result = cv2.addWeighted(result, 1 - blend_factor, cool_layer, blend_factor, 0)
+            
+            # Step 5: Fine-tune brightness/contrast for each metal type
+            if metal_type == 'white_gold':
+                result = cv2.convertScaleAbs(result, alpha=1.05, beta=5)
+            elif metal_type == 'plain_white':
+                result = cv2.convertScaleAbs(result, alpha=1.02, beta=8)
+            
+            print("[v145] Color correction applied successfully")
+            return result
+            
+        except Exception as e:
+            print(f"[v145] Error in color correction: {e}")
+            return image
+
+    def enhance_details(self, image):
+        """Enhance ring details with advanced processing"""
+        print("[v145] Enhancing details...")
+        
+        try:
+            # Convert to PIL
+            img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(img_rgb)
+            
+            # Step 1: Denoise before sharpening
+            denoised = cv2.fastNlMeansDenoisingColored(image, None, 3, 3, 7, 21)
+            img_rgb = cv2.cvtColor(denoised, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(img_rgb)
+            
+            # Step 2: Advanced sharpening
+            # Use unsharp mask for better control
+            gaussian = pil_img.filter(ImageFilter.GaussianBlur(radius=1))
+            pil_img = Image.blend(gaussian, pil_img, 1.5)  # 150% sharpening
+            
+            # Step 3: Local contrast enhancement
+            enhancer = ImageEnhance.Contrast(pil_img)
+            pil_img = enhancer.enhance(1.15)
+            
+            # Step 4: Clarity enhancement (mid-tone contrast)
+            # Convert to LAB for better mid-tone control
+            lab = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2LAB)
+            l_channel = lab[:, :, 0]
+            
+            # Apply CLAHE to L channel
+            clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+            l_channel = clahe.apply(l_channel)
+            lab[:, :, 0] = l_channel
+            
+            # Convert back
+            enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+            pil_img = Image.fromarray(enhanced)
+            
+            # Step 5: Fine detail enhancement
+            enhancer = ImageEnhance.Sharpness(pil_img)
+            pil_img = enhancer.enhance(1.2)
+            
+            # Step 6: Subtle brightness boost for sparkle
+            enhancer = ImageEnhance.Brightness(pil_img)
+            pil_img = enhancer.enhance(1.03)
+            
+            # Convert back to BGR
+            result = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            
+            print("[v145] Details enhanced successfully")
+            return result
+            
+        except Exception as e:
+            print(f"[v145] Error in detail enhancement: {e}")
+            return image
+
+    def merge_enhanced_ring(self, original_image, enhanced_ring, crop_coords):
+        """Merge enhanced ring back to original image"""
+        x1, y1, x2, y2 = crop_coords
+        
+        # Create copy of original
+        result = original_image.copy()
+        
+        # Resize enhanced ring to original crop size
+        crop_h = y2 - y1
+        crop_w = x2 - x1
+        
+        if enhanced_ring.shape[:2] != (crop_h, crop_w):
+            print(f"[v145] Resizing enhanced ring from {enhanced_ring.shape[:2]} to ({crop_w}, {crop_h})")
+            enhanced_ring = cv2.resize(enhanced_ring, (crop_w, crop_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        # Paste enhanced ring
+        result[y1:y2, x1:x2] = enhanced_ring
+        
+        print("[v145] Enhanced ring merged back to original image")
+        return result
+
+    def create_thumbnail(self, image, size=(150, 150)):
+        """Create thumbnail"""
+        print(f"[v145] Creating thumbnail {size}")
+        
+        try:
+            img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(img_rgb)
+            
+            # Use high-quality downsampling
+            pil_img.thumbnail(size, Image.Resampling.LANCZOS)
+            
+            return pil_img
+            
+        except Exception as e:
+            print(f"[v145] Error creating thumbnail: {e}")
+            return None
+
+    def _image_to_base64(self, image):
+        """Convert PIL Image to base64 - MUST REMOVE PADDING"""
         buffer = io.BytesIO()
-        image.save(buffer, format='PNG')
-        img_base64 = base64.b64encode(buffer.getvalue()).decode()
-        # MUST REMOVE PADDING - Make.com cannot handle it!
+        image.save(buffer, format='PNG', quality=95)
+        buffer.seek(0)
+        img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        # CRITICAL: Remove padding for Make.com
         img_base64 = img_base64.rstrip('=')
-        print(f"[v142] Base64 encoding complete, length: {len(img_base64)}, padding removed")
+        print(f"[v145] Base64 encoding complete, length: {len(img_base64)}, padding removed")
         return img_base64
 
-# Global instance (safe because no Replicate init)
+    def process_image(self, image_base64):
+        """Main processing pipeline with ring detection"""
+        print("\n" + "="*50)
+        print("[v145] Starting image processing pipeline")
+        print("[v145] Pipeline: Detect → Crop → GFPGAN → Real-ESRGAN → Color → Merge")
+        print("="*50)
+        
+        start_time = time.time()
+        
+        try:
+            # Decode image
+            image = self.decode_base64_image(image_base64)
+            print(f"[v145] Image decoded: {image.shape}")
+            
+            # Step 1: Detect rings with Grounding DINO
+            ring_detection = self.detect_rings_with_grounding_dino(image)
+            
+            if ring_detection:
+                print("[v145] Ring detected! Processing with enhancement pipeline...")
+                
+                # Step 2: Crop ring area
+                ring_crop, crop_coords = self.crop_ring_area(image, ring_detection['box'])
+                
+                # Step 3: Detect metal type on cropped ring
+                metal_type = self.detect_metal_type(ring_crop)
+                
+                # Step 4: Enhance with GFPGAN (remove damage)
+                enhanced_ring = self.enhance_ring_with_gfpgan(ring_crop)
+                
+                # Step 5: Upscale with Real-ESRGAN
+                upscaled_ring = self.upscale_ring_with_realesrgan(enhanced_ring, scale=4)
+                
+                # Step 6: Apply color correction
+                color_corrected = self.apply_color_correction(upscaled_ring, metal_type)
+                
+                # Step 7: Enhance details
+                detail_enhanced = self.enhance_details(color_corrected)
+                
+                # Step 8: Merge back to original
+                final_image = self.merge_enhanced_ring(image, detail_enhanced, crop_coords)
+                
+                ring_info = {
+                    'detected': True,
+                    'confidence': ring_detection['confidence'],
+                    'label': ring_detection['label'],
+                    'box': ring_detection['box'],
+                    'crop_size': ring_crop.shape[:2]
+                }
+            else:
+                print("[v145] No ring detected - applying global enhancement")
+                
+                # Fallback: process entire image
+                metal_type = self.detect_metal_type(image)
+                final_image = self.apply_color_correction(image, metal_type)
+                final_image = self.enhance_details(final_image)
+                
+                ring_info = {
+                    'detected': False,
+                    'message': 'No ring detected, applied global enhancement'
+                }
+            
+            # Create outputs
+            enhanced_pil = Image.fromarray(cv2.cvtColor(final_image, cv2.COLOR_BGR2RGB))
+            thumbnail = self.create_thumbnail(final_image)
+            
+            # Convert to base64 (PADDING REMOVED)
+            enhanced_base64 = self._image_to_base64(enhanced_pil)
+            thumbnail_base64 = self._image_to_base64(thumbnail) if thumbnail else None
+            
+            processing_time = time.time() - start_time
+            
+            print(f"\n[v145] Processing complete in {processing_time:.2f}s")
+            print(f"[v145] Metal type: {metal_type}")
+            print(f"[v145] Ring detection: {ring_info}")
+            print("="*50 + "\n")
+            
+            return {
+                "enhanced_image": enhanced_base64,
+                "thumbnail": thumbnail_base64,
+                "processing_info": {
+                    "metal_type": metal_type,
+                    "ring_detection": ring_info,
+                    "processing_time": round(processing_time, 2),
+                    "original_size": list(image.shape[:2]),
+                    "version": "v145-ring-detection-pipeline",
+                    "pipeline_used": "grounding-dino + gfpgan + realesrgan" if ring_info['detected'] else "global-enhancement"
+                }
+            }
+            
+        except Exception as e:
+            print(f"[v145] Error in processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+
+# Global instance
 enhancer_instance = None
 
 def get_enhancer():
     """Get or create enhancer instance"""
     global enhancer_instance
     if enhancer_instance is None:
-        enhancer_instance = WeddingRingEnhancerV142()
+        enhancer_instance = WeddingRingEnhancerV145()
     return enhancer_instance
 
+
+def find_image_in_data(data, depth=0, max_depth=5):
+    """Recursively find image data in nested structure"""
+    if depth > max_depth:
+        return None
+    
+    print(f"[v145] Searching at depth {depth}, type: {type(data)}")
+    
+    # If string, might be base64
+    if isinstance(data, str):
+        if len(data) > 100:  # Likely base64
+            return data
+    
+    # If dict, search keys
+    if isinstance(data, dict):
+        # Direct image keys
+        for key in ['image', 'image_base64', 'base64', 'img', 'data', 'imageData', 'image_data', 'input_image']:
+            if key in data and data[key]:
+                print(f"[v145] Found image in key: {key}")
+                return data[key]
+        
+        # Search nested structures
+        for key in data:
+            result = find_image_in_data(data[key], depth + 1, max_depth)
+            if result:
+                return result
+    
+    return None
+
+
 def handler(event):
-    """RunPod handler function - v142 Make.com Compatible"""
+    """RunPod handler function - v145 Ring Detection Pipeline"""
     try:
-        print("="*70)
-        print("[v142] Handler started - Make.com & GAS Compatible Version")
-        print("[v142] IMPORTANT: Padding removed for Make.com, GAS will restore it")
-        print(f"[v142] Python version: {sys.version}")
-        print(f"[v142] Available modules - NumPy: {NUMPY_AVAILABLE}, PIL: {PIL_AVAILABLE}, CV2: {CV2_AVAILABLE}")
-        print(f"[v142] Replicate module available: {REPLICATE_AVAILABLE}")
-        print(f"[v142] Replicate token set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
+        print("\n" + "="*70)
+        print("[v145] Handler started - Ring Detection Pipeline")
+        print("[v145] Features: Grounding DINO + GFPGAN + Real-ESRGAN")
+        print(f"[v145] Python version: {sys.version}")
+        print(f"[v145] Available modules - NumPy: {NUMPY_AVAILABLE}, PIL: {PIL_AVAILABLE}, CV2: {CV2_AVAILABLE}")
+        print(f"[v145] Replicate module available: {REPLICATE_AVAILABLE}")
+        print(f"[v145] Replicate token set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
         print("="*70)
         
         # Get input data
         input_data = event.get('input', {})
-        print(f"[v141] Input type: {type(input_data)}")
-        print(f"[v141] Input keys: {list(input_data.keys()) if isinstance(input_data, dict) else 'Not a dict'}")
+        print(f"[v145] Input type: {type(input_data)}")
+        print(f"[v145] Input keys: {list(input_data.keys()) if isinstance(input_data, dict) else 'Not a dict'}")
         
         # Debug mode
         if input_data.get('debug_mode', False):
             return {
                 "output": {
                     "status": "debug_success",
-                    "message": "v141 handler is working - GAS Compatible",
-                    "replicate_available": REPLICATE_AVAILABLE,
-                    "replicate_token_set": bool(os.environ.get('REPLICATE_API_TOKEN')),
-                    "opencv_available": CV2_AVAILABLE,
-                    "numpy_available": NUMPY_AVAILABLE,
-                    "pil_available": PIL_AVAILABLE,
-                    "version": "v141-gas-compatible"
+                    "message": "v145 handler working - Ring Detection Pipeline",
+                    "features": {
+                        "padding_removal": "Active for Make.com compatibility",
+                        "ring_detection": "Grounding DINO",
+                        "damage_removal": "GFPGAN",
+                        "upscaling": "Real-ESRGAN 4x",
+                        "metal_types": ["yellow_gold", "rose_gold", "white_gold", "plain_white"]
+                    },
+                    "modules": {
+                        "replicate": REPLICATE_AVAILABLE,
+                        "opencv": CV2_AVAILABLE,
+                        "numpy": NUMPY_AVAILABLE,
+                        "pil": PIL_AVAILABLE
+                    },
+                    "version": "v145-ring-detection"
                 }
             }
         
-        # Extract image data with multiple fallbacks
-        image_data = None
-        
-        # Try different keys
-        for key in ['image', 'image_base64', 'input_image', 'base64', 'data']:
-            if key in input_data:
-                image_data = input_data[key]
-                if image_data:
-                    print(f"[v141] Found image data in key: {key}")
-                    break
-        
-        # Try nested structures
-        if not image_data and isinstance(input_data, dict):
-            for pattern in ['data', 'body', 'payload']:
-                if pattern in input_data and isinstance(input_data[pattern], dict):
-                    for key in ['image', 'image_base64']:
-                        if key in input_data[pattern]:
-                            image_data = input_data[pattern][key]
-                            if image_data:
-                                print(f"[v141] Found image data in {pattern}.{key}")
-                                break
+        # Find image data
+        image_data = find_image_in_data(input_data)
         
         if not image_data:
-            print("[v141] No image data found in input")
+            print("[v145] No image data found in input")
+            print(f"[v145] Available keys: {list(input_data.keys()) if isinstance(input_data, dict) else 'N/A'}")
+            
+            # Log sample of each key
+            if isinstance(input_data, dict):
+                for key, value in input_data.items():
+                    sample = str(value)[:100] if value else "None"
+                    print(f"[v145] Key '{key}': {sample}...")
+            
             return {
                 "output": {
-                    "error": "No image data provided",
+                    "error": "No image provided",
                     "status": "error",
-                    "debug_info": {
-                        "input_keys": list(input_data.keys()) if isinstance(input_data, dict) else "Not a dict",
-                        "input_type": str(type(input_data))
-                    },
-                    "version": "v141-gas-compatible"
+                    "available_keys": list(input_data.keys()) if isinstance(input_data, dict) else [],
+                    "version": "v145"
                 }
             }
         
-        # Decode image
-        print(f"[v141] Decoding image data (length: {len(str(image_data))})")
-        image = decode_base64_image(image_data)
-        print(f"[v141] Image decoded successfully: {image.size}")
+        print(f"[v145] Found image data, length: {len(image_data) if isinstance(image_data, str) else 'N/A'}")
         
-        # Get enhancer and process
+        # Process image
         enhancer = get_enhancer()
+        result = enhancer.process_image(image_data)
         
-        # Process with timeout protection
-        print("[v141] Starting image enhancement...")
-        result = enhancer.enhance_image(image)
+        # CRITICAL: Ensure padding is removed from ALL outputs
+        for key in ['enhanced_image', 'thumbnail']:
+            if key in result and result[key]:
+                # Double-check padding removal
+                result[key] = result[key].rstrip('=')
+                print(f"[v145] Verified padding removed from {key}")
         
-        # Return in RunPod format
-        print("[v141] Processing complete, returning result")
-        return {"output": result}
+        print("[v145] Handler completed successfully")
+        
+        # Return with proper structure
+        return {
+            "output": result
+        }
         
     except Exception as e:
-        print(f"[v141] Handler error: {str(e)}")
-        print(traceback.format_exc())
+        print(f"[v145] Handler error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         
         return {
             "output": {
                 "error": str(e),
-                "traceback": traceback.format_exc(),
                 "status": "error",
-                "version": "v141-gas-compatible"
+                "version": "v145"
             }
         }
 
+
 # RunPod entry point
 if __name__ == "__main__":
-    print("="*70)
-    print("Wedding Ring Enhancement v141 Starting...")
-    print("Google Apps Script Compatible Version")
-    print("IMPORTANT: Base64 padding is PRESERVED for GAS compatibility")
-    print(f"Replicate Module Check: {REPLICATE_AVAILABLE}")
-    print(f"Replicate Token Set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
-    print("="*70)
+    print("[v145] Starting RunPod serverless worker...")
+    print("[v145] Pipeline: Grounding DINO → GFPGAN → Real-ESRGAN")
+    print("[v145] CRITICAL: Make.com padding removal active")
     
-    runpod.serverless.start({"handler": handler})
+    if RUNPOD_AVAILABLE:
+        runpod.serverless.start({"handler": handler})
+    else:
+        print("[v145] Testing mode - runpod not available")
+        
+        # Test with mock event
+        test_event = {
+            "input": {
+                "debug_mode": True
+            }
+        }
+        
+        result = handler(test_event)
+        print(f"[v145] Test result: {json.dumps(result, indent=2)}")
