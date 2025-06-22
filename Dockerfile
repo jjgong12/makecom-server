@@ -1,6 +1,7 @@
 FROM runpod/base:0.6.2-cuda12.2.0
 WORKDIR /
 
+
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
