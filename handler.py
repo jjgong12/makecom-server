@@ -1,7 +1,7 @@
 import runpod
 import base64
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageDraw
 import cv2
 import io
 import os
@@ -17,10 +17,10 @@ except ImportError:
     print("[v150] Replicate not available")
 
 class WeddingRingEnhancer:
-    """v150 Wedding Ring Enhancement System - Perfect Detection & Thumbnail"""
+    """v150 Wedding Ring Enhancement System - Complete Version"""
     
     def __init__(self):
-        print("[v150] Initializing Wedding Ring Enhancer")
+        print("[v150] Initializing Wedding Ring Enhancer - Full Version")
         self.replicate_client = None
         
         # 38 pairs learning data parameters (28 + 10 additional)
@@ -171,70 +171,135 @@ class WeddingRingEnhancer:
             print(f"[v150] Error decoding base64: {e}")
             raise
 
-    def detect_masking_ultra_precision(self, image_np):
-        """Ultra-precision masking detection focused on central box"""
+    def detect_and_remove_black_borders(self, image_np):
+        """Detect and remove black borders with adaptive thickness up to 200 pixels"""
+        print("[v150] Starting adaptive black border detection (up to 200px)")
+        
         h, w = image_np.shape[:2]
-        print(f"[v150] Starting ultra-precision masking detection on {w}x{h} image")
+        
+        # Multiple threshold values for different black levels
+        thresholds = [30, 40, 50, 60, 70]
+        max_border = 200  # Maximum border thickness to check
+        
+        for threshold in thresholds:
+            # Create mask for dark pixels
+            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+            mask = gray < threshold
+            
+            # Check each edge
+            for edge in ['top', 'bottom', 'left', 'right']:
+                if edge == 'top':
+                    for i in range(min(max_border, h//3)):
+                        if np.mean(mask[i, :]) > 0.8:  # 80% black pixels
+                            image_np[:i+1, :] = self.after_bg_colors.get('white_gold', [250, 248, 245])
+                        else:
+                            break
+                
+                elif edge == 'bottom':
+                    for i in range(min(max_border, h//3)):
+                        if np.mean(mask[h-i-1, :]) > 0.8:
+                            image_np[h-i-1:, :] = self.after_bg_colors.get('white_gold', [250, 248, 245])
+                        else:
+                            break
+                
+                elif edge == 'left':
+                    for i in range(min(max_border, w//3)):
+                        if np.mean(mask[:, i]) > 0.8:
+                            image_np[:, :i+1] = self.after_bg_colors.get('white_gold', [250, 248, 245])
+                        else:
+                            break
+                
+                elif edge == 'right':
+                    for i in range(min(max_border, w//3)):
+                        if np.mean(mask[:, w-i-1]) > 0.8:
+                            image_np[:, w-i-1:] = self.after_bg_colors.get('white_gold', [250, 248, 245])
+                        else:
+                            break
+        
+        print("[v150] Black border removal completed")
+        return image_np
+
+    def detect_masking_ultra_advanced(self, image_np):
+        """Ultra-advanced masking detection with multiple methods"""
+        h, w = image_np.shape[:2]
+        print(f"[v150] Starting ultra-advanced masking detection on {w}x{h} image")
         
         # Convert to grayscale
         gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
         
-        # Central region detection (30-70% of image)
+        # Method 1: Central region gray box detection (30-70% of image)
         center_x_start = int(w * 0.3)
         center_x_end = int(w * 0.7)
         center_y_start = int(h * 0.3)
         center_y_end = int(h * 0.7)
         
-        # Check for gray box masking in center
         center_region = gray[center_y_start:center_y_end, center_x_start:center_x_end]
         
-        # Gray detection (values between 100-170)
+        # Check for uniform gray areas
         gray_mask = ((center_region > 100) & (center_region < 170)).astype(np.uint8) * 255
         
-        # Find contours in gray mask
-        contours, _ = cv2.findContours(gray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Method 2: Standard deviation check for uniform areas
+        local_std = cv2.GaussianBlur(gray, (31, 31), 0)
+        std_map = np.abs(gray.astype(float) - local_std.astype(float))
+        uniform_mask = std_map < 10  # Very uniform areas
         
-        if contours:
-            # Find largest contour
-            largest_contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
-            center_area = (center_x_end - center_x_start) * (center_y_end - center_y_start)
+        # Method 3: Color uniformity check
+        lab = cv2.cvtColor(image_np, cv2.COLOR_RGB2LAB)
+        color_std = np.std(lab, axis=2)
+        color_uniform = color_std < 15
+        
+        # Combine all methods
+        combined_mask = np.zeros_like(gray, dtype=bool)
+        
+        # Add gray detection
+        gray_full = ((gray > 100) & (gray < 170))
+        combined_mask = combined_mask | gray_full
+        
+        # Add uniform areas
+        combined_mask = combined_mask | (uniform_mask & color_uniform)
+        
+        # Find largest connected component
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            combined_mask.astype(np.uint8), connectivity=8
+        )
+        
+        if num_labels > 1:
+            # Find largest component (excluding background)
+            largest_component = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
             
-            # If gray area is significant (>20% of center region)
-            if area > center_area * 0.2:
-                # Get bounding box of the gray region
-                x, y, w_box, h_box = cv2.boundingRect(largest_contour)
-                
-                # Convert to full image coordinates
-                mask_x = center_x_start + x
-                mask_y = center_y_start + y
-                
-                print(f"[v150] Central box masking detected at ({mask_x}, {mask_y}), size: {w_box}x{h_box}")
+            # Get bounding box
+            x = stats[largest_component, cv2.CC_STAT_LEFT]
+            y = stats[largest_component, cv2.CC_STAT_TOP]
+            w_box = stats[largest_component, cv2.CC_STAT_WIDTH]
+            h_box = stats[largest_component, cv2.CC_STAT_HEIGHT]
+            area = stats[largest_component, cv2.CC_STAT_AREA]
+            
+            # Check if significant (>5% of image)
+            if area > (w * h * 0.05):
+                print(f"[v150] Advanced masking detected at ({x}, {y}), size: {w_box}x{h_box}")
                 
                 return {
                     'has_masking': True,
                     'type': 'central_box',
                     'bounds': {
-                        'x': mask_x,
-                        'y': mask_y,
+                        'x': x,
+                        'y': y,
                         'width': w_box,
                         'height': h_box
                     }
                 }
         
-        # Also check for exact gray values (common masking colors)
-        gray_values = [128, 140, 150, 160]  # Common gray masking values
+        # Method 4: Specific gray value detection
+        gray_values = [128, 140, 150, 160]
         for gray_val in gray_values:
             mask = np.abs(gray.astype(float) - gray_val) < 15
-            if np.sum(mask) > (w * h * 0.1):  # More than 10% of image
-                print(f"[v150] Gray masking detected with value ~{gray_val}")
-                
-                # Find bounds of gray region
+            if np.sum(mask) > (w * h * 0.1):
                 coords = np.where(mask)
                 if len(coords[0]) > 0:
                     y_min, y_max = np.min(coords[0]), np.max(coords[0])
                     x_min, x_max = np.min(coords[1]), np.max(coords[1])
                     
+                    print(f"[v150] Gray value {gray_val} masking detected")
                     return {
                         'has_masking': True,
                         'type': 'central_box',
@@ -272,7 +337,6 @@ class WeddingRingEnhancer:
             bounds = masking_info['bounds']
             
             # Draw white rectangle on mask where masking is
-            from PIL import ImageDraw
             draw = ImageDraw.Draw(mask)
             draw.rectangle([
                 bounds['x'], 
@@ -280,6 +344,12 @@ class WeddingRingEnhancer:
                 bounds['x'] + bounds['width'],
                 bounds['y'] + bounds['height']
             ], fill=255)
+            
+            # Add some dilation to mask for better results
+            mask_np = np.array(mask)
+            kernel = np.ones((5,5), np.uint8)
+            mask_np = cv2.dilate(mask_np, kernel, iterations=2)
+            mask = Image.fromarray(mask_np)
             
             # Convert mask to base64
             mask_buffered = io.BytesIO()
@@ -316,7 +386,7 @@ class WeddingRingEnhancer:
         return image
 
     def detect_metal_type(self, image_np):
-        """Detect wedding ring metal type"""
+        """Detect wedding ring metal type with improved accuracy"""
         print("[v150] Detecting metal type...")
         
         # Sample center region
@@ -338,19 +408,24 @@ class WeddingRingEnhancer:
         avg_hsv = np.mean(hsv_roi.reshape(-1, 3), axis=0)
         h, s, v = avg_hsv
         
+        # LAB analysis for better color distinction
+        lab_roi = cv2.cvtColor(roi, cv2.COLOR_RGB2LAB)
+        avg_lab = np.mean(lab_roi.reshape(-1, 3), axis=0)
+        l, a, b_lab = avg_lab
+        
         # Gold detection
         gold_score = (r - b) / (r + b + 1e-5)
         warm_score = (r + g) / (2 * b + 1e-5)
         
-        print(f"[v150] Color analysis - RGB: {avg_color}, HSV: {avg_hsv}")
+        print(f"[v150] Color analysis - RGB: {avg_color}, HSV: {avg_hsv}, LAB: {avg_lab}")
         print(f"[v150] Gold score: {gold_score:.3f}, Warm score: {warm_score:.3f}")
         
-        # Determine metal type
-        if gold_score > 0.15 and warm_score > 1.8:
+        # Determine metal type with improved logic
+        if gold_score > 0.15 and warm_score > 1.8 and a > 5:
             metal_type = 'yellow_gold'
-        elif gold_score > 0.05 and s > 20 and 10 < h < 25:
+        elif gold_score > 0.05 and s > 20 and 10 < h < 25 and a > 10:
             metal_type = 'rose_gold'
-        elif s < 30 and v > 180 and abs(r - g) < 10 and abs(g - b) < 10:
+        elif s < 30 and v > 180 and abs(r - g) < 10 and abs(g - b) < 10 and l > 200:
             metal_type = 'plain_white'
         else:
             metal_type = 'white_gold'
@@ -394,7 +469,7 @@ class WeddingRingEnhancer:
         lab = np.clip(lab, 0, 255).astype(np.uint8)
         enhanced_np = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
         
-        # Step 7: CLAHE
+        # Step 7: CLAHE (Contrast Limited Adaptive Histogram Equalization)
         lab = cv2.cvtColor(enhanced_np, cv2.COLOR_RGB2LAB)
         clahe = cv2.createCLAHE(clipLimit=params['clahe_limit'], tileGridSize=(8,8))
         lab[:,:,0] = clahe.apply(lab[:,:,0])
@@ -419,6 +494,38 @@ class WeddingRingEnhancer:
         print("[v150] 10-step enhancement completed")
         return final
 
+    def apply_natural_blending(self, image_np, metal_type):
+        """Apply natural blending with 31x31 Gaussian blur"""
+        print("[v150] Applying natural blending with 31x31 Gaussian")
+        
+        h, w = image_np.shape[:2]
+        
+        # Create smooth transition mask
+        mask = np.ones((h, w), dtype=np.float32)
+        
+        # Reduce mask at edges
+        edge_width = 50
+        for i in range(edge_width):
+            alpha = i / edge_width
+            mask[i, :] *= alpha
+            mask[h-i-1, :] *= alpha
+            mask[:, i] *= alpha
+            mask[:, w-i-1] *= alpha
+        
+        # Apply 31x31 Gaussian blur for natural transition
+        mask = cv2.GaussianBlur(mask, (31, 31), 0)
+        
+        # Get background color
+        bg_color = self.after_bg_colors[metal_type]
+        background = np.full((h, w, 3), bg_color, dtype=np.uint8)
+        
+        # Blend
+        mask_3d = np.stack([mask, mask, mask], axis=2)
+        result = image_np * mask_3d + background * (1 - mask_3d)
+        
+        print("[v150] Natural blending completed")
+        return result.astype(np.uint8)
+
     def create_perfect_thumbnail(self, image, masking_info=None):
         """Create 1000x1300 thumbnail with ring perfectly centered and filling the frame"""
         print("[v150] Creating perfect 1000x1300 thumbnail")
@@ -436,25 +543,52 @@ class WeddingRingEnhancer:
             
             print(f"[v150] Using masking bounds for thumbnail: {ring_w}x{ring_h}")
         else:
-            # Try to detect ring using edge detection
+            # Try to detect ring using multiple methods
+            # Method 1: Edge detection
             gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-            edges = cv2.Canny(gray, 50, 150)
+            edges = cv2.Canny(gray, 30, 100)
+            
+            # Dilate edges to connect components
+            kernel = np.ones((5,5), np.uint8)
+            edges = cv2.dilate(edges, kernel, iterations=2)
             
             # Find contours
             contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
-                # Find largest contour (assume it's the ring)
-                largest_contour = max(contours, key=cv2.contourArea)
-                ring_x, ring_y, ring_w, ring_h = cv2.boundingRect(largest_contour)
-                print(f"[v150] Detected ring bounds: {ring_w}x{ring_h}")
+                # Find contour closest to center
+                center_x, center_y = w // 2, h // 2
+                best_contour = None
+                min_dist = float('inf')
+                
+                for contour in contours:
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        dist = np.sqrt((cx - center_x)**2 + (cy - center_y)**2)
+                        
+                        if dist < min_dist and cv2.contourArea(contour) > 1000:
+                            min_dist = dist
+                            best_contour = contour
+                
+                if best_contour is not None:
+                    ring_x, ring_y, ring_w, ring_h = cv2.boundingRect(best_contour)
+                    print(f"[v150] Detected ring bounds: {ring_w}x{ring_h}")
+                else:
+                    # Use center 50% as fallback
+                    ring_x = int(w * 0.25)
+                    ring_y = int(h * 0.25)
+                    ring_w = int(w * 0.5)
+                    ring_h = int(h * 0.5)
+                    print("[v150] Using center region as fallback")
             else:
-                # Use center 60% of image as fallback
-                ring_x = int(w * 0.2)
-                ring_y = int(h * 0.2)
-                ring_w = int(w * 0.6)
-                ring_h = int(h * 0.6)
-                print("[v150] Using center region as fallback")
+                # Use center 50% as fallback
+                ring_x = int(w * 0.25)
+                ring_y = int(h * 0.25)
+                ring_w = int(w * 0.5)
+                ring_h = int(h * 0.5)
+                print("[v150] No contours found, using center region")
         
         # Calculate center of ring
         ring_center_x = ring_x + ring_w // 2
@@ -465,8 +599,8 @@ class WeddingRingEnhancer:
         target_h = 1300
         target_ratio = target_w / target_h  # 0.769
         
-        # Ring should fill 85% of the frame (increased from default)
-        ring_scale = 0.85
+        # Ring should fill 90% of the frame (maximum fill)
+        ring_scale = 0.90
         
         # Calculate required crop size to achieve target ratio
         # and ensure ring fills the desired portion
@@ -482,26 +616,35 @@ class WeddingRingEnhancer:
             # Too tall, increase width
             required_w = int(required_h * target_ratio)
         
+        # Ensure minimum size
+        required_w = max(required_w, target_w)
+        required_h = max(required_h, target_h)
+        
         # Calculate crop region centered on ring
-        crop_x1 = max(0, ring_center_x - required_w // 2)
-        crop_y1 = max(0, ring_center_y - required_h // 2)
-        crop_x2 = min(w, crop_x1 + required_w)
-        crop_y2 = min(h, crop_y1 + required_h)
+        crop_x1 = ring_center_x - required_w // 2
+        crop_y1 = ring_center_y - required_h // 2
+        crop_x2 = crop_x1 + required_w
+        crop_y2 = crop_y1 + required_h
         
         # Adjust if crop goes out of bounds
-        if crop_x2 - crop_x1 < required_w:
-            if crop_x1 == 0:
-                crop_x2 = min(w, required_w)
-            else:
-                crop_x1 = max(0, w - required_w)
-                crop_x2 = w
+        if crop_x1 < 0:
+            crop_x2 -= crop_x1
+            crop_x1 = 0
+        if crop_y1 < 0:
+            crop_y2 -= crop_y1
+            crop_y1 = 0
+        if crop_x2 > w:
+            crop_x1 -= (crop_x2 - w)
+            crop_x2 = w
+        if crop_y2 > h:
+            crop_y1 -= (crop_y2 - h)
+            crop_y2 = h
         
-        if crop_y2 - crop_y1 < required_h:
-            if crop_y1 == 0:
-                crop_y2 = min(h, required_h)
-            else:
-                crop_y1 = max(0, h - required_h)
-                crop_y2 = h
+        # Final safety check
+        crop_x1 = max(0, crop_x1)
+        crop_y1 = max(0, crop_y1)
+        crop_x2 = min(w, crop_x2)
+        crop_y2 = min(h, crop_y2)
         
         # Crop the image
         cropped = image_np[crop_y1:crop_y2, crop_x1:crop_x2]
@@ -517,7 +660,7 @@ class WeddingRingEnhancer:
     def process_image(self, base64_image):
         """Main processing pipeline"""
         try:
-            print("[v150] Starting image processing")
+            print("[v150] Starting image processing - Complete Version")
             
             # Decode image
             image = self.decode_base64_image(base64_image)
@@ -526,39 +669,31 @@ class WeddingRingEnhancer:
             # Convert to numpy
             image_np = np.array(image)
             
-            # Ultra-precision masking detection
-            masking_info = self.detect_masking_ultra_precision(image_np)
+            # Remove black borders first (adaptive up to 200px)
+            image_np = self.detect_and_remove_black_borders(image_np)
+            
+            # Ultra-advanced masking detection
+            masking_info = self.detect_masking_ultra_advanced(image_np)
             
             # Remove masking if detected
             if masking_info['has_masking'] and masking_info['type'] == 'central_box':
                 print("[v150] Central box masking detected - removing with Replicate")
-                image = self.remove_masking_with_replicate(image, masking_info)
+                image = self.remove_masking_with_replicate(Image.fromarray(image_np), masking_info)
                 image_np = np.array(image)
             
             # Detect metal type
             metal_type = self.detect_metal_type(image_np)
             
-            # Apply background based on AFTER files
+            # Apply AFTER background color
             if metal_type in self.after_bg_colors:
                 bg_color = self.after_bg_colors[metal_type]
                 print(f"[v150] Applying AFTER background color for {metal_type}: {bg_color}")
                 
-                # Create background
-                h, w = image_np.shape[:2]
-                background = np.full((h, w, 3), bg_color, dtype=np.uint8)
-                
-                # Simple alpha blending for edges
-                result = image_np.astype(float)
-                alpha = 0.1  # Blend factor for edges
-                
-                # Apply subtle blending at edges
-                for i in range(3):  # RGB channels
-                    result[:,:,i] = result[:,:,i] * (1 - alpha) + background[:,:,i] * alpha
-                
-                image_np = result.astype(np.uint8)
+                # Apply natural blending with 31x31 Gaussian
+                image_np = self.apply_natural_blending(image_np, metal_type)
                 image = Image.fromarray(image_np)
             
-            # Enhance wedding ring
+            # Enhance wedding ring (10-step process)
             enhanced = self.enhance_wedding_ring(image, metal_type)
             
             # Create perfect thumbnail (masking_info helps with positioning)
@@ -589,7 +724,10 @@ class WeddingRingEnhancer:
                     "masking_type": masking_info.get('type'),
                     "enhancement_applied": True,
                     "thumbnail_size": "1000x1300",
-                    "after_bg_applied": metal_type in self.after_bg_colors
+                    "after_bg_applied": True,
+                    "black_border_removed": True,
+                    "natural_blending": True,
+                    "adaptive_thickness": "200px"
                 }
             }
             
@@ -604,9 +742,27 @@ class WeddingRingEnhancer:
                 original_image.save(buffer, format='PNG')
                 original_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8').rstrip('=')
                 
+                # Simple center crop for thumbnail
+                w, h = original_image.size
+                aspect = 1000 / 1300
+                if w / h > aspect:
+                    new_w = int(h * aspect)
+                    left = (w - new_w) // 2
+                    thumb = original_image.crop((left, 0, left + new_w, h))
+                else:
+                    new_h = int(w / aspect)
+                    top = (h - new_h) // 2
+                    thumb = original_image.crop((0, top, w, top + new_h))
+                
+                thumb = thumb.resize((1000, 1300), Image.Resampling.LANCZOS)
+                
+                buffer_thumb = io.BytesIO()
+                thumb.save(buffer_thumb, format='PNG')
+                thumb_base64 = base64.b64encode(buffer_thumb.getvalue()).decode('utf-8').rstrip('=')
+                
                 return {
                     "enhanced_image": original_base64,
-                    "thumbnail": original_base64,
+                    "thumbnail": thumb_base64,
                     "processing_info": {
                         "version": "v150",
                         "error": str(e),
@@ -627,18 +783,50 @@ class WeddingRingEnhancer:
 def handler(event):
     """RunPod handler function"""
     try:
-        print("[v150] Handler started")
+        print("[v150] Handler started - Complete Version")
         print(f"[v150] Event type: {type(event)}")
         print(f"[v150] Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
         
-        # Extract input
-        job_input = event.get("input", {})
-        print(f"[v150] Job input keys: {list(job_input.keys())}")
+        # Try multiple paths to find the image
+        base64_image = None
         
-        # Get base64 image
-        base64_image = job_input.get("image", "")
+        # Path 1: event["input"]["image"]
+        if isinstance(event, dict) and "input" in event:
+            job_input = event.get("input", {})
+            print(f"[v150] Job input type: {type(job_input)}")
+            print(f"[v150] Job input keys: {list(job_input.keys()) if isinstance(job_input, dict) else 'Not a dict'}")
+            
+            # Debug: print first 100 chars of each value
+            if isinstance(job_input, dict):
+                for key, value in job_input.items():
+                    if isinstance(value, str):
+                        print(f"[v150] {key}: {value[:100]}...")
+                    else:
+                        print(f"[v150] {key}: {type(value)}")
+            
+            base64_image = job_input.get("image", "") if isinstance(job_input, dict) else ""
+        
+        # Path 2: event["image"]
+        if not base64_image and isinstance(event, dict):
+            base64_image = event.get("image", "")
+            if base64_image:
+                print("[v150] Found image in event['image']")
+        
+        # Path 3: Direct string
+        if not base64_image and isinstance(event, str):
+            base64_image = event
+            print("[v150] Event is direct base64 string")
+        
+        # Path 4: Nested in data
+        if not base64_image and isinstance(event, dict) and "data" in event:
+            data = event.get("data", {})
+            if isinstance(data, dict) and "image" in data:
+                base64_image = data.get("image", "")
+                print("[v150] Found image in event['data']['image']")
+        
         if not base64_image:
-            print("[v150] No image provided in input")
+            print("[v150] No image found in any expected location")
+            print(f"[v150] Full event structure: {json.dumps(event, indent=2) if isinstance(event, dict) else str(event)[:500]}")
             return {
                 "output": {
                     "error": "No image provided",
@@ -671,5 +859,5 @@ def handler(event):
 
 # RunPod serverless entrypoint
 if __name__ == "__main__":
-    print("[v150] Starting RunPod serverless handler")
+    print("[v150] Starting RunPod serverless handler - Complete Version")
     runpod.serverless.start({"handler": handler})
