@@ -17,12 +17,12 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 logger = logging.getLogger(__name__)
 
 # Version info
-VERSION = "v147"
+VERSION = "v148"
 
 def print_handler_info():
     """Print handler information"""
     print("="*70)
-    print(f"[{VERSION}] Handler started - Fixed Base64 Padding")
+    print(f"[{VERSION}] Handler started - Fixed JSON Serialization")
     print(f"[{VERSION}] Features: Grounding DINO + OWL-ViT + OpenCV fallback")
     print(f"[{VERSION}] Training: 38 pairs applied, Thumbnail: 1000x1300")
     print(f"[{VERSION}] Python version: {sys.version}")
@@ -37,10 +37,10 @@ def print_handler_info():
         print(f"[{VERSION}] Replicate module available: False")
     print("="*70)
 
-class WeddingRingEnhancerV147:
+class WeddingRingEnhancerV148:
     def __init__(self):
-        """Initialize the wedding ring enhancer with v147 improvements"""
-        print(f"\n[{VERSION}] Initializing WeddingRingEnhancerV147 - Fixed Padding")
+        """Initialize the wedding ring enhancer with v148 improvements"""
+        print(f"\n[{VERSION}] Initializing WeddingRingEnhancerV148 - JSON Fix")
         
         # Training data - 28 original pairs + 10 correction pairs
         self.training_data = [
@@ -371,7 +371,7 @@ class WeddingRingEnhancerV147:
             
         return image
     
-    def _analyze_ring_color(self, image: np.ndarray) -> str:
+    def _analyze_ring_color(self, image: np.ndarray) -> Tuple[str, Dict[str, float]]:
         """Analyze ring color using ML"""
         try:
             # Convert to HSV
@@ -396,14 +396,14 @@ class WeddingRingEnhancerV147:
             cool_score = b_mean / (r_mean + 1)
             bright_score = v_mean / 255
             
-            # Normalize scores
+            # Normalize scores - Convert to Python float
             features = {}
-            features['gold'] = min(1.0, gold_score * warm_score / 2)
-            features['warm'] = min(1.0, warm_score / 2)
-            features['pink'] = min(1.0, pink_score * 1.2 if pink_score else 0)
-            features['silver'] = min(1.0, silver_score * 1.1 if silver_score else 0)
-            features['cool'] = min(1.0, cool_score)
-            features['bright'] = bright_score
+            features['gold'] = float(min(1.0, gold_score * warm_score / 2))
+            features['warm'] = float(min(1.0, warm_score / 2))
+            features['pink'] = float(min(1.0, pink_score * 1.2 if pink_score else 0))
+            features['silver'] = float(min(1.0, silver_score * 1.1 if silver_score else 0))
+            features['cool'] = float(min(1.0, cool_score))
+            features['bright'] = float(bright_score)
             
             # Determine color
             if features['gold'] > 0.7 and features['warm'] > 0.8:
@@ -450,12 +450,13 @@ class WeddingRingEnhancerV147:
                 best_output = sample['output']
         
         if best_output:
-            return best_output
+            # Convert all values to Python float
+            return {k: float(v) for k, v in best_output.items()}
         else:
             # Default adjustments
             return {
                 'saturation': 1.15,
-                'temperature': 105,
+                'temperature': 105.0,
                 'brightness': 1.10,
                 'highlights': 1.10
             }
@@ -578,14 +579,14 @@ class WeddingRingEnhancerV147:
         # Step 7: Create thumbnail
         thumbnail = self._create_thumbnail(result, size=(1000, 1300))
         
-        # Prepare metadata
+        # Prepare metadata - all values as Python native types
         metadata = {
             'version': VERSION,
             'color_detected': color,
-            'features': features,
-            'adjustments': adjustments,
-            'bbox': bbox,
-            'original_size': original_shape[:2],
+            'features': features,  # Already converted to float in _analyze_ring_color
+            'adjustments': adjustments,  # Already converted to float in _predict_adjustments
+            'bbox': [int(x) for x in bbox],  # Convert to int
+            'original_size': [int(original_shape[0]), int(original_shape[1])],  # Convert to int
             'training_samples_used': len(self.training_data)
         }
         
@@ -725,7 +726,7 @@ def handler(job):
         print(f"[{VERSION}] Image decoded: {image.shape}")
         
         # Process image
-        enhancer = WeddingRingEnhancerV147()
+        enhancer = WeddingRingEnhancerV148()
         enhanced, thumbnail, metadata = enhancer.process_image(image)
         
         # Encode results WITHOUT padding
