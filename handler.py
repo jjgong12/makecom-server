@@ -1,39 +1,46 @@
 import runpod
-import os
-import base64
-import requests
 import numpy as np
-from PIL import Image, ImageFilter, ImageEnhance, ImageOps, ImageDraw
+from PIL import Image, ImageEnhance, ImageDraw
+import base64
 import io
-import cv2
-import json
-from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes
+import os
 import logging
-from typing import Dict, List, Tuple, Optional, Any
 import traceback
+from typing import Dict, Any, Tuple, List, Optional
 from dataclasses import dataclass
 from enum import Enum
-import time
-from datetime import datetime
+import cv2
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Optional import for Replicate
+# Check Replicate availability
 try:
     import replicate
     REPLICATE_AVAILABLE = True
+    logger.info("Replicate module imported successfully")
 except ImportError:
     REPLICATE_AVAILABLE = False
-    logger.warning("Replicate package not installed, some features will be disabled")
+    logger.warning("Replicate module not available - will use fallback methods")
 
+# Metal types
 class MetalType(Enum):
     YELLOW_GOLD = "yellow_gold"
     ROSE_GOLD = "rose_gold"
     WHITE_GOLD = "white_gold"
     PLATINUM = "platinum"
 
+# Ring detection dataclass
+@dataclass
+class RingDetection:
+    bbox: Tuple[int, int, int, int]
+    confidence: float
+    metal_type: Optional[MetalType] = None
+    quality_score: float = 0.0
+    needs_restoration: bool = False
+
+# Color profiles
 @dataclass
 class ColorProfile:
     base_rgb: Tuple[int, int, int]
@@ -42,18 +49,9 @@ class ColorProfile:
     saturation_range: Tuple[float, float]
     brightness_range: Tuple[float, float]
     temperature: float
-    shine_factor: float
-    reflection_intensity: float
+    shine_factor: float = 1.0
+    reflection_intensity: float = 1.0
 
-@dataclass
-class RingDetection:
-    bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
-    confidence: float
-    metal_type: Optional[MetalType] = None
-    needs_restoration: bool = False
-    quality_score: float = 0.0
-
-# Enhanced metal color profiles based on 38 training samples
 METAL_PROFILES = {
     MetalType.YELLOW_GOLD: ColorProfile(
         base_rgb=(255, 215, 0),
@@ -66,18 +64,18 @@ METAL_PROFILES = {
         reflection_intensity=0.9
     ),
     MetalType.ROSE_GOLD: ColorProfile(
-        base_rgb=(234, 179, 162),
-        highlight_rgb=(255, 220, 210),
+        base_rgb=(255, 200, 180),
+        highlight_rgb=(255, 230, 220),
         shadow_rgb=(183, 110, 95),
-        saturation_range=(0.20, 0.40),
-        brightness_range=(0.65, 0.90),
+        saturation_range=(0.10, 0.25),
+        brightness_range=(0.75, 0.92),
         temperature=0.08,
-        shine_factor=0.80,
+        shine_factor=0.88,
         reflection_intensity=0.85
     ),
     MetalType.WHITE_GOLD: ColorProfile(
         base_rgb=(235, 235, 235),
-        highlight_rgb=(255, 255, 255),
+        highlight_rgb=(250, 250, 250),
         shadow_rgb=(175, 175, 175),
         saturation_range=(0.0, 0.08),
         brightness_range=(0.80, 0.98),
@@ -148,293 +146,218 @@ def decode_base64_image(base64_string):
         # Method 4: Force decode
         if decoded is None:
             try:
-                decoded = base64.b64decode(base64_string + '==')
-                logger.info("[v138] Method 4 (force padding) successful")
+                # Remove non-base64 characters
+                import re
+                clean_string = re.sub(r'[^A-Za-z0-9+/]', '', base64_string)
+                padding = 4 - (len(clean_string) % 4)
+                if padding != 4:
+                    clean_string += '=' * padding
+                decoded = base64.b64decode(clean_string)
+                logger.info("[v138] Method 4 (force clean) successful")
             except:
                 pass
         
         if decoded is None:
-            raise ValueError("All base64 decoding methods failed")
+            raise ValueError("Failed to decode base64 string with all methods")
         
-        # Convert to image
+        # Convert to PIL Image
         image = Image.open(io.BytesIO(decoded))
-        logger.info(f"[v138] Image decoded successfully: {image.size}")
+        logger.info(f"[v138] Successfully decoded image: {image.size}")
         return image
         
     except Exception as e:
-        logger.error(f"[v138] Failed to decode base64: {str(e)}")
+        logger.error(f"[v138] Error decoding base64: {str(e)}")
         raise
 
-class ReplicateRingDetector:
-    """Use Replicate's Grounding DINO for accurate ring detection"""
-    
-    def __init__(self):
-        self.replicate_enabled = False
-        api_token = os.environ.get('REPLICATE_API_TOKEN')
-        
-        if REPLICATE_AVAILABLE and api_token:
-            try:
-                self.client = replicate.Client(api_token=api_token)
-                self.replicate_enabled = True
-                logger.info("Replicate API initialized successfully")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Replicate: {e}")
-        else:
-            if not REPLICATE_AVAILABLE:
-                logger.warning("Replicate package not installed")
-            else:
-                logger.warning("REPLICATE_API_TOKEN not found")
-            logger.info("Using fallback detection only")
-            
-        self.ring_queries = [
-            "wedding ring",
-            "engagement ring", 
-            "gold ring",
-            "silver ring",
-            "diamond ring",
-            "wedding band",
-            "metal ring",
-            "jewelry ring"
-        ]
-        
-    def detect_rings(self, image: Image.Image) -> List[RingDetection]:
-        """Detect all rings in the image using Grounding DINO"""
-        try:
-            # If Replicate not enabled, use fallback immediately
-            if not self.replicate_enabled:
-                logger.info("Using fallback detection (Replicate not available)")
-                return self._fallback_detection(image)
-                
-            # Save image temporarily
-            temp_buffer = io.BytesIO()
-            image.save(temp_buffer, format='PNG')
-            temp_buffer.seek(0)
-            
-            # Run Grounding DINO with multiple queries
-            detections = []
-            
-            for query in self.ring_queries[:3]:  # Use top 3 queries to avoid too many calls
-                try:
-                    output = self.client.run(
-                        "adirik/grounding-dino:0e3b5b56379f48fab7cc7518c1ae622cae8e0831aaae8c9d75fc5e7140abb67c",
-                        input={
-                            "image": temp_buffer,
-                            "query": query,
-                            "box_threshold": 0.3,
-                            "text_threshold": 0.25
-                        }
-                    )
-                    
-                    if output and 'boxes' in output:
-                        for box in output['boxes']:
-                            detection = RingDetection(
-                                bbox=tuple(map(int, box)),
-                                confidence=output.get('scores', [0.5])[0]
-                            )
-                            detections.append(detection)
-                            
-                except Exception as e:
-                    logger.warning(f"Grounding DINO query '{query}' failed: {e}")
-                    
-            # Remove duplicate detections
-            detections = self._remove_duplicates(detections)
-            
-            # If no detections with Replicate, fall back to local detection
-            if not detections:
-                logger.info("No rings detected with Replicate, using fallback detection")
-                detections = self._fallback_detection(image)
-                
-            return detections
-            
-        except Exception as e:
-            logger.error(f"Ring detection failed: {e}")
-            return self._fallback_detection(image)
-    
-    def _remove_duplicates(self, detections: List[RingDetection]) -> List[RingDetection]:
-        """Remove overlapping detections"""
-        if len(detections) <= 1:
-            return detections
-            
-        # Sort by confidence
-        detections.sort(key=lambda x: x.confidence, reverse=True)
-        
-        kept = []
-        for detection in detections:
-            # Check if this overlaps with any kept detection
-            is_duplicate = False
-            for kept_detection in kept:
-                iou = self._calculate_iou(detection.bbox, kept_detection.bbox)
-                if iou > 0.5:  # More than 50% overlap
-                    is_duplicate = True
-                    break
-                    
-            if not is_duplicate:
-                kept.append(detection)
-                
-        return kept
-    
-    def _calculate_iou(self, box1: Tuple, box2: Tuple) -> float:
-        """Calculate Intersection over Union"""
-        x1_1, y1_1, x2_1, y2_1 = box1
-        x1_2, y1_2, x2_2, y2_2 = box2
-        
-        # Calculate intersection
-        x1_i = max(x1_1, x1_2)
-        y1_i = max(y1_1, y1_2)
-        x2_i = min(x2_1, x2_2)
-        y2_i = min(y2_1, y2_2)
-        
-        if x2_i < x1_i or y2_i < y1_i:
-            return 0.0
-            
-        intersection = (x2_i - x1_i) * (y2_i - y1_i)
-        
-        # Calculate union
-        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union = area1 + area2 - intersection
-        
-        return intersection / union if union > 0 else 0.0
-    
-    def _fallback_detection(self, image: Image.Image) -> List[RingDetection]:
-        """Fallback detection using traditional CV methods"""
-        img_array = np.array(image)
-        
-        # Simple approach: assume ring is in center
-        h, w = img_array.shape[:2]
-        
-        # Create a detection for center region
-        center_bbox = (
-            w // 4,  # x1
-            h // 4,  # y1
-            3 * w // 4,  # x2
-            3 * h // 4   # y2
-        )
-        
-        return [RingDetection(bbox=center_bbox, confidence=0.8)]
-
-class QualityAssessment:
-    """Assess ring image quality and determine needed enhancements"""
-    
-    @staticmethod
-    def assess_ring_quality(image: Image.Image, bbox: Tuple[int, int, int, int]) -> Tuple[float, bool]:
-        """
-        Returns quality score (0-1) and whether restoration is needed
-        """
-        # Crop ring area
-        ring_crop = image.crop(bbox)
-        ring_array = np.array(ring_crop)
-        
-        # Calculate quality metrics
-        scores = []
-        
-        # 1. Sharpness score
-        gray = cv2.cvtColor(ring_array, cv2.COLOR_RGB2GRAY)
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        sharpness_score = min(laplacian_var / 1000, 1.0)
-        scores.append(sharpness_score)
-        
-        # 2. Contrast score
-        contrast_score = gray.std() / 128.0
-        scores.append(contrast_score)
-        
-        # 3. Brightness score
-        brightness = np.mean(gray) / 255.0
-        brightness_score = 1.0 - abs(brightness - 0.5) * 2  # Best at 0.5
-        scores.append(brightness_score)
-        
-        # Overall quality
-        quality_score = np.mean(scores)
-        
-        # Determine if restoration needed
-        needs_restoration = (
-            quality_score < 0.6 or
-            sharpness_score < 0.4
-        )
-        
-        return quality_score, needs_restoration
-
 class HybridWeddingRingEnhancer:
-    """Hybrid approach combining Replicate detection with v136 enhancement"""
-    
     def __init__(self):
-        self.ring_detector = ReplicateRingDetector()
-        
-        # Initialize Replicate client if available
-        self.replicate_enabled = False
-        api_token = os.environ.get('REPLICATE_API_TOKEN')
-        if REPLICATE_AVAILABLE and api_token:
+        self.replicate_client = None
+        if REPLICATE_AVAILABLE and os.environ.get('REPLICATE_API_TOKEN'):
             try:
-                self.replicate_client = replicate.Client(api_token=api_token)
-                self.replicate_enabled = True
-                logger.info("Replicate client initialized successfully")
+                self.replicate_client = replicate.Client(api_token=os.environ.get('REPLICATE_API_TOKEN'))
+                logger.info("[v138] Replicate client initialized")
             except Exception as e:
-                logger.warning(f"Failed to initialize Replicate client: {e}")
-        else:
-            if not REPLICATE_AVAILABLE:
-                logger.warning("Replicate package not installed")
-            else:
-                logger.warning("REPLICATE_API_TOKEN not found")
-            logger.info("Replicate enhancement features disabled")
-        
+                logger.error(f"[v138] Failed to initialize Replicate: {e}")
+    
     def enhance_image(self, image: Image.Image, params: Dict[str, Any]) -> Dict[str, Any]:
         """Main enhancement pipeline"""
         try:
-            start_time = time.time()
+            # Detect rings
+            detections = self._detect_rings(image, params.get('detect_all_rings', True))
             
-            # Step 1: Detect all rings
-            logger.info("Detecting rings in image...")
-            ring_detections = self.ring_detector.detect_rings(image)
+            if not detections:
+                logger.warning("[v138] No rings detected, applying basic enhancement")
+                enhanced = self._basic_enhancement(image)
+                return self._create_response(enhanced, [], "no_rings_detected")
             
-            if not ring_detections:
-                logger.warning("No rings detected in image")
-                return self._create_response(image, [], "No rings detected")
-            
-            logger.info(f"Detected {len(ring_detections)} rings")
-            
-            # Step 2: Process each detected ring
-            enhanced_rings = []
-            final_image = image.copy()
-            
-            for idx, detection in enumerate(ring_detections):
-                logger.info(f"Processing ring {idx+1}/{len(ring_detections)}")
+            # Process each detected ring
+            enhanced_image = image.copy()
+            for detection in detections:
+                # Determine if restoration needed
+                if detection.needs_restoration and params.get('use_replicate_restoration', True):
+                    enhanced_ring = self._restore_with_replicate(image, detection)
+                else:
+                    enhanced_ring = self._process_ring(image, detection)
                 
-                # Assess quality
-                quality_score, needs_restoration = QualityAssessment.assess_ring_quality(
-                    image, detection.bbox
-                )
-                detection.quality_score = quality_score
-                detection.needs_restoration = needs_restoration
-                
-                # Detect metal type
-                detection.metal_type = self._detect_metal_type(image, detection.bbox)
-                logger.info(f"Ring {idx+1}: Metal type={detection.metal_type.value}, Quality={quality_score:.2f}")
-                
-                # Process ring
-                enhanced_ring = self._process_single_ring(
-                    final_image, 
-                    detection,
-                    use_replicate_restoration=params.get('use_replicate_restoration', True)
-                )
-                
-                # Merge back to final image
-                final_image = self._merge_enhanced_ring(final_image, enhanced_ring, detection.bbox)
-                enhanced_rings.append(detection)
+                # Merge back
+                enhanced_image = self._merge_enhanced_ring(enhanced_image, enhanced_ring, detection.bbox)
             
-            # Step 3: Final polish on complete image
-            final_image = self._final_polish(final_image)
+            # Final polish
+            enhanced_image = self._final_polish(enhanced_image)
             
-            # Step 4: Create response
-            processing_time = time.time() - start_time
-            return self._create_response(final_image, enhanced_rings, "Success", processing_time)
+            return self._create_response(enhanced_image, detections, "success")
             
         except Exception as e:
-            logger.error(f"Enhancement failed: {e}")
+            logger.error(f"[v138] Enhancement error: {str(e)}")
             logger.error(traceback.format_exc())
-            return self._create_response(image, [], str(e))
+            # Return original with error
+            return self._create_response(image, [], "error", str(e))
     
-    def _process_single_ring(self, image: Image.Image, detection: RingDetection, 
-                           use_replicate_restoration: bool = True) -> Image.Image:
+    def _detect_rings(self, image: Image.Image, detect_all: bool = True) -> List[RingDetection]:
+        """Detect wedding rings in image"""
+        detections = []
+        
+        # Simple detection based on metallic regions
+        img_array = np.array(image)
+        
+        # Convert to grayscale for edge detection
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        
+        # Find circular regions
+        circles = cv2.HoughCircles(
+            gray, 
+            cv2.HOUGH_GRADIENT, 
+            dp=1, 
+            minDist=50,
+            param1=50,
+            param2=30,
+            minRadius=20,
+            maxRadius=min(image.width, image.height) // 3
+        )
+        
+        if circles is not None:
+            circles = np.round(circles[0, :]).astype("int")
+            
+            for (x, y, r) in circles:
+                # Create bounding box
+                x1 = max(0, x - r)
+                y1 = max(0, y - r)
+                x2 = min(image.width, x + r)
+                y2 = min(image.height, y + r)
+                
+                # Check if it's likely a ring
+                roi = img_array[y1:y2, x1:x2]
+                if self._is_likely_ring(roi):
+                    detection = RingDetection(
+                        bbox=(x1, y1, x2, y2),
+                        confidence=0.8,
+                        metal_type=self._detect_metal_type(image, (x1, y1, x2, y2)),
+                        quality_score=self._assess_quality(roi),
+                        needs_restoration=self._needs_restoration(roi)
+                    )
+                    detections.append(detection)
+                    
+                    if not detect_all:
+                        break
+        
+        # If no circles found, try simpler approach
+        if not detections:
+            # Center crop assumption
+            w, h = image.size
+            size = min(w, h) // 2
+            x1 = (w - size) // 2
+            y1 = (h - size) // 2
+            x2 = x1 + size
+            y2 = y1 + size
+            
+            roi = img_array[y1:y2, x1:x2]
+            detection = RingDetection(
+                bbox=(x1, y1, x2, y2),
+                confidence=0.5,
+                metal_type=self._detect_metal_type(image, (x1, y1, x2, y2)),
+                quality_score=self._assess_quality(roi),
+                needs_restoration=self._needs_restoration(roi)
+            )
+            detections.append(detection)
+        
+        return detections
+    
+    def _is_likely_ring(self, roi: np.ndarray) -> bool:
+        """Check if region likely contains a ring"""
+        # Simple heuristics
+        # Check for metallic colors
+        avg_color = np.mean(roi.reshape(-1, 3), axis=0)
+        
+        # Check if colors are in metallic range
+        is_metallic = (
+            (avg_color[0] > 150) or  # High red (gold)
+            (np.std(avg_color) < 30)  # Low variation (silver/white)
+        )
+        
+        return is_metallic
+    
+    def _assess_quality(self, roi: np.ndarray) -> float:
+        """Assess image quality of ring region"""
+        # Simple quality metrics
+        sharpness = cv2.Laplacian(cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY), cv2.CV_64F).var()
+        brightness = np.mean(roi)
+        contrast = np.std(roi)
+        
+        # Normalize scores
+        sharpness_score = min(sharpness / 1000, 1.0)
+        brightness_score = min(brightness / 200, 1.0)
+        contrast_score = min(contrast / 50, 1.0)
+        
+        return (sharpness_score + brightness_score + contrast_score) / 3
+    
+    def _needs_restoration(self, roi: np.ndarray) -> bool:
+        """Determine if ring needs AI restoration"""
+        quality_score = self._assess_quality(roi)
+        return quality_score < 0.5
+    
+    def _restore_with_replicate(self, image: Image.Image, detection: RingDetection) -> Image.Image:
+        """Use Replicate API for restoration"""
+        if not self.replicate_client:
+            return self._process_ring(image, detection)
+        
+        try:
+            # Crop ring area
+            ring_crop = image.crop(detection.bbox)
+            
+            # Convert to base64
+            buffer = io.BytesIO()
+            ring_crop.save(buffer, format='PNG')
+            input_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+            # Run GFPGAN
+            output = self.replicate_client.run(
+                "tencentarc/gfpgan:0fbacf7afc6c144e5be9767cff80f25aff23e52b0708f17e20f9879b2f21516c",
+                input={
+                    "img": f"data:image/png;base64,{input_base64}",
+                    "scale": 2,
+                    "version": "v1.4"
+                }
+            )
+            
+            # Get result
+            if output:
+                response = requests.get(output)
+                restored = Image.open(io.BytesIO(response.content))
+                
+                # Apply metal-specific corrections
+                restored = self._correct_metal_color(restored, detection.metal_type)
+                restored = self._apply_professional_finish(restored, detection.metal_type)
+                
+                return restored
+                
+        except Exception as e:
+            logger.error(f"[v138] Replicate restoration failed: {e}")
+        
+        # Fallback to regular processing
+        return self._process_ring(image, detection)
+    
+    def _process_ring(self, image: Image.Image, detection: RingDetection, 
+                     use_replicate_restoration: bool = True) -> Image.Image:
         """Process a single detected ring"""
         # Crop ring area with padding
         x1, y1, x2, y2 = detection.bbox
@@ -597,8 +520,19 @@ class HybridWeddingRingEnhancer:
         
         return image
     
+    def _basic_enhancement(self, image: Image.Image) -> Image.Image:
+        """Basic enhancement when no rings detected"""
+        # Simple brightness/contrast adjustment
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(1.1)
+        
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1.05)
+        
+        return image
+    
     def _create_response(self, image: Image.Image, detections: List[RingDetection], 
-                        status: str, processing_time: float = 0) -> Dict[str, Any]:
+                        status: str, error: str = None) -> Dict[str, Any]:
         """Create standardized response"""
         # Convert image to base64
         output_buffer = io.BytesIO()
@@ -607,6 +541,13 @@ class HybridWeddingRingEnhancer:
         
         # Remove padding for Make.com
         output_base64 = output_base64.rstrip('=')
+        
+        # Create thumbnail
+        thumbnail = image.copy()
+        thumbnail.thumbnail((300, 300), Image.Resampling.LANCZOS)
+        thumb_buffer = io.BytesIO()
+        thumbnail.save(thumb_buffer, format='PNG', quality=90)
+        thumb_base64 = base64.b64encode(thumb_buffer.getvalue()).decode('utf-8').rstrip('=')
         
         # Prepare detection info
         detection_info = []
@@ -621,15 +562,20 @@ class HybridWeddingRingEnhancer:
                 info["metal_type"] = detection.metal_type.value
             detection_info.append(info)
         
-        return {
+        response = {
             "enhanced_image": f"data:image/png;base64,{output_base64}",
+            "thumbnail": f"data:image/png;base64,{thumb_base64}",
             "status": status,
             "rings_detected": len(detections),
             "detection_info": detection_info,
-            "processing_time": f"{processing_time:.2f}s",
             "enhancement_applied": True,
             "version": "v138-make-fixed"
         }
+        
+        if error:
+            response["error"] = error
+        
+        return response
 
 def handler(event):
     """RunPod handler function - FIXED FOR MAKE.COM"""
@@ -654,58 +600,35 @@ def handler(event):
                     "message": "v138 handler is working",
                     "replicate_available": REPLICATE_AVAILABLE,
                     "replicate_enabled": bool(os.environ.get('REPLICATE_API_TOKEN')),
-                    "version": "v138-make-fixed",
-                    "event_keys": list(event.keys()),
-                    "input_keys": list(input_data.keys()) if isinstance(input_data, dict) else "Not a dict"
+                    "version": "v138-make-fixed"
                 }
             }
         
-        # Try to find image data from multiple possible keys
-        image_data = None
+        # Try multiple ways to get image data
+        image_data = input_data.get('image', '')
         
-        # Method 1: Direct common keys
-        possible_keys = ['image', 'image_base64', 'enhanced_image', 'base64', 'img', 'data', 'imageData', 'image_data']
+        # Check for nested structures
+        if not image_data and isinstance(input_data, dict):
+            # Try common nested patterns
+            if 'data' in input_data:
+                image_data = input_data['data'].get('image', '')
+            elif 'body' in input_data:
+                image_data = input_data['body'].get('image', '')
+            elif 'payload' in input_data:
+                image_data = input_data['payload'].get('image', '')
         
-        for key in possible_keys:
-            if key in input_data:
-                value = input_data[key]
-                if isinstance(value, str) and len(value) > 100:
-                    image_data = value
-                    logger.info(f"[v138] Found image data in key: {key}")
-                    break
-        
-        # Method 2: Check nested data structure
-        if not image_data and 'data' in input_data:
-            data = input_data['data']
-            if isinstance(data, dict):
-                for key in possible_keys:
-                    if key in data:
-                        value = data[key]
-                        if isinstance(value, str) and len(value) > 100:
-                            image_data = value
-                            logger.info(f"[v138] Found image data in nested data.{key}")
-                            break
-        
-        # Method 3: If input_data is a string itself (sometimes happens)
-        if not image_data and isinstance(input_data, str) and len(input_data) > 100:
-            image_data = input_data
-            logger.info("[v138] Input data is string itself, using as image data")
-        
-        # Method 4: Find any large string that might be base64
+        # Check if image_data is in a different key
         if not image_data:
+            # Look for any key containing base64 data
             for key, value in input_data.items():
                 if isinstance(value, str) and len(value) > 1000:
-                    # Check if it looks like base64
-                    if any(c in value for c in ['/', '+', '=']) or value.startswith('data:'):
+                    if 'image' in key.lower() or value.startswith('data:image'):
                         image_data = value
-                        logger.info(f"[v138] Found potential base64 data in key: {key}")
                         break
         
         if not image_data:
-            logger.error("[v138] No image data found in any expected location")
-            logger.error(f"[v138] Available keys: {list(input_data.keys()) if isinstance(input_data, dict) else 'Not a dict'}")
-            
-            # Log sample of each key's value for debugging
+            logger.error("[v138] No image data found in input")
+            # Log all available data for debugging
             if isinstance(input_data, dict):
                 for key, value in input_data.items():
                     if isinstance(value, str):
