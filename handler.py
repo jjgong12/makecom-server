@@ -13,7 +13,7 @@ from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 # Safe imports with fallbacks
-print("[v141] Starting imports...")
+print("[v142] Starting imports...")
 
 try:
     import numpy as np
@@ -220,21 +220,21 @@ def decode_base64_image(base64_string: str) -> Image.Image:
         print(f"[v141] Failed to decode base64: {str(e)}")
         raise
 
-class WeddingRingEnhancerV141:
-    """Wedding ring enhancer with GAS compatibility and timeout protection"""
+class WeddingRingEnhancerV142:
+    """Wedding ring enhancer with Make.com and GAS compatibility"""
     
     def __init__(self):
-        print("[v141] Initializing WeddingRingEnhancerV141...")
+        print("[v142] Initializing WeddingRingEnhancerV142...")
         self.replicate_enabled = False
         self.replicate_timeout = 20  # 20 second timeout
         self.replicate_client = None
         
         # Check if Replicate should be enabled
         if REPLICATE_AVAILABLE and os.environ.get('REPLICATE_API_TOKEN'):
-            print("[v141] Replicate token found, will initialize on first use")
+            print("[v142] Replicate token found, will initialize on first use")
             self.replicate_enabled = True
         else:
-            print("[v141] Replicate disabled (no token or module)")
+            print("[v142] Replicate disabled (no token or module)")
             
     def _init_replicate_lazy(self):
         """Lazy initialization of Replicate to avoid startup crashes"""
@@ -666,12 +666,13 @@ class WeddingRingEnhancerV141:
             return None
     
     def _image_to_base64(self, image: Image.Image) -> str:
-        """Convert image to base64 string - KEEP PADDING FOR GAS"""
+        """Convert image to base64 string - REMOVE PADDING FOR MAKE.COM"""
         buffer = io.BytesIO()
         image.save(buffer, format='PNG')
         img_base64 = base64.b64encode(buffer.getvalue()).decode()
-        # DO NOT REMOVE PADDING - Google Apps Script needs it!
-        print(f"[v141] Base64 encoding complete, length: {len(img_base64)}, has padding: {img_base64[-2:] == '=='}")
+        # MUST REMOVE PADDING - Make.com cannot handle it!
+        img_base64 = img_base64.rstrip('=')
+        print(f"[v142] Base64 encoding complete, length: {len(img_base64)}, padding removed")
         return img_base64
 
 # Global instance (safe because no Replicate init)
@@ -681,18 +682,19 @@ def get_enhancer():
     """Get or create enhancer instance"""
     global enhancer_instance
     if enhancer_instance is None:
-        enhancer_instance = WeddingRingEnhancerV141()
+        enhancer_instance = WeddingRingEnhancerV142()
     return enhancer_instance
 
 def handler(event):
-    """RunPod handler function - v141 GAS Compatible"""
+    """RunPod handler function - v142 Make.com Compatible"""
     try:
         print("="*70)
-        print("[v141] Handler started - Google Apps Script Compatible Version")
-        print(f"[v141] Python version: {sys.version}")
-        print(f"[v141] Available modules - NumPy: {NUMPY_AVAILABLE}, PIL: {PIL_AVAILABLE}, CV2: {CV2_AVAILABLE}")
-        print(f"[v141] Replicate module available: {REPLICATE_AVAILABLE}")
-        print(f"[v141] Replicate token set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
+        print("[v142] Handler started - Make.com & GAS Compatible Version")
+        print("[v142] IMPORTANT: Padding removed for Make.com, GAS will restore it")
+        print(f"[v142] Python version: {sys.version}")
+        print(f"[v142] Available modules - NumPy: {NUMPY_AVAILABLE}, PIL: {PIL_AVAILABLE}, CV2: {CV2_AVAILABLE}")
+        print(f"[v142] Replicate module available: {REPLICATE_AVAILABLE}")
+        print(f"[v142] Replicate token set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
         print("="*70)
         
         # Get input data
