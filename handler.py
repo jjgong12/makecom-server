@@ -1,768 +1,675 @@
 import runpod
 import base64
-import io
-import os
-import json
-import logging
-import traceback
-import sys
-from typing import Dict, Any, Optional, Tuple, List
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 import cv2
-import replicate
+import io
+import os
+import json
+import re
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Import Replicate only when available
+try:
+    import replicate
+    REPLICATE_AVAILABLE = True
+except ImportError:
+    REPLICATE_AVAILABLE = False
+    print("[v150] Replicate not available")
 
-# Version info
-VERSION = "v148"
-
-def print_handler_info():
-    """Print handler information"""
-    print("="*70)
-    print(f"[{VERSION}] Handler started - Fixed JSON Serialization")
-    print(f"[{VERSION}] Features: Grounding DINO + OWL-ViT + OpenCV fallback")
-    print(f"[{VERSION}] Training: 38 pairs applied, Thumbnail: 1000x1300")
-    print(f"[{VERSION}] Python version: {sys.version}")
-    print(f"[{VERSION}] Available modules - NumPy: {True}, PIL: {True}, CV2: {True}")
+class WeddingRingEnhancer:
+    """v150 Wedding Ring Enhancement System - Perfect Detection & Thumbnail"""
     
-    # Check Replicate
-    try:
-        import replicate
-        print(f"[{VERSION}] Replicate module available: True")
-        print(f"[{VERSION}] Replicate token set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
-    except:
-        print(f"[{VERSION}] Replicate module available: False")
-    print("="*70)
-
-class WeddingRingEnhancerV148:
     def __init__(self):
-        """Initialize the wedding ring enhancer with v148 improvements"""
-        print(f"\n[{VERSION}] Initializing WeddingRingEnhancerV148 - JSON Fix")
+        print("[v150] Initializing Wedding Ring Enhancer")
+        self.replicate_client = None
         
-        # Training data - 28 original pairs + 10 correction pairs
-        self.training_data = [
-            # Yellow Gold (original)
-            {'input': {'gold': 0.92, 'warm': 0.85, 'bright': 0.75}, 
-             'output': {'saturation': 1.25, 'temperature': 108, 'brightness': 1.12, 'highlights': 1.08}},
-            {'input': {'gold': 0.88, 'warm': 0.90, 'bright': 0.80}, 
-             'output': {'saturation': 1.22, 'temperature': 106, 'brightness': 1.10, 'highlights': 1.06}},
-            {'input': {'gold': 0.85, 'warm': 0.88, 'bright': 0.70}, 
-             'output': {'saturation': 1.20, 'temperature': 105, 'brightness': 1.15, 'highlights': 1.10}},
-            {'input': {'gold': 0.90, 'warm': 0.82, 'bright': 0.85}, 
-             'output': {'saturation': 1.18, 'temperature': 104, 'brightness': 1.08, 'highlights': 1.05}},
-            {'input': {'gold': 0.87, 'warm': 0.86, 'bright': 0.78}, 
-             'output': {'saturation': 1.21, 'temperature': 107, 'brightness': 1.11, 'highlights': 1.07}},
-            {'input': {'gold': 0.93, 'warm': 0.84, 'bright': 0.82}, 
-             'output': {'saturation': 1.23, 'temperature': 109, 'brightness': 1.09, 'highlights': 1.06}},
-            {'input': {'gold': 0.86, 'warm': 0.87, 'bright': 0.77}, 
-             'output': {'saturation': 1.19, 'temperature': 105, 'brightness': 1.12, 'highlights': 1.08}},
-            
-            # Rose Gold (original)
-            {'input': {'pink': 0.88, 'warm': 0.75, 'bright': 0.80}, 
-             'output': {'saturation': 1.15, 'temperature': 103, 'brightness': 1.10, 'highlights': 1.12}},
-            {'input': {'pink': 0.85, 'warm': 0.78, 'bright': 0.85}, 
-             'output': {'saturation': 1.12, 'temperature': 102, 'brightness': 1.08, 'highlights': 1.10}},
-            {'input': {'pink': 0.90, 'warm': 0.72, 'bright': 0.75}, 
-             'output': {'saturation': 1.18, 'temperature': 104, 'brightness': 1.12, 'highlights': 1.15}},
-            {'input': {'pink': 0.87, 'warm': 0.76, 'bright': 0.82}, 
-             'output': {'saturation': 1.14, 'temperature': 103, 'brightness': 1.09, 'highlights': 1.11}},
-            {'input': {'pink': 0.83, 'warm': 0.80, 'bright': 0.78}, 
-             'output': {'saturation': 1.16, 'temperature': 101, 'brightness': 1.11, 'highlights': 1.13}},
-            {'input': {'pink': 0.91, 'warm': 0.74, 'bright': 0.83}, 
-             'output': {'saturation': 1.13, 'temperature': 105, 'brightness': 1.07, 'highlights': 1.09}},
-            {'input': {'pink': 0.86, 'warm': 0.77, 'bright': 0.79}, 
-             'output': {'saturation': 1.15, 'temperature': 103, 'brightness': 1.10, 'highlights': 1.12}},
-            
-            # White Gold (original)
-            {'input': {'silver': 0.90, 'cool': 0.85, 'bright': 0.88}, 
-             'output': {'saturation': 0.95, 'temperature': 98, 'brightness': 1.15, 'highlights': 1.20}},
-            {'input': {'silver': 0.88, 'cool': 0.82, 'bright': 0.85}, 
-             'output': {'saturation': 0.97, 'temperature': 97, 'brightness': 1.12, 'highlights': 1.18}},
-            {'input': {'silver': 0.92, 'cool': 0.88, 'bright': 0.90}, 
-             'output': {'saturation': 0.93, 'temperature': 96, 'brightness': 1.18, 'highlights': 1.22}},
-            {'input': {'silver': 0.87, 'cool': 0.80, 'bright': 0.83}, 
-             'output': {'saturation': 0.98, 'temperature': 98, 'brightness': 1.14, 'highlights': 1.19}},
-            {'input': {'silver': 0.91, 'cool': 0.86, 'bright': 0.87}, 
-             'output': {'saturation': 0.94, 'temperature': 97, 'brightness': 1.16, 'highlights': 1.21}},
-            {'input': {'silver': 0.89, 'cool': 0.83, 'bright': 0.86}, 
-             'output': {'saturation': 0.96, 'temperature': 98, 'brightness': 1.13, 'highlights': 1.17}},
-            {'input': {'silver': 0.93, 'cool': 0.87, 'bright': 0.89}, 
-             'output': {'saturation': 0.92, 'temperature': 95, 'brightness': 1.17, 'highlights': 1.23}},
-            
-            # Non-plated White (original)
-            {'input': {'silver': 0.85, 'cool': 0.70, 'bright': 0.75}, 
-             'output': {'saturation': 1.05, 'temperature': 99, 'brightness': 1.20, 'highlights': 1.15}},
-            {'input': {'silver': 0.82, 'cool': 0.65, 'bright': 0.72}, 
-             'output': {'saturation': 1.08, 'temperature': 100, 'brightness': 1.22, 'highlights': 1.18}},
-            {'input': {'silver': 0.87, 'cool': 0.72, 'bright': 0.78}, 
-             'output': {'saturation': 1.03, 'temperature': 98, 'brightness': 1.18, 'highlights': 1.13}},
-            {'input': {'silver': 0.84, 'cool': 0.68, 'bright': 0.74}, 
-             'output': {'saturation': 1.06, 'temperature': 99, 'brightness': 1.21, 'highlights': 1.16}},
-            {'input': {'silver': 0.86, 'cool': 0.71, 'bright': 0.76}, 
-             'output': {'saturation': 1.04, 'temperature': 99, 'brightness': 1.19, 'highlights': 1.14}},
-            {'input': {'silver': 0.83, 'cool': 0.66, 'bright': 0.73}, 
-             'output': {'saturation': 1.07, 'temperature': 100, 'brightness': 1.23, 'highlights': 1.17}},
-            {'input': {'silver': 0.88, 'cool': 0.73, 'bright': 0.77}, 
-             'output': {'saturation': 1.02, 'temperature': 97, 'brightness': 1.17, 'highlights': 1.12}},
-            
-            # Correction data (10 pairs)
-            {'input': {'gold': 0.94, 'warm': 0.87, 'bright': 0.65}, 
-             'output': {'saturation': 1.26, 'temperature': 110, 'brightness': 1.18, 'highlights': 1.12}},
-            {'input': {'gold': 0.80, 'warm': 0.91, 'bright': 0.88}, 
-             'output': {'saturation': 1.16, 'temperature': 102, 'brightness': 1.06, 'highlights': 1.04}},
-            {'input': {'pink': 0.92, 'warm': 0.70, 'bright': 0.70}, 
-             'output': {'saturation': 1.20, 'temperature': 106, 'brightness': 1.14, 'highlights': 1.18}},
-            {'input': {'pink': 0.80, 'warm': 0.82, 'bright': 0.90}, 
-             'output': {'saturation': 1.10, 'temperature': 100, 'brightness': 1.05, 'highlights': 1.08}},
-            {'input': {'silver': 0.95, 'cool': 0.90, 'bright': 0.95}, 
-             'output': {'saturation': 0.90, 'temperature': 94, 'brightness': 1.20, 'highlights': 1.25}},
-            {'input': {'silver': 0.80, 'cool': 0.75, 'bright': 0.80}, 
-             'output': {'saturation': 1.00, 'temperature': 99, 'brightness': 1.10, 'highlights': 1.15}},
-            {'input': {'silver': 0.90, 'cool': 0.60, 'bright': 0.70}, 
-             'output': {'saturation': 1.10, 'temperature': 101, 'brightness': 1.25, 'highlights': 1.20}},
-            {'input': {'silver': 0.78, 'cool': 0.78, 'bright': 0.82}, 
-             'output': {'saturation': 0.98, 'temperature': 98, 'brightness': 1.12, 'highlights': 1.10}},
-            {'input': {'gold': 0.89, 'warm': 0.83, 'bright': 0.90}, 
-             'output': {'saturation': 1.17, 'temperature': 103, 'brightness': 1.05, 'highlights': 1.03}},
-            {'input': {'pink': 0.84, 'warm': 0.79, 'bright': 0.88}, 
-             'output': {'saturation': 1.11, 'temperature': 101, 'brightness': 1.06, 'highlights': 1.07}}
-        ]
+        # 38 pairs learning data parameters (28 + 10 additional)
+        self.enhancement_params = {
+            'yellow_gold': {
+                'brightness': 1.15,
+                'contrast': 1.08,
+                'sharpness': 1.10,
+                'saturation': 1.06,
+                'white_overlay': 0.03,
+                'temperature': 1.02,
+                'clahe_limit': 2.5,
+                'gamma': 0.98,
+                'blend_original': 0.15,
+                'h_shift': -2,
+                's_mult': 0.95,
+                'v_mult': 1.05,
+                'warmth': 1.03,
+                'target_rgb': (255, 235, 190)
+            },
+            'rose_gold': {
+                'brightness': 1.12,
+                'contrast': 1.10,
+                'sharpness': 1.12,
+                'saturation': 1.05,
+                'white_overlay': 0.02,
+                'temperature': 1.00,
+                'clahe_limit': 2.8,
+                'gamma': 0.97,
+                'blend_original': 0.12,
+                'h_shift': 0,
+                's_mult': 0.92,
+                'v_mult': 1.06,
+                'warmth': 1.01,
+                'target_rgb': (245, 220, 200)
+            },
+            'white_gold': {
+                'brightness': 1.18,
+                'contrast': 1.06,
+                'sharpness': 1.08,
+                'saturation': 0.98,
+                'white_overlay': 0.08,
+                'temperature': 0.98,
+                'clahe_limit': 2.2,
+                'gamma': 0.96,
+                'blend_original': 0.10,
+                'h_shift': 0,
+                's_mult': 0.85,
+                'v_mult': 1.08,
+                'warmth': 0.99,
+                'target_rgb': (250, 250, 245)
+            },
+            'plain_white': {
+                'brightness': 1.30,
+                'contrast': 1.04,
+                'sharpness': 1.05,
+                'saturation': 0.95,
+                'white_overlay': 0.15,
+                'temperature': 0.97,
+                'clahe_limit': 2.0,
+                'gamma': 0.94,
+                'blend_original': 0.08,
+                'h_shift': 2,
+                's_mult': 0.80,
+                'v_mult': 1.10,
+                'warmth': 1.02,
+                'target_rgb': (252, 247, 232)
+            }
+        }
         
-        # Initialize Replicate client
-        self.client = self._init_replicate_client()
-    
+        # 28 pairs AFTER background colors
+        self.after_bg_colors = {
+            'yellow_gold': np.array([248, 243, 238]),
+            'rose_gold': np.array([245, 240, 235]),
+            'white_gold': np.array([250, 248, 245]),
+            'plain_white': np.array([252, 250, 248])
+        }
+
     def _init_replicate_client(self):
-        """Initialize Replicate client"""
-        try:
-            print(f"[{VERSION}] Initializing Replicate client...")
+        """Initialize Replicate client only when needed"""
+        if self.replicate_client is None and REPLICATE_AVAILABLE:
             api_token = os.environ.get('REPLICATE_API_TOKEN')
-            if not api_token:
-                print(f"[{VERSION}] Warning: REPLICATE_API_TOKEN not found")
-                return None
-            
-            client = replicate.Client(api_token=api_token)
-            print(f"[{VERSION}] Replicate client initialized successfully")
-            return client
-        except Exception as e:
-            print(f"[{VERSION}] Failed to initialize Replicate client: {e}")
-            return None
-    
-    def _detect_ring_multi_stage(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """Multi-stage ring detection"""
-        print(f"[{VERSION}] Starting multi-stage ring detection")
+            if api_token:
+                try:
+                    print("[v150] Initializing Replicate client...")
+                    self.replicate_client = replicate.Client(api_token=api_token)
+                    print("[v150] Replicate client initialized successfully")
+                except Exception as e:
+                    print(f"[v150] Failed to initialize Replicate client: {e}")
+                    self.replicate_client = None
+            else:
+                print("[v150] No REPLICATE_API_TOKEN found")
+
+    def decode_base64_image(self, base64_string):
+        """Decode base64 image with comprehensive error handling"""
+        print(f"[v150] Decoding base64 image, length: {len(base64_string)}")
         
-        # Stage 1: Try Grounding DINO
-        bbox = self._detect_with_grounding_dino(image)
-        if bbox:
-            print(f"[{VERSION}] ✓ Grounding DINO detection successful")
-            return bbox
-        
-        # Stage 2: Try OWL-ViT
-        bbox = self._detect_with_owl_vit(image)
-        if bbox:
-            print(f"[{VERSION}] ✓ OWL-ViT detection successful")
-            return bbox
-        
-        # Stage 3: OpenCV fallback
-        print(f"[{VERSION}] Using OpenCV fallback detection")
-        return self._detect_ring_opencv(image)
-    
-    def _detect_with_grounding_dino(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """Detect ring using Grounding DINO"""
-        if not self.client:
-            return None
-            
         try:
-            print(f"[{VERSION}] Stage 1: Grounding DINO detection")
+            # Clean the string
+            base64_string = base64_string.strip()
             
-            # Convert to PIL
-            img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            # Remove data URL prefix if present
+            if ',' in base64_string:
+                base64_string = base64_string.split(',')[1]
+                print("[v150] Removed data URL prefix")
             
-            # Resize for API
-            max_size = 1024
-            if max(img_pil.size) > max_size:
-                ratio = max_size / max(img_pil.size)
-                new_size = tuple(int(dim * ratio) for dim in img_pil.size)
-                img_pil = img_pil.resize(new_size, Image.LANCZOS)
+            # Try multiple decoding approaches
+            image_data = None
             
-            # Convert to base64 WITHOUT padding
-            buffer = io.BytesIO()
-            img_pil.save(buffer, format='PNG')
-            buffer.seek(0)
-            base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8').rstrip('=')
+            # Method 1: Direct decode
+            try:
+                image_data = base64.b64decode(base64_string, validate=True)
+                print("[v150] Direct decode successful")
+            except Exception as e1:
+                print(f"[v150] Direct decode failed: {e1}")
+                
+                # Method 2: Add padding
+                try:
+                    missing_padding = len(base64_string) % 4
+                    if missing_padding:
+                        base64_string += '=' * (4 - missing_padding)
+                        print(f"[v150] Added {4 - missing_padding} padding characters")
+                    image_data = base64.b64decode(base64_string)
+                    print("[v150] Decode with padding successful")
+                except Exception as e2:
+                    print(f"[v150] Decode with padding failed: {e2}")
+                    
+                    # Method 3: Force decode
+                    try:
+                        image_data = base64.b64decode(base64_string + '==')
+                        print("[v150] Force decode successful")
+                    except Exception as e3:
+                        print(f"[v150] Force decode failed: {e3}")
+                        
+                        # Method 4: Clean and retry
+                        base64_string = re.sub(r'[^A-Za-z0-9+/]', '', base64_string)
+                        image_data = base64.b64decode(base64_string + '==')
+                        print("[v150] Clean and decode successful")
             
-            # Run detection
-            output = self.client.run(
-                "lucasjin/grounding-dino:7a93d74ec3a4f62c4530fb971ad9c9fa1a90ac4a4c44f8ee06b2e740ce0e1983",
-                input={
-                    "image": f"data:image/png;base64,{base64_image}",
-                    "prompt": "wedding ring",
-                    "box_threshold": 0.3,
-                    "text_threshold": 0.25
+            if image_data:
+                image = Image.open(io.BytesIO(image_data))
+                print(f"[v150] Image decoded successfully: {image.size}")
+                return image
+            else:
+                raise ValueError("All decoding methods failed")
+                
+        except Exception as e:
+            print(f"[v150] Error decoding base64: {e}")
+            raise
+
+    def detect_masking_ultra_precision(self, image_np):
+        """Ultra-precision masking detection focused on central box"""
+        h, w = image_np.shape[:2]
+        print(f"[v150] Starting ultra-precision masking detection on {w}x{h} image")
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        
+        # Central region detection (30-70% of image)
+        center_x_start = int(w * 0.3)
+        center_x_end = int(w * 0.7)
+        center_y_start = int(h * 0.3)
+        center_y_end = int(h * 0.7)
+        
+        # Check for gray box masking in center
+        center_region = gray[center_y_start:center_y_end, center_x_start:center_x_end]
+        
+        # Gray detection (values between 100-170)
+        gray_mask = ((center_region > 100) & (center_region < 170)).astype(np.uint8) * 255
+        
+        # Find contours in gray mask
+        contours, _ = cv2.findContours(gray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Find largest contour
+            largest_contour = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest_contour)
+            center_area = (center_x_end - center_x_start) * (center_y_end - center_y_start)
+            
+            # If gray area is significant (>20% of center region)
+            if area > center_area * 0.2:
+                # Get bounding box of the gray region
+                x, y, w_box, h_box = cv2.boundingRect(largest_contour)
+                
+                # Convert to full image coordinates
+                mask_x = center_x_start + x
+                mask_y = center_y_start + y
+                
+                print(f"[v150] Central box masking detected at ({mask_x}, {mask_y}), size: {w_box}x{h_box}")
+                
+                return {
+                    'has_masking': True,
+                    'type': 'central_box',
+                    'bounds': {
+                        'x': mask_x,
+                        'y': mask_y,
+                        'width': w_box,
+                        'height': h_box
+                    }
                 }
-            )
-            
-            if output and 'predictions' in output and output['predictions']:
-                pred = output['predictions'][0]
-                if 'box' in pred:
-                    box = pred['box']
-                    # Scale back to original size
-                    scale_x = image.shape[1] / img_pil.size[0]
-                    scale_y = image.shape[0] / img_pil.size[1]
-                    
-                    x1 = int(box['x_min'] * scale_x)
-                    y1 = int(box['y_min'] * scale_y)
-                    x2 = int(box['x_max'] * scale_x)
-                    y2 = int(box['y_max'] * scale_y)
-                    
-                    return (x1, y1, x2, y2)
-                    
-        except Exception as e:
-            print(f"[{VERSION}] Grounding DINO error: {e}")
-            
-        return None
-    
-    def _detect_with_owl_vit(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """Detect ring using OWL-ViT"""
-        if not self.client:
-            return None
-            
-        try:
-            print(f"[{VERSION}] Stage 2: OWL-ViT detection")
-            
-            # Convert to PIL
-            img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            
-            # Resize for API
-            max_size = 768
-            if max(img_pil.size) > max_size:
-                ratio = max_size / max(img_pil.size)
-                new_size = tuple(int(dim * ratio) for dim in img_pil.size)
-                img_pil = img_pil.resize(new_size, Image.LANCZOS)
-            
-            # Convert to base64 WITHOUT padding
-            buffer = io.BytesIO()
-            img_pil.save(buffer, format='PNG')
-            buffer.seek(0)
-            base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8').rstrip('=')
-            
-            # Run detection
-            output = self.client.run(
-                "adirik/owlvit-base-patch32:5c3c26faa21ee78c98e5c09a11f92e1528c2b6da2f1bb1ab988e1b9f0b1b5a09",
-                input={
-                    "image": f"data:image/png;base64,{base64_image}",
-                    "query": ["wedding ring", "ring", "jewelry"],
-                    "score_threshold": 0.1
-                }
-            )
-            
-            if output and len(output) > 0:
-                best_detection = max(output, key=lambda x: x.get('score', 0))
-                if 'box' in best_detection:
-                    box = best_detection['box']
-                    # Scale back
-                    scale_x = image.shape[1] / img_pil.size[0]
-                    scale_y = image.shape[0] / img_pil.size[1]
-                    
-                    x1 = int(box[0] * scale_x)
-                    y1 = int(box[1] * scale_y)
-                    x2 = int(box[2] * scale_x)
-                    y2 = int(box[3] * scale_y)
-                    
-                    return (x1, y1, x2, y2)
-                    
-        except Exception as e:
-            print(f"[{VERSION}] OWL-ViT error: {e}")
-            
-        return None
-    
-    def _detect_ring_opencv(self, image: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """Fallback OpenCV detection"""
-        try:
-            print(f"[{VERSION}] Stage 3: OpenCV detection")
-            
-            # Convert to grayscale
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            
-            # Apply bilateral filter
-            filtered = cv2.bilateralFilter(gray, 9, 75, 75)
-            
-            # Detect circles
-            circles = cv2.HoughCircles(
-                filtered,
-                cv2.HOUGH_GRADIENT,
-                dp=1,
-                minDist=100,
-                param1=50,
-                param2=30,
-                minRadius=50,
-                maxRadius=500
-            )
-            
-            if circles is not None:
-                circles = np.uint16(np.around(circles))
-                largest_circle = max(circles[0], key=lambda c: c[2])
-                x, y, r = largest_circle
+        
+        # Also check for exact gray values (common masking colors)
+        gray_values = [128, 140, 150, 160]  # Common gray masking values
+        for gray_val in gray_values:
+            mask = np.abs(gray.astype(float) - gray_val) < 15
+            if np.sum(mask) > (w * h * 0.1):  # More than 10% of image
+                print(f"[v150] Gray masking detected with value ~{gray_val}")
                 
-                # Expand bounding box
-                padding = int(r * 0.3)
-                x1 = max(0, x - r - padding)
-                y1 = max(0, y - r - padding)
-                x2 = min(image.shape[1], x + r + padding)
-                y2 = min(image.shape[0], y + r + padding)
-                
-                return (x1, y1, x2, y2)
-                
-        except Exception as e:
-            print(f"[{VERSION}] OpenCV detection error: {e}")
-            
-        return None
-    
-    def _remove_background_replicate(self, image: np.ndarray) -> np.ndarray:
-        """Remove background using Replicate API"""
-        if not self.client:
-            print(f"[{VERSION}] Replicate client not available, using original")
-            return image
-            
+                # Find bounds of gray region
+                coords = np.where(mask)
+                if len(coords[0]) > 0:
+                    y_min, y_max = np.min(coords[0]), np.max(coords[0])
+                    x_min, x_max = np.min(coords[1]), np.max(coords[1])
+                    
+                    return {
+                        'has_masking': True,
+                        'type': 'central_box',
+                        'bounds': {
+                            'x': x_min,
+                            'y': y_min,
+                            'width': x_max - x_min,
+                            'height': y_max - y_min
+                        }
+                    }
+        
+        print("[v150] No masking detected")
+        return {'has_masking': False, 'type': None}
+
+    def remove_masking_with_replicate(self, image, masking_info):
+        """Remove masking using Replicate API"""
+        print("[v150] Starting masking removal with Replicate")
+        
         try:
-            print(f"[{VERSION}] Removing background with Replicate API")
+            # Initialize Replicate client if needed
+            self._init_replicate_client()
             
-            # Convert to PIL
-            img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            if not self.replicate_client:
+                print("[v150] Replicate client not available, returning original")
+                return image
             
-            # Convert to base64 WITHOUT padding
-            buffer = io.BytesIO()
-            img_pil.save(buffer, format='PNG')
-            buffer.seek(0)
-            base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8').rstrip('=')
+            # Convert to base64 for Replicate
+            buffered = io.BytesIO()
+            image.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            img_data_url = f"data:image/png;base64,{img_base64}"
             
-            # Call Replicate API
-            output = self.client.run(
+            # Create mask based on masking bounds
+            mask = Image.new('L', image.size, 0)
+            bounds = masking_info['bounds']
+            
+            # Draw white rectangle on mask where masking is
+            from PIL import ImageDraw
+            draw = ImageDraw.Draw(mask)
+            draw.rectangle([
+                bounds['x'], 
+                bounds['y'], 
+                bounds['x'] + bounds['width'],
+                bounds['y'] + bounds['height']
+            ], fill=255)
+            
+            # Convert mask to base64
+            mask_buffered = io.BytesIO()
+            mask.save(mask_buffered, format="PNG")
+            mask_base64 = base64.b64encode(mask_buffered.getvalue()).decode('utf-8')
+            mask_data_url = f"data:image/png;base64,{mask_base64}"
+            
+            print("[v150] Running Replicate background removal...")
+            
+            # Run Replicate
+            output = self.replicate_client.run(
                 "lucataco/remove-bg:95fcc2a26d3899cd6c2691c900465aaeff466285a65c14638cc5f36f34befaf1",
                 input={
-                    "image": f"data:image/png;base64,{base64_image}"
+                    "image": img_data_url,
+                    "mask": mask_data_url,
+                    "alpha_matting": True,
+                    "alpha_matting_foreground_threshold": 240,
+                    "alpha_matting_background_threshold": 50,
+                    "alpha_matting_erode_size": 10
                 }
             )
             
             if output:
-                # Download result
-                import requests
-                response = requests.get(output)
-                if response.status_code == 200:
-                    # Convert back to numpy
-                    img_no_bg = Image.open(io.BytesIO(response.content))
-                    img_no_bg = np.array(img_no_bg)
-                    
-                    # Ensure BGR format
-                    if len(img_no_bg.shape) == 3:
-                        if img_no_bg.shape[2] == 4:  # RGBA
-                            img_no_bg = cv2.cvtColor(img_no_bg, cv2.COLOR_RGBA2BGR)
-                        elif img_no_bg.shape[2] == 3:  # RGB
-                            img_no_bg = cv2.cvtColor(img_no_bg, cv2.COLOR_RGB2BGR)
-                    
-                    print(f"[{VERSION}] Background removed successfully")
-                    return img_no_bg
-                    
-        except Exception as e:
-            print(f"[{VERSION}] Background removal error: {e}")
+                print("[v150] Replicate processing successful")
+                # Decode result
+                result_base64 = output.split(',')[1] if ',' in output else output
+                result_data = base64.b64decode(result_base64)
+                return Image.open(io.BytesIO(result_data))
             
+        except Exception as e:
+            print(f"[v150] Replicate processing failed: {e}")
+        
+        print("[v150] Returning original image")
         return image
-    
-    def _analyze_ring_color(self, image: np.ndarray) -> Tuple[str, Dict[str, float]]:
-        """Analyze ring color using ML"""
-        try:
-            # Convert to HSV
-            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    def detect_metal_type(self, image_np):
+        """Detect wedding ring metal type"""
+        print("[v150] Detecting metal type...")
+        
+        # Sample center region
+        h, w = image_np.shape[:2]
+        center_y, center_x = h // 2, w // 2
+        sample_size = min(w, h) // 4
+        
+        roi = image_np[
+            max(0, center_y - sample_size):min(h, center_y + sample_size),
+            max(0, center_x - sample_size):min(w, center_x + sample_size)
+        ]
+        
+        # Calculate color metrics
+        avg_color = np.mean(roi.reshape(-1, 3), axis=0)
+        r, g, b = avg_color
+        
+        # HSV analysis
+        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+        avg_hsv = np.mean(hsv_roi.reshape(-1, 3), axis=0)
+        h, s, v = avg_hsv
+        
+        # Gold detection
+        gold_score = (r - b) / (r + b + 1e-5)
+        warm_score = (r + g) / (2 * b + 1e-5)
+        
+        print(f"[v150] Color analysis - RGB: {avg_color}, HSV: {avg_hsv}")
+        print(f"[v150] Gold score: {gold_score:.3f}, Warm score: {warm_score:.3f}")
+        
+        # Determine metal type
+        if gold_score > 0.15 and warm_score > 1.8:
+            metal_type = 'yellow_gold'
+        elif gold_score > 0.05 and s > 20 and 10 < h < 25:
+            metal_type = 'rose_gold'
+        elif s < 30 and v > 180 and abs(r - g) < 10 and abs(g - b) < 10:
+            metal_type = 'plain_white'
+        else:
+            metal_type = 'white_gold'
+        
+        print(f"[v150] Detected metal type: {metal_type}")
+        return metal_type
+
+    def enhance_wedding_ring(self, image, metal_type):
+        """Apply 10-step enhancement based on 38 pairs learning data"""
+        print(f"[v150] Enhancing {metal_type} wedding ring with 10-step process")
+        
+        params = self.enhancement_params[metal_type]
+        enhanced = image.copy()
+        
+        # Step 1: Brightness adjustment
+        enhancer = ImageEnhance.Brightness(enhanced)
+        enhanced = enhancer.enhance(params['brightness'])
+        
+        # Step 2: Contrast adjustment
+        enhancer = ImageEnhance.Contrast(enhanced)
+        enhanced = enhancer.enhance(params['contrast'])
+        
+        # Step 3: Sharpness enhancement
+        enhancer = ImageEnhance.Sharpness(enhanced)
+        enhanced = enhancer.enhance(params['sharpness'])
+        
+        # Step 4: Saturation adjustment
+        enhancer = ImageEnhance.Color(enhanced)
+        enhanced = enhancer.enhance(params['saturation'])
+        
+        # Step 5: White overlay
+        if params['white_overlay'] > 0:
+            white = Image.new('RGB', enhanced.size, (255, 255, 255))
+            enhanced = Image.blend(enhanced, white, params['white_overlay'])
+        
+        # Step 6: Temperature adjustment in LAB
+        enhanced_np = np.array(enhanced)
+        lab = cv2.cvtColor(enhanced_np, cv2.COLOR_RGB2LAB).astype(float)
+        lab[:,:,1] = lab[:,:,1] * params['temperature']  # a channel
+        lab[:,:,2] = lab[:,:,2] * params['warmth']       # b channel
+        lab = np.clip(lab, 0, 255).astype(np.uint8)
+        enhanced_np = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        
+        # Step 7: CLAHE
+        lab = cv2.cvtColor(enhanced_np, cv2.COLOR_RGB2LAB)
+        clahe = cv2.createCLAHE(clipLimit=params['clahe_limit'], tileGridSize=(8,8))
+        lab[:,:,0] = clahe.apply(lab[:,:,0])
+        enhanced_np = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+        
+        # Step 8: Gamma correction
+        gamma_corrected = np.power(enhanced_np / 255.0, params['gamma']) * 255
+        enhanced_np = gamma_corrected.astype(np.uint8)
+        
+        # Step 9: HSV fine-tuning
+        hsv = cv2.cvtColor(enhanced_np, cv2.COLOR_RGB2HSV).astype(float)
+        hsv[:,:,0] = (hsv[:,:,0] + params['h_shift']) % 180
+        hsv[:,:,1] = hsv[:,:,1] * params['s_mult']
+        hsv[:,:,2] = hsv[:,:,2] * params['v_mult']
+        hsv = np.clip(hsv, 0, [180, 255, 255]).astype(np.uint8)
+        enhanced_np = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+        
+        # Step 10: Blend with original
+        enhanced = Image.fromarray(enhanced_np)
+        final = Image.blend(enhanced, image, params['blend_original'])
+        
+        print("[v150] 10-step enhancement completed")
+        return final
+
+    def create_perfect_thumbnail(self, image, masking_info=None):
+        """Create 1000x1300 thumbnail with ring perfectly centered and filling the frame"""
+        print("[v150] Creating perfect 1000x1300 thumbnail")
+        
+        image_np = np.array(image)
+        h, w = image_np.shape[:2]
+        
+        # If masking detected, use masking bounds as reference
+        if masking_info and masking_info.get('has_masking'):
+            bounds = masking_info['bounds']
+            ring_x = bounds['x']
+            ring_y = bounds['y']
+            ring_w = bounds['width']
+            ring_h = bounds['height']
             
-            # Calculate color metrics
-            h_mean = np.mean(hsv[:, :, 0])
-            s_mean = np.mean(hsv[:, :, 1])
-            v_mean = np.mean(hsv[:, :, 2])
+            print(f"[v150] Using masking bounds for thumbnail: {ring_w}x{ring_h}")
+        else:
+            # Try to detect ring using edge detection
+            gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+            edges = cv2.Canny(gray, 50, 150)
             
-            # Convert to RGB for analysis
-            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            r_mean = np.mean(rgb[:, :, 0])
-            g_mean = np.mean(rgb[:, :, 1])
-            b_mean = np.mean(rgb[:, :, 2])
+            # Find contours
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # Calculate features
-            gold_score = (r_mean > g_mean > b_mean) and (s_mean > 50)
-            warm_score = (r_mean + g_mean) / (2 * (b_mean + 1))
-            pink_score = (r_mean > g_mean) and (r_mean > b_mean) and (abs(r_mean - g_mean) < 30)
-            silver_score = (abs(r_mean - g_mean) < 20) and (abs(g_mean - b_mean) < 20)
-            cool_score = b_mean / (r_mean + 1)
-            bright_score = v_mean / 255
-            
-            # Normalize scores - Convert to Python float
-            features = {}
-            features['gold'] = float(min(1.0, gold_score * warm_score / 2))
-            features['warm'] = float(min(1.0, warm_score / 2))
-            features['pink'] = float(min(1.0, pink_score * 1.2 if pink_score else 0))
-            features['silver'] = float(min(1.0, silver_score * 1.1 if silver_score else 0))
-            features['cool'] = float(min(1.0, cool_score))
-            features['bright'] = float(bright_score)
-            
-            # Determine color
-            if features['gold'] > 0.7 and features['warm'] > 0.8:
-                color = 'yellow_gold'
-            elif features['pink'] > 0.6 and features['warm'] > 0.6:
-                color = 'rose_gold'
-            elif features['silver'] > 0.7 and features['cool'] > 0.6:
-                if features['bright'] > 0.8:
-                    color = 'white_gold'
-                else:
-                    color = 'non_plated_white'
+            if contours:
+                # Find largest contour (assume it's the ring)
+                largest_contour = max(contours, key=cv2.contourArea)
+                ring_x, ring_y, ring_w, ring_h = cv2.boundingRect(largest_contour)
+                print(f"[v150] Detected ring bounds: {ring_w}x{ring_h}")
             else:
-                # Default based on highest scores
-                if features['gold'] > max(features['pink'], features['silver']):
-                    color = 'yellow_gold'
-                elif features['pink'] > features['silver']:
-                    color = 'rose_gold'
-                else:
-                    color = 'white_gold' if features['bright'] > 0.75 else 'non_plated_white'
-            
-            print(f"[{VERSION}] Color analysis - Detected: {color}")
-            print(f"[{VERSION}] Features: gold={features['gold']:.2f}, pink={features['pink']:.2f}, silver={features['silver']:.2f}")
-            
-            return color, features
-            
-        except Exception as e:
-            print(f"[{VERSION}] Color analysis error: {e}")
-            return 'yellow_gold', {'gold': 0.8, 'warm': 0.8, 'bright': 0.8}
-    
-    def _predict_adjustments(self, features: Dict[str, float]) -> Dict[str, float]:
-        """Predict adjustments using training data"""
-        # Find closest training sample
-        min_distance = float('inf')
-        best_output = None
+                # Use center 60% of image as fallback
+                ring_x = int(w * 0.2)
+                ring_y = int(h * 0.2)
+                ring_w = int(w * 0.6)
+                ring_h = int(h * 0.6)
+                print("[v150] Using center region as fallback")
         
-        for sample in self.training_data:
-            distance = 0
-            for key in features:
-                if key in sample['input']:
-                    distance += (features[key] - sample['input'][key]) ** 2
-            
-            if distance < min_distance:
-                min_distance = distance
-                best_output = sample['output']
+        # Calculate center of ring
+        ring_center_x = ring_x + ring_w // 2
+        ring_center_y = ring_y + ring_h // 2
         
-        if best_output:
-            # Convert all values to Python float
-            return {k: float(v) for k, v in best_output.items()}
+        # Target size: 1000x1300
+        target_w = 1000
+        target_h = 1300
+        target_ratio = target_w / target_h  # 0.769
+        
+        # Ring should fill 85% of the frame (increased from default)
+        ring_scale = 0.85
+        
+        # Calculate required crop size to achieve target ratio
+        # and ensure ring fills the desired portion
+        required_w = int(ring_w / ring_scale)
+        required_h = int(ring_h / ring_scale)
+        
+        # Adjust to match target aspect ratio
+        current_ratio = required_w / required_h
+        if current_ratio > target_ratio:
+            # Too wide, increase height
+            required_h = int(required_w / target_ratio)
         else:
-            # Default adjustments
-            return {
-                'saturation': 1.15,
-                'temperature': 105.0,
-                'brightness': 1.10,
-                'highlights': 1.10
-            }
-    
-    def _apply_enhancements(self, image: np.ndarray, adjustments: Dict[str, float]) -> np.ndarray:
-        """Apply predicted enhancements"""
-        try:
-            # Convert to PIL for processing
-            img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            
-            # Apply brightness
-            if adjustments['brightness'] != 1.0:
-                enhancer = ImageEnhance.Brightness(img_pil)
-                img_pil = enhancer.enhance(adjustments['brightness'])
-            
-            # Apply saturation
-            if adjustments['saturation'] != 1.0:
-                enhancer = ImageEnhance.Color(img_pil)
-                img_pil = enhancer.enhance(adjustments['saturation'])
-            
-            # Convert back to numpy
-            enhanced = np.array(img_pil)
-            enhanced = cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR)
-            
-            # Apply temperature adjustment
-            if adjustments['temperature'] != 100:
-                temp_factor = adjustments['temperature'] / 100
-                if temp_factor > 1:  # Warmer
-                    enhanced[:, :, 2] = np.clip(enhanced[:, :, 2] * temp_factor, 0, 255)
-                else:  # Cooler
-                    enhanced[:, :, 0] = np.clip(enhanced[:, :, 0] * (2 - temp_factor), 0, 255)
-            
-            # Apply highlights
-            if adjustments['highlights'] != 1.0:
-                # Create highlights mask
-                gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
-                _, mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-                mask = cv2.GaussianBlur(mask, (21, 21), 0) / 255.0
-                
-                # Apply highlight enhancement
-                for i in range(3):
-                    enhanced[:, :, i] = enhanced[:, :, i] * (1 - mask) + \
-                                      np.clip(enhanced[:, :, i] * adjustments['highlights'], 0, 255) * mask
-            
-            return enhanced.astype(np.uint8)
-            
-        except Exception as e:
-            print(f"[{VERSION}] Enhancement error: {e}")
-            return image
-    
-    def _create_thumbnail(self, image: np.ndarray, size=(1000, 1300)) -> np.ndarray:
-        """Create thumbnail with exact size"""
-        try:
-            # Convert to PIL
-            img_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            
-            # Create thumbnail
-            img_pil.thumbnail(size, Image.LANCZOS)
-            
-            # Create white background
-            thumb = Image.new('RGB', size, (255, 255, 255))
-            
-            # Paste centered
-            x = (size[0] - img_pil.width) // 2
-            y = (size[1] - img_pil.height) // 2
-            thumb.paste(img_pil, (x, y))
-            
-            # Convert back
-            return cv2.cvtColor(np.array(thumb), cv2.COLOR_RGB2BGR)
-            
-        except Exception as e:
-            print(f"[{VERSION}] Thumbnail error: {e}")
-            return image
-    
-    def process_image(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+            # Too tall, increase width
+            required_w = int(required_h * target_ratio)
+        
+        # Calculate crop region centered on ring
+        crop_x1 = max(0, ring_center_x - required_w // 2)
+        crop_y1 = max(0, ring_center_y - required_h // 2)
+        crop_x2 = min(w, crop_x1 + required_w)
+        crop_y2 = min(h, crop_y1 + required_h)
+        
+        # Adjust if crop goes out of bounds
+        if crop_x2 - crop_x1 < required_w:
+            if crop_x1 == 0:
+                crop_x2 = min(w, required_w)
+            else:
+                crop_x1 = max(0, w - required_w)
+                crop_x2 = w
+        
+        if crop_y2 - crop_y1 < required_h:
+            if crop_y1 == 0:
+                crop_y2 = min(h, required_h)
+            else:
+                crop_y1 = max(0, h - required_h)
+                crop_y2 = h
+        
+        # Crop the image
+        cropped = image_np[crop_y1:crop_y2, crop_x1:crop_x2]
+        
+        # Resize to exact 1000x1300
+        thumbnail = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        print(f"[v150] Created thumbnail: crop region ({crop_x1},{crop_y1})-({crop_x2},{crop_y2})")
+        print(f"[v150] Ring fills approximately {int(ring_scale * 100)}% of frame")
+        
+        return Image.fromarray(thumbnail)
+
+    def process_image(self, base64_image):
         """Main processing pipeline"""
-        print(f"\n[{VERSION}] {'='*50}")
-        print(f"[{VERSION}] Starting image processing pipeline")
-        print(f"[{VERSION}] Features: Multi-stage detection, 38 training pairs, 1000x1300 thumbnail")
-        print(f"[{VERSION}] {'='*50}")
-        
-        original_shape = image.shape
-        print(f"[{VERSION}] Input image shape: {original_shape}")
-        
-        # Step 1: Multi-stage ring detection
-        bbox = self._detect_ring_multi_stage(image)
-        
-        if bbox:
-            x1, y1, x2, y2 = bbox
-            ring_roi = image[y1:y2, x1:x2].copy()
-            print(f"[{VERSION}] Ring detected at: ({x1},{y1},{x2},{y2})")
-        else:
-            print(f"[{VERSION}] No ring detected, processing full image")
-            ring_roi = image.copy()
-            bbox = (0, 0, image.shape[1], image.shape[0])
-        
-        # Step 2: Remove background
-        ring_no_bg = self._remove_background_replicate(ring_roi)
-        
-        # Step 3: Analyze color
-        color, features = self._analyze_ring_color(ring_no_bg)
-        
-        # Step 4: Predict adjustments
-        adjustments = self._predict_adjustments(features)
-        print(f"[{VERSION}] Adjustments: {adjustments}")
-        
-        # Step 5: Apply enhancements
-        enhanced_ring = self._apply_enhancements(ring_no_bg, adjustments)
-        
-        # Step 6: Merge back
-        result = image.copy()
-        x1, y1, x2, y2 = bbox
-        
-        # Resize enhanced ring if needed
-        if enhanced_ring.shape[:2] != (y2-y1, x2-x1):
-            enhanced_ring = cv2.resize(enhanced_ring, (x2-x1, y2-y1), interpolation=cv2.INTER_LANCZOS4)
-        
-        result[y1:y2, x1:x2] = enhanced_ring
-        
-        # Step 7: Create thumbnail
-        thumbnail = self._create_thumbnail(result, size=(1000, 1300))
-        
-        # Prepare metadata - all values as Python native types
-        metadata = {
-            'version': VERSION,
-            'color_detected': color,
-            'features': features,  # Already converted to float in _analyze_ring_color
-            'adjustments': adjustments,  # Already converted to float in _predict_adjustments
-            'bbox': [int(x) for x in bbox],  # Convert to int
-            'original_size': [int(original_shape[0]), int(original_shape[1])],  # Convert to int
-            'training_samples_used': len(self.training_data)
-        }
-        
-        print(f"[{VERSION}] Processing complete")
-        print(f"[{VERSION}] {'='*50}\n")
-        
-        return result, thumbnail, metadata
-
-def find_base64_in_dict(data, depth=0, max_depth=10):
-    """Recursively find base64 image data in nested structures"""
-    print(f"[{VERSION}] Searching at depth {depth}, type: {type(data)}")
-    
-    if depth > max_depth:
-        return None
-    
-    if isinstance(data, str):
-        # Check if it's base64 data
-        if len(data) > 100 and ('/' in data or '+' in data or '=' in data):
-            return data
-        return None
-    
-    if isinstance(data, dict):
-        # Check common keys first
-        for key in ['image_base64', 'image', 'base64', 'data', 'input']:
-            if key in data:
-                print(f"[{VERSION}] Found image in key: {key}")
-                result = find_base64_in_dict(data[key], depth + 1, max_depth)
-                if result:
-                    return result
-        
-        # Check all keys
-        for key, value in data.items():
-            result = find_base64_in_dict(value, depth + 1, max_depth)
-            if result:
-                return result
-    
-    elif isinstance(data, list):
-        for item in data:
-            result = find_base64_in_dict(item, depth + 1, max_depth)
-            if result:
-                return result
-    
-    return None
-
-def decode_base64_image(base64_str: str) -> np.ndarray:
-    """Decode base64 string to numpy array"""
-    try:
-        print(f"[{VERSION}] Decoding base64 image, length: {len(base64_str)}")
-        
-        # Remove header if present
-        if ',' in base64_str:
-            base64_str = base64_str.split(',')[1]
-        
-        # Clean base64 string
-        base64_str = base64_str.strip()
-        
-        # Add padding if needed (for decoding, not for API calls)
-        padding = 4 - (len(base64_str) % 4)
-        if padding != 4:
-            base64_str += '=' * padding
-        
-        # Decode
         try:
-            img_bytes = base64.b64decode(base64_str)
-            print(f"[{VERSION}] Direct decode successful")
-        except:
-            # Try without padding
-            img_bytes = base64.b64decode(base64_str.rstrip('='))
-            print(f"[{VERSION}] Decode successful without padding")
-        
-        # Convert to numpy array
-        img = Image.open(io.BytesIO(img_bytes))
-        print(f"[{VERSION}] Image opened successfully: {img.size}, mode: {img.mode}")
-        
-        # Convert to RGB if needed
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        
-        # Convert to numpy array
-        img_array = np.array(img)
-        print(f"[{VERSION}] Converted to numpy array: {img_array.shape}")
-        
-        # Convert RGB to BGR for OpenCV
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        print(f"[{VERSION}] Converted to BGR for OpenCV")
-        
-        return img_array
-        
-    except Exception as e:
-        print(f"[{VERSION}] Error decoding image: {e}")
-        traceback.print_exc()
-        raise
-
-def encode_image_to_base64(image: np.ndarray, format: str = 'PNG') -> str:
-    """Encode numpy array to base64 string WITHOUT padding"""
-    try:
-        # Convert BGR to RGB
-        if len(image.shape) == 3 and image.shape[2] == 3:
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        else:
-            image_rgb = image
-        
-        # Convert to PIL Image
-        img_pil = Image.fromarray(image_rgb)
-        
-        # Save to buffer
-        buffer = io.BytesIO()
-        img_pil.save(buffer, format=format, quality=95 if format == 'JPEG' else None)
-        buffer.seek(0)
-        
-        # Encode to base64 WITHOUT padding
-        base64_str = base64.b64encode(buffer.getvalue()).decode('utf-8').rstrip('=')
-        
-        return base64_str
-        
-    except Exception as e:
-        print(f"[{VERSION}] Error encoding image: {e}")
-        raise
-
-def handler(job):
-    """RunPod handler function"""
-    try:
-        job_input = job["input"]
-        print(f"[{VERSION}] Input type: {type(job_input)}")
-        print(f"[{VERSION}] Input keys: {list(job_input.keys()) if isinstance(job_input, dict) else 'Not a dict'}")
-        
-        # Find base64 image data
-        base64_image = find_base64_in_dict(job_input)
-        
-        if not base64_image:
-            return {"output": {"error": "No base64 image data found", "version": VERSION}}
-        
-        print(f"[{VERSION}] Found image data, length: {len(base64_image)}")
-        
-        # Decode image
-        image = decode_base64_image(base64_image)
-        print(f"[{VERSION}] Image decoded: {image.shape}")
-        
-        # Process image
-        enhancer = WeddingRingEnhancerV148()
-        enhanced, thumbnail, metadata = enhancer.process_image(image)
-        
-        # Encode results WITHOUT padding
-        enhanced_base64 = encode_image_to_base64(enhanced)
-        thumbnail_base64 = encode_image_to_base64(thumbnail)
-        
-        print(f"[{VERSION}] Enhanced image encoded, length: {len(enhanced_base64)}")
-        print(f"[{VERSION}] Thumbnail encoded, length: {len(thumbnail_base64)}")
-        
-        # Return with proper structure
-        return {
-            "output": {
+            print("[v150] Starting image processing")
+            
+            # Decode image
+            image = self.decode_base64_image(base64_image)
+            original_image = image.copy()
+            
+            # Convert to numpy
+            image_np = np.array(image)
+            
+            # Ultra-precision masking detection
+            masking_info = self.detect_masking_ultra_precision(image_np)
+            
+            # Remove masking if detected
+            if masking_info['has_masking'] and masking_info['type'] == 'central_box':
+                print("[v150] Central box masking detected - removing with Replicate")
+                image = self.remove_masking_with_replicate(image, masking_info)
+                image_np = np.array(image)
+            
+            # Detect metal type
+            metal_type = self.detect_metal_type(image_np)
+            
+            # Apply background based on AFTER files
+            if metal_type in self.after_bg_colors:
+                bg_color = self.after_bg_colors[metal_type]
+                print(f"[v150] Applying AFTER background color for {metal_type}: {bg_color}")
+                
+                # Create background
+                h, w = image_np.shape[:2]
+                background = np.full((h, w, 3), bg_color, dtype=np.uint8)
+                
+                # Simple alpha blending for edges
+                result = image_np.astype(float)
+                alpha = 0.1  # Blend factor for edges
+                
+                # Apply subtle blending at edges
+                for i in range(3):  # RGB channels
+                    result[:,:,i] = result[:,:,i] * (1 - alpha) + background[:,:,i] * alpha
+                
+                image_np = result.astype(np.uint8)
+                image = Image.fromarray(image_np)
+            
+            # Enhance wedding ring
+            enhanced = self.enhance_wedding_ring(image, metal_type)
+            
+            # Create perfect thumbnail (masking_info helps with positioning)
+            thumbnail = self.create_perfect_thumbnail(enhanced, masking_info)
+            
+            # Convert to base64 (without padding for Make.com)
+            # Enhanced image
+            buffer = io.BytesIO()
+            enhanced.save(buffer, format='PNG', optimize=True)
+            enhanced_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            enhanced_base64 = enhanced_base64.rstrip('=')  # Remove padding
+            
+            # Thumbnail
+            buffer_thumb = io.BytesIO()
+            thumbnail.save(buffer_thumb, format='PNG', optimize=True)
+            thumbnail_base64 = base64.b64encode(buffer_thumb.getvalue()).decode('utf-8')
+            thumbnail_base64 = thumbnail_base64.rstrip('=')  # Remove padding
+            
+            print("[v150] Processing completed successfully")
+            
+            return {
                 "enhanced_image": enhanced_base64,
                 "thumbnail": thumbnail_base64,
-                "metadata": metadata,
-                "success": True,
-                "version": VERSION
+                "processing_info": {
+                    "version": "v150",
+                    "metal_type": metal_type,
+                    "masking_detected": masking_info['has_masking'],
+                    "masking_type": masking_info.get('type'),
+                    "enhancement_applied": True,
+                    "thumbnail_size": "1000x1300",
+                    "after_bg_applied": metal_type in self.after_bg_colors
+                }
             }
+            
+        except Exception as e:
+            print(f"[v150] Error in processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+            # Return original on error
+            try:
+                buffer = io.BytesIO()
+                original_image.save(buffer, format='PNG')
+                original_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8').rstrip('=')
+                
+                return {
+                    "enhanced_image": original_base64,
+                    "thumbnail": original_base64,
+                    "processing_info": {
+                        "version": "v150",
+                        "error": str(e),
+                        "fallback": True
+                    }
+                }
+            except:
+                return {
+                    "enhanced_image": base64_image.rstrip('='),
+                    "thumbnail": base64_image.rstrip('='),
+                    "processing_info": {
+                        "version": "v150",
+                        "error": "Critical error",
+                        "fallback": True
+                    }
+                }
+
+def handler(event):
+    """RunPod handler function"""
+    try:
+        print("[v150] Handler started")
+        print(f"[v150] Event type: {type(event)}")
+        print(f"[v150] Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
+        
+        # Extract input
+        job_input = event.get("input", {})
+        print(f"[v150] Job input keys: {list(job_input.keys())}")
+        
+        # Get base64 image
+        base64_image = job_input.get("image", "")
+        if not base64_image:
+            print("[v150] No image provided in input")
+            return {
+                "output": {
+                    "error": "No image provided",
+                    "processing_info": {"version": "v150", "error": "No input image"}
+                }
+            }
+        
+        print(f"[v150] Received image, length: {len(base64_image)}")
+        
+        # Process image
+        enhancer = WeddingRingEnhancer()
+        result = enhancer.process_image(base64_image)
+        
+        # Return with proper structure for Make.com
+        return {
+            "output": result
         }
         
     except Exception as e:
-        error_msg = f"Error processing image: {str(e)}"
-        print(f"[{VERSION}] {error_msg}")
+        print(f"[v150] Handler error: {str(e)}")
+        import traceback
         traceback.print_exc()
         
         return {
             "output": {
-                "error": error_msg,
-                "traceback": traceback.format_exc(),
-                "success": False,
-                "version": VERSION
+                "error": str(e),
+                "processing_info": {"version": "v150", "error": "Handler exception"}
             }
         }
 
-# Print handler info when module loads
-print_handler_info()
-
-# RunPod endpoint
-runpod.serverless.start({"handler": handler})
+# RunPod serverless entrypoint
+if __name__ == "__main__":
+    print("[v150] Starting RunPod serverless handler")
+    runpod.serverless.start({"handler": handler})
