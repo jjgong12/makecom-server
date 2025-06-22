@@ -13,31 +13,31 @@ from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 # Safe imports with fallbacks
-print("[v140] Starting imports...")
+print("[v141] Starting imports...")
 
 try:
     import numpy as np
-    print("[v140] NumPy imported successfully")
+    print("[v141] NumPy imported successfully")
     NUMPY_AVAILABLE = True
 except ImportError as e:
-    print(f"[v140] NumPy import failed: {e}")
+    print(f"[v141] NumPy import failed: {e}")
     NUMPY_AVAILABLE = False
     np = None
 
 try:
     from PIL import Image, ImageEnhance, ImageDraw, ImageFilter, ImageOps
-    print("[v140] PIL imported successfully")
+    print("[v141] PIL imported successfully")
     PIL_AVAILABLE = True
 except ImportError as e:
-    print(f"[v140] PIL import failed: {e}")
+    print(f"[v141] PIL import failed: {e}")
     PIL_AVAILABLE = False
 
 try:
     import cv2
-    print("[v140] OpenCV imported successfully")
+    print("[v141] OpenCV imported successfully")
     CV2_AVAILABLE = True
 except ImportError as e:
-    print(f"[v140] OpenCV import failed: {e}")
+    print(f"[v141] OpenCV import failed: {e}")
     CV2_AVAILABLE = False
     cv2 = None
 
@@ -47,10 +47,10 @@ try:
     import importlib.util
     spec = importlib.util.find_spec("replicate")
     if spec is not None:
-        print("[v140] Replicate module found but NOT imported globally (safety)")
+        print("[v141] Replicate module found but NOT imported globally (safety)")
         REPLICATE_AVAILABLE = True
 except:
-    print("[v140] Replicate module not found")
+    print("[v141] Replicate module not found")
 
 # Metal types
 class MetalType(Enum):
@@ -160,33 +160,33 @@ ENHANCEMENT_PARAMS = {
 def decode_base64_image(base64_string: str) -> Image.Image:
     """Decode base64 image with multiple fallback methods"""
     try:
-        print(f"[v140] Base64 string length: {len(base64_string)}")
+        print(f"[v141] Base64 string length: {len(base64_string)}")
+        
+        # Clean the string first
+        base64_string = base64_string.strip().replace('\n', '').replace('\r', '').replace(' ', '')
         
         # Remove data URL prefix if present
         if 'base64,' in base64_string:
             base64_string = base64_string.split('base64,')[1]
         
-        # Remove padding for Make.com compatibility
-        base64_string = base64_string.rstrip('=')
-        
         # Try different decoding methods
         decoded = None
         
-        # Method 1: Direct decode
+        # Method 1: Direct decode (no padding modification)
         try:
-            decoded = base64.b64decode(base64_string)
-            print("[v140] Method 1 (direct) successful")
+            decoded = base64.b64decode(base64_string, validate=True)
+            print("[v141] Method 1 (direct with validation) successful")
         except:
             pass
         
-        # Method 2: Add padding
+        # Method 2: Add padding if needed
         if decoded is None:
             try:
-                padding = 4 - (len(base64_string) % 4)
-                if padding != 4:
-                    base64_string += '=' * padding
+                missing_padding = len(base64_string) % 4
+                if missing_padding:
+                    base64_string += '=' * (4 - missing_padding)
                 decoded = base64.b64decode(base64_string)
-                print("[v140] Method 2 (with padding) successful")
+                print(f"[v141] Method 2 (added {4-missing_padding} padding) successful")
             except:
                 pass
         
@@ -194,7 +194,7 @@ def decode_base64_image(base64_string: str) -> Image.Image:
         if decoded is None:
             try:
                 decoded = base64.urlsafe_b64decode(base64_string)
-                print("[v140] Method 3 (URL-safe) successful")
+                print("[v141] Method 3 (URL-safe) successful")
             except:
                 pass
         
@@ -203,7 +203,7 @@ def decode_base64_image(base64_string: str) -> Image.Image:
             for pad in ['', '=', '==', '===']:
                 try:
                     decoded = base64.b64decode(base64_string + pad)
-                    print(f"[v140] Method 4 (padding: '{pad}') successful")
+                    print(f"[v141] Method 4 (padding: '{pad}') successful")
                     break
                 except:
                     continue
@@ -213,28 +213,28 @@ def decode_base64_image(base64_string: str) -> Image.Image:
         
         # Convert to PIL Image
         image = Image.open(io.BytesIO(decoded))
-        print(f"[v140] Image decoded successfully: {image.size}")
+        print(f"[v141] Image decoded successfully: {image.size}")
         return image
         
     except Exception as e:
-        print(f"[v140] Failed to decode base64: {str(e)}")
+        print(f"[v141] Failed to decode base64: {str(e)}")
         raise
 
-class WeddingRingEnhancerV140:
-    """Wedding ring enhancer with timeout protection and safe Replicate handling"""
+class WeddingRingEnhancerV141:
+    """Wedding ring enhancer with GAS compatibility and timeout protection"""
     
     def __init__(self):
-        print("[v140] Initializing WeddingRingEnhancerV140...")
+        print("[v141] Initializing WeddingRingEnhancerV141...")
         self.replicate_enabled = False
         self.replicate_timeout = 20  # 20 second timeout
         self.replicate_client = None
         
         # Check if Replicate should be enabled
         if REPLICATE_AVAILABLE and os.environ.get('REPLICATE_API_TOKEN'):
-            print("[v140] Replicate token found, will initialize on first use")
+            print("[v141] Replicate token found, will initialize on first use")
             self.replicate_enabled = True
         else:
-            print("[v140] Replicate disabled (no token or module)")
+            print("[v141] Replicate disabled (no token or module)")
             
     def _init_replicate_lazy(self):
         """Lazy initialization of Replicate to avoid startup crashes"""
@@ -242,15 +242,15 @@ class WeddingRingEnhancerV140:
             return True
             
         try:
-            print("[v140] Lazy loading Replicate module...")
+            print("[v141] Lazy loading Replicate module...")
             import replicate
             self.replicate_client = replicate.Client(
                 api_token=os.environ.get('REPLICATE_API_TOKEN')
             )
-            print("[v140] Replicate client initialized successfully")
+            print("[v141] Replicate client initialized successfully")
             return True
         except Exception as e:
-            print(f"[v140] Failed to initialize Replicate: {e}")
+            print(f"[v141] Failed to initialize Replicate: {e}")
             self.replicate_enabled = False
             return False
     
@@ -258,40 +258,40 @@ class WeddingRingEnhancerV140:
         """Main enhancement pipeline"""
         try:
             start_time = time.time()
-            print(f"[v140] Starting enhancement for image size: {image.size}")
+            print(f"[v141] Starting enhancement for image size: {image.size}")
             
             # Step 1: Detect rings and analyze
             detections = self._detect_rings(image)
-            print(f"[v140] Found {len(detections)} rings")
+            print(f"[v141] Found {len(detections)} rings")
             
             # Step 2: Detect masking if any rings found
             has_masking = False
             if detections:
                 has_masking = self._detect_masking(image, detections)
-                print(f"[v140] Masking detected: {has_masking}")
+                print(f"[v141] Masking detected: {has_masking}")
             
             # Step 3: Determine metal type and lighting
             metal_type = self._detect_metal_type(image, detections)
             lighting = self._detect_lighting(image)
-            print(f"[v140] Metal: {metal_type}, Lighting: {lighting}")
+            print(f"[v141] Metal: {metal_type}, Lighting: {lighting}")
             
             # Step 4: Apply enhancement
             enhanced = self._apply_enhancement(image, metal_type, lighting)
             
             # Step 5: Remove masking if detected and Replicate available
             if has_masking and self.replicate_enabled:
-                print("[v140] Attempting masking removal with Replicate...")
+                print("[v141] Attempting masking removal with Replicate...")
                 enhanced = self._remove_masking_safe(enhanced, detections)
             
             # Step 6: Create thumbnail
             thumbnail = self._create_thumbnail(enhanced)
             
-            # Convert to base64
+            # Convert to base64 - DO NOT REMOVE PADDING FOR GAS COMPATIBILITY
             enhanced_base64 = self._image_to_base64(enhanced)
             thumbnail_base64 = self._image_to_base64(thumbnail) if thumbnail else None
             
             processing_time = time.time() - start_time
-            print(f"[v140] Enhancement completed in {processing_time:.2f}s")
+            print(f"[v141] Enhancement completed in {processing_time:.2f}s")
             
             response = {
                 "enhanced_image": f"data:image/png;base64,{enhanced_base64}",
@@ -301,7 +301,7 @@ class WeddingRingEnhancerV140:
                 "rings_detected": len(detections),
                 "masking_removed": has_masking and self.replicate_enabled,
                 "processing_time": f"{processing_time:.2f}s",
-                "version": "v140-timeout-protected"
+                "version": "v141-gas-compatible"
             }
             
             if thumbnail_base64:
@@ -310,7 +310,7 @@ class WeddingRingEnhancerV140:
             return response
             
         except Exception as e:
-            print(f"[v140] Enhancement error: {str(e)}")
+            print(f"[v141] Enhancement error: {str(e)}")
             print(traceback.format_exc())
             
             # Return original with error info
@@ -320,13 +320,13 @@ class WeddingRingEnhancerV140:
                     "enhanced_image": f"data:image/png;base64,{original_base64}",
                     "status": "error",
                     "error": str(e),
-                    "version": "v140-timeout-protected"
+                    "version": "v141-gas-compatible"
                 }
             except:
                 return {
                     "status": "error",
                     "error": "Critical error in processing",
-                    "version": "v140-timeout-protected"
+                    "version": "v141-gas-compatible"
                 }
     
     def _detect_rings(self, image: Image.Image) -> List[RingDetection]:
@@ -379,7 +379,7 @@ class WeddingRingEnhancerV140:
                 ))
                 
         except Exception as e:
-            print(f"[v140] Ring detection error: {e}")
+            print(f"[v141] Ring detection error: {e}")
             # Fallback to center detection
             w, h = image.size
             center_bbox = (w//4, h//4, 3*w//4, 3*h//4)
@@ -422,7 +422,7 @@ class WeddingRingEnhancerV140:
                     return True
                     
         except Exception as e:
-            print(f"[v140] Masking detection error: {e}")
+            print(f"[v141] Masking detection error: {e}")
             
         return False
     
@@ -457,7 +457,7 @@ class WeddingRingEnhancerV140:
                 return 'white_gold'
                 
         except Exception as e:
-            print(f"[v140] Metal detection error: {e}")
+            print(f"[v141] Metal detection error: {e}")
             return 'white_gold'
     
     def _detect_lighting(self, image: Image.Image) -> str:
@@ -520,7 +520,7 @@ class WeddingRingEnhancerV140:
             return enhanced
             
         except Exception as e:
-            print(f"[v140] Enhancement error: {e}")
+            print(f"[v141] Enhancement error: {e}")
             return image
     
     def _adjust_color_temperature(self, image: Image.Image, temp_adjust: int) -> Image.Image:
@@ -605,7 +605,7 @@ class WeddingRingEnhancerV140:
                 return None
                 
             except Exception as e:
-                print(f"[v140] Replicate processing error: {e}")
+                print(f"[v141] Replicate processing error: {e}")
                 return None
         
         try:
@@ -616,20 +616,20 @@ class WeddingRingEnhancerV140:
                 try:
                     result = future.result(timeout=self.replicate_timeout)
                     if result is not None:
-                        print("[v140] Masking removed successfully")
+                        print("[v141] Masking removed successfully")
                         return result
                     else:
-                        print("[v140] Replicate returned no result")
+                        print("[v141] Replicate returned no result")
                         
                 except TimeoutError:
-                    print(f"[v140] Replicate timed out after {self.replicate_timeout}s")
+                    print(f"[v141] Replicate timed out after {self.replicate_timeout}s")
                     future.cancel()
                     
         except Exception as e:
-            print(f"[v140] Safe masking removal error: {e}")
+            print(f"[v141] Safe masking removal error: {e}")
         
         # Return original if Replicate fails
-        print("[v140] Returning original image (Replicate failed)")
+        print("[v141] Returning original image (Replicate failed)")
         return image
     
     def _create_thumbnail(self, image: Image.Image, size: Tuple[int, int] = (1000, 1300)) -> Optional[Image.Image]:
@@ -662,15 +662,17 @@ class WeddingRingEnhancerV140:
             return background
             
         except Exception as e:
-            print(f"[v140] Thumbnail creation error: {e}")
+            print(f"[v141] Thumbnail creation error: {e}")
             return None
     
     def _image_to_base64(self, image: Image.Image) -> str:
-        """Convert image to base64 string"""
+        """Convert image to base64 string - KEEP PADDING FOR GAS"""
         buffer = io.BytesIO()
         image.save(buffer, format='PNG')
         img_base64 = base64.b64encode(buffer.getvalue()).decode()
-        return img_base64.rstrip('=')  # Remove padding for Make.com
+        # DO NOT REMOVE PADDING - Google Apps Script needs it!
+        print(f"[v141] Base64 encoding complete, length: {len(img_base64)}, has padding: {img_base64[-2:] == '=='}")
+        return img_base64
 
 # Global instance (safe because no Replicate init)
 enhancer_instance = None
@@ -679,37 +681,37 @@ def get_enhancer():
     """Get or create enhancer instance"""
     global enhancer_instance
     if enhancer_instance is None:
-        enhancer_instance = WeddingRingEnhancerV140()
+        enhancer_instance = WeddingRingEnhancerV141()
     return enhancer_instance
 
 def handler(event):
-    """RunPod handler function - v140 with timeout protection"""
+    """RunPod handler function - v141 GAS Compatible"""
     try:
         print("="*70)
-        print("[v140] Handler started - Timeout Protected Version")
-        print(f"[v140] Python version: {sys.version}")
-        print(f"[v140] Available modules - NumPy: {NUMPY_AVAILABLE}, PIL: {PIL_AVAILABLE}, CV2: {CV2_AVAILABLE}")
-        print(f"[v140] Replicate module available: {REPLICATE_AVAILABLE}")
-        print(f"[v140] Replicate token set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
+        print("[v141] Handler started - Google Apps Script Compatible Version")
+        print(f"[v141] Python version: {sys.version}")
+        print(f"[v141] Available modules - NumPy: {NUMPY_AVAILABLE}, PIL: {PIL_AVAILABLE}, CV2: {CV2_AVAILABLE}")
+        print(f"[v141] Replicate module available: {REPLICATE_AVAILABLE}")
+        print(f"[v141] Replicate token set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
         print("="*70)
         
         # Get input data
         input_data = event.get('input', {})
-        print(f"[v140] Input type: {type(input_data)}")
-        print(f"[v140] Input keys: {list(input_data.keys()) if isinstance(input_data, dict) else 'Not a dict'}")
+        print(f"[v141] Input type: {type(input_data)}")
+        print(f"[v141] Input keys: {list(input_data.keys()) if isinstance(input_data, dict) else 'Not a dict'}")
         
         # Debug mode
         if input_data.get('debug_mode', False):
             return {
                 "output": {
                     "status": "debug_success",
-                    "message": "v140 handler is working - Timeout protected",
+                    "message": "v141 handler is working - GAS Compatible",
                     "replicate_available": REPLICATE_AVAILABLE,
                     "replicate_token_set": bool(os.environ.get('REPLICATE_API_TOKEN')),
                     "opencv_available": CV2_AVAILABLE,
                     "numpy_available": NUMPY_AVAILABLE,
                     "pil_available": PIL_AVAILABLE,
-                    "version": "v140-timeout-protected"
+                    "version": "v141-gas-compatible"
                 }
             }
         
@@ -721,7 +723,7 @@ def handler(event):
             if key in input_data:
                 image_data = input_data[key]
                 if image_data:
-                    print(f"[v140] Found image data in key: {key}")
+                    print(f"[v141] Found image data in key: {key}")
                     break
         
         # Try nested structures
@@ -732,11 +734,11 @@ def handler(event):
                         if key in input_data[pattern]:
                             image_data = input_data[pattern][key]
                             if image_data:
-                                print(f"[v140] Found image data in {pattern}.{key}")
+                                print(f"[v141] Found image data in {pattern}.{key}")
                                 break
         
         if not image_data:
-            print("[v140] No image data found in input")
+            print("[v141] No image data found in input")
             return {
                 "output": {
                     "error": "No image data provided",
@@ -745,28 +747,28 @@ def handler(event):
                         "input_keys": list(input_data.keys()) if isinstance(input_data, dict) else "Not a dict",
                         "input_type": str(type(input_data))
                     },
-                    "version": "v140-timeout-protected"
+                    "version": "v141-gas-compatible"
                 }
             }
         
         # Decode image
-        print(f"[v140] Decoding image data (length: {len(str(image_data))})")
+        print(f"[v141] Decoding image data (length: {len(str(image_data))})")
         image = decode_base64_image(image_data)
-        print(f"[v140] Image decoded successfully: {image.size}")
+        print(f"[v141] Image decoded successfully: {image.size}")
         
         # Get enhancer and process
         enhancer = get_enhancer()
         
         # Process with timeout protection
-        print("[v140] Starting image enhancement...")
+        print("[v141] Starting image enhancement...")
         result = enhancer.enhance_image(image)
         
         # Return in RunPod format
-        print("[v140] Processing complete, returning result")
+        print("[v141] Processing complete, returning result")
         return {"output": result}
         
     except Exception as e:
-        print(f"[v140] Handler error: {str(e)}")
+        print(f"[v141] Handler error: {str(e)}")
         print(traceback.format_exc())
         
         return {
@@ -774,15 +776,16 @@ def handler(event):
                 "error": str(e),
                 "traceback": traceback.format_exc(),
                 "status": "error",
-                "version": "v140-timeout-protected"
+                "version": "v141-gas-compatible"
             }
         }
 
 # RunPod entry point
 if __name__ == "__main__":
     print("="*70)
-    print("Wedding Ring Enhancement v140 Starting...")
-    print("Timeout Protected Version")
+    print("Wedding Ring Enhancement v141 Starting...")
+    print("Google Apps Script Compatible Version")
+    print("IMPORTANT: Base64 padding is PRESERVED for GAS compatibility")
     print(f"Replicate Module Check: {REPLICATE_AVAILABLE}")
     print(f"Replicate Token Set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
     print("="*70)
