@@ -1,17 +1,7 @@
-FROM runpod/base:0.6.2-cuda12.2.0
+FROM runpod/pytorch:2.0.1-py3.10-cuda11.8.0-devel-ubuntu22.04
 WORKDIR /
-
-
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt
-COPY handler.py /handler.py
-CMD ["python", "-u", "/handler.py"]
+# 일단 주석 처리
+# COPY enhancement/handler.py /handler.py
+# COPY enhancement/requirements.txt /requirements.txt
+RUN echo "Build test"
+CMD ["echo", "test"]
