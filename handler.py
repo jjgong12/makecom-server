@@ -7,25 +7,26 @@ from PIL import Image, ImageFilter, ImageEnhance, ImageOps, ImageDraw
 import io
 import cv2
 import json
-import torch
-from torchvision import transforms
-from scipy.ndimage import binary_dilation, binary_erosion
+from scipy.ndimage import binary_dilation, binary_erosion, binary_fill_holes
 import logging
-from typing import Dict, List, Tuple, Optional, Any, Union
+from typing import Dict, List, Tuple, Optional, Any
 import traceback
 from dataclasses import dataclass
 from enum import Enum
-import colorsys
-from collections import defaultdict
-import hashlib
-from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime
-import replicate
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Optional import for Replicate
+try:
+    import replicate
+    REPLICATE_AVAILABLE = True
+except ImportError:
+    REPLICATE_AVAILABLE = False
+    logger.warning("Replicate package not installed, some features will be disabled")
 
 class MetalType(Enum):
     YELLOW_GOLD = "yellow_gold"
@@ -100,7 +101,23 @@ class ReplicateRingDetector:
     """Use Replicate's Grounding DINO for accurate ring detection"""
     
     def __init__(self):
-        self.client = replicate.Client(api_token=os.environ.get('REPLICATE_API_TOKEN'))
+        self.replicate_enabled = False
+        api_token = os.environ.get('REPLICATE_API_TOKEN')
+        
+        if REPLICATE_AVAILABLE and api_token:
+            try:
+                self.client = replicate.Client(api_token=api_token)
+                self.replicate_enabled = True
+                logger.info("Replicate API initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Replicate: {e}")
+        else:
+            if not REPLICATE_AVAILABLE:
+                logger.warning("Replicate package not installed")
+            else:
+                logger.warning("REPLICATE_API_TOKEN not found")
+            logger.info("Using fallback detection only")
+            
         self.ring_queries = [
             "wedding ring",
             "engagement ring", 
@@ -115,6 +132,11 @@ class ReplicateRingDetector:
     def detect_rings(self, image: Image.Image) -> List[RingDetection]:
         """Detect all rings in the image using Grounding DINO"""
         try:
+            # If Replicate not enabled, use fallback immediately
+            if not self.replicate_enabled:
+                logger.info("Using fallback detection (Replicate not available)")
+                return self._fallback_detection(image)
+                
             # Save image temporarily
             temp_buffer = io.BytesIO()
             image.save(temp_buffer, format='PNG')
@@ -295,17 +317,26 @@ class HybridWeddingRingEnhancer:
     """Hybrid approach combining Replicate detection with v136 enhancement"""
     
     def __init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.ring_detector = ReplicateRingDetector()
-        self.replicate_client = replicate.Client(api_token=os.environ.get('REPLICATE_API_TOKEN'))
-        self.setup_models()
         
-    def setup_models(self):
-        """Initialize enhancement models"""
-        self.transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+        # Initialize Replicate client if available
+        self.replicate_enabled = False
+        api_token = os.environ.get('REPLICATE_API_TOKEN')
+        if REPLICATE_AVAILABLE and api_token:
+            try:
+                self.replicate_client = replicate.Client(api_token=api_token)
+                self.replicate_enabled = True
+                logger.info("Replicate client initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Replicate client: {e}")
+        else:
+            if not REPLICATE_AVAILABLE:
+                logger.warning("Replicate package not installed")
+            else:
+                logger.warning("REPLICATE_API_TOKEN not found")
+            logger.info("Replicate enhancement features disabled")
+        
+
         
     def enhance_image(self, image: Image.Image, params: Dict[str, Any]) -> Dict[str, Any]:
         """Main enhancement pipeline"""
@@ -378,7 +409,7 @@ class HybridWeddingRingEnhancer:
         ring_crop = image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
         
         # Step 1: Optional Replicate restoration
-        if use_replicate_restoration and detection.needs_restoration:
+        if use_replicate_restoration and detection.needs_restoration and self.replicate_enabled:
             ring_crop = self._replicate_restore(ring_crop)
         
         # Step 2: Metal-specific color correction
@@ -391,13 +422,17 @@ class HybridWeddingRingEnhancer:
         ring_crop = self._apply_professional_finish(ring_crop, detection.metal_type)
         
         # Step 5: Optional upscaling
-        if detection.quality_score < 0.5 and use_replicate_restoration:
+        if detection.quality_score < 0.5 and use_replicate_restoration and self.replicate_enabled:
             ring_crop = self._replicate_upscale(ring_crop)
         
         return ring_crop
     
     def _replicate_restore(self, image: Image.Image) -> Image.Image:
         """Use Replicate's GFPGAN for restoration"""
+        if not self.replicate_enabled:
+            logger.info("Replicate not available, skipping restoration")
+            return image
+            
         try:
             # Save to buffer
             buffer = io.BytesIO()
@@ -429,6 +464,10 @@ class HybridWeddingRingEnhancer:
     
     def _replicate_upscale(self, image: Image.Image) -> Image.Image:
         """Use Replicate's Real-ESRGAN for upscaling"""
+        if not self.replicate_enabled:
+            logger.info("Replicate not available, skipping upscaling")
+            return image
+            
         try:
             # Save to buffer
             buffer = io.BytesIO()
@@ -847,15 +886,26 @@ class HybridWeddingRingEnhancer:
             "version": "v137-hybrid"
         }
 
-def binary_fill_holes(binary_mask):
-    """Fill holes in binary mask"""
-    from scipy import ndimage
-    return ndimage.binary_fill_holes(binary_mask)
+
 
 def handler(event):
     """RunPod handler function"""
     try:
+        logger.info("[v137] Handler started")
+        
         input_data = event.get('input', {})
+        
+        # Debug mode
+        if input_data.get('debug_mode', False):
+            return {
+                "output": {
+                    "status": "debug_success",
+                    "message": "v137 handler is working",
+                    "replicate_available": REPLICATE_AVAILABLE,
+                    "replicate_enabled": bool(os.environ.get('REPLICATE_API_TOKEN')),
+                    "version": "v137-hybrid"
+                }
+            }
         
         # Extract data
         image_data = input_data.get('image', '')
@@ -866,7 +916,7 @@ def handler(event):
         }
         
         if not image_data:
-            return {"output": {"error": "No image data provided"}}
+            return {"output": {"error": "No image data provided", "status": "error"}}
         
         # Decode image
         if image_data.startswith('data:'):
@@ -881,9 +931,10 @@ def handler(event):
             try:
                 image_bytes = base64.b64decode(image_data)
             except:
-                return {"output": {"error": "Invalid base64 image data"}}
+                return {"output": {"error": "Invalid base64 image data", "status": "error"}}
         
         image = Image.open(io.BytesIO(image_bytes))
+        logger.info(f"[v137] Image loaded: {image.size}")
         
         # Initialize enhancer
         enhancer = HybridWeddingRingEnhancer()
@@ -895,14 +946,21 @@ def handler(event):
         return {"output": result}
         
     except Exception as e:
-        logger.error(f"Handler error: {str(e)}")
+        logger.error(f"[v137] Handler error: {str(e)}")
         logger.error(traceback.format_exc())
         return {
             "output": {
                 "error": str(e),
-                "traceback": traceback.format_exc()
+                "traceback": traceback.format_exc(),
+                "status": "error",
+                "version": "v137-hybrid"
             }
         }
 
 if __name__ == "__main__":
+    logger.info("="*50)
+    logger.info("Wedding Ring Enhancement v137 Hybrid Starting...")
+    logger.info(f"Replicate Available: {REPLICATE_AVAILABLE}")
+    logger.info(f"Replicate Token Set: {bool(os.environ.get('REPLICATE_API_TOKEN'))}")
+    logger.info("="*50)
     runpod.serverless.start({"handler": handler})
