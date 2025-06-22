@@ -22,9 +22,5 @@ RUN pip install --no-cache-dir -r /requirements.txt
 # Copy handler files
 COPY enhancement/handler.py /handler.py
 
-# No need to copy entire folders for now
-# COPY enhancement/ /enhancement/
-# COPY thumbnail/ /thumbnail/
-
 # Set the handler
 CMD ["python", "-u", "/handler.py"]
