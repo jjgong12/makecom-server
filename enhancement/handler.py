@@ -8,6 +8,7 @@ import replicate
 import time
 import requests
 
+
 # v13.3 Wedding Ring Parameters - Based on 28 pairs of training data
 WEDDING_RING_PARAMS = {
     'white_gold': {
