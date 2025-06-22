@@ -1,4 +1,4 @@
-runpod==1.6.2
+runpod==1.7.3
 pillow==10.3.0
 numpy==1.24.3
 opencv-python-headless==4.8.1.78
