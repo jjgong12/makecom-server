@@ -1,14 +1,14 @@
-FROM python:3.10-alpine
+FROM python:3.10-slim
 
-# 필수 시스템 패키지만 설치
-RUN apk add --no-cache \
-    libgcc libstdc++ libffi-dev \
-    libjpeg-turbo libpng libwebp \
-    openblas lapack
+# 최소 시스템 패키지
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Python 패키지 (no-cache, no-deps)
+# Python 패키지
 COPY requirements.txt .
-RUN pip install --no-cache-dir --no-deps -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY handler.py .
+
 CMD ["python", "-u", "handler.py"]
