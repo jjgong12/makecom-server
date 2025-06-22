@@ -2,7 +2,7 @@ import runpod
 import requests
 import base64
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageEnhance
 import numpy as np
 import cv2
 import logging
@@ -23,11 +23,95 @@ REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
 
 class WeddingRingEnhancer:
     def __init__(self):
-        """Initialize the wedding ring enhancer with reference images"""
-        self.setup_references()
+        """Initialize the wedding ring enhancer with v13.3 parameters"""
+        self.setup_parameters()
         
-    def setup_references(self):
-        """Setup reference images for different gold types"""
+    def setup_parameters(self):
+        """Setup v13.3 complete parameters - 4 metals × 3 lightings = 12 sets"""
+        self.enhancement_params = {
+            'yellow_gold': {
+                'natural': {
+                    'brightness': 1.25, 'saturation': 1.15, 'contrast': 1.05,
+                    'sharpness': 1.35, 'noise_reduction': 8,
+                    'highlight_boost': 0.12, 'shadow_lift': 0.08,
+                    'white_overlay': 0.15, 's_mult': 0.85, 'v_mult': 1.10
+                },
+                'warm': {
+                    'brightness': 1.30, 'saturation': 1.20, 'contrast': 1.08,
+                    'sharpness': 1.40, 'noise_reduction': 10,
+                    'highlight_boost': 0.15, 'shadow_lift': 0.10,
+                    'white_overlay': 0.18, 's_mult': 0.88, 'v_mult': 1.12
+                },
+                'cool': {
+                    'brightness': 1.20, 'saturation': 1.10, 'contrast': 1.02,
+                    'sharpness': 1.30, 'noise_reduction': 7,
+                    'highlight_boost': 0.10, 'shadow_lift': 0.06,
+                    'white_overlay': 0.12, 's_mult': 0.82, 'v_mult': 1.08
+                }
+            },
+            'rose_gold': {
+                'natural': {
+                    'brightness': 1.22, 'saturation': 1.12, 'contrast': 1.04,
+                    'sharpness': 1.32, 'noise_reduction': 9,
+                    'highlight_boost': 0.11, 'shadow_lift': 0.07,
+                    'white_overlay': 0.13, 's_mult': 0.83, 'v_mult': 1.09
+                },
+                'warm': {
+                    'brightness': 1.28, 'saturation': 1.18, 'contrast': 1.07,
+                    'sharpness': 1.38, 'noise_reduction': 11,
+                    'highlight_boost': 0.14, 'shadow_lift': 0.09,
+                    'white_overlay': 0.16, 's_mult': 0.86, 'v_mult': 1.11
+                },
+                'cool': {
+                    'brightness': 1.18, 'saturation': 1.08, 'contrast': 1.01,
+                    'sharpness': 1.28, 'noise_reduction': 8,
+                    'highlight_boost': 0.09, 'shadow_lift': 0.05,
+                    'white_overlay': 0.10, 's_mult': 0.80, 'v_mult': 1.07
+                }
+            },
+            'white_gold': {
+                'natural': {
+                    'brightness': 1.28, 'saturation': 0.95, 'contrast': 1.06,
+                    'sharpness': 1.45, 'noise_reduction': 7,
+                    'highlight_boost': 0.14, 'shadow_lift': 0.06,
+                    'white_overlay': 0.20, 's_mult': 0.75, 'v_mult': 1.15
+                },
+                'warm': {
+                    'brightness': 1.32, 'saturation': 0.98, 'contrast': 1.08,
+                    'sharpness': 1.50, 'noise_reduction': 8,
+                    'highlight_boost': 0.16, 'shadow_lift': 0.08,
+                    'white_overlay': 0.22, 's_mult': 0.78, 'v_mult': 1.18
+                },
+                'cool': {
+                    'brightness': 1.25, 'saturation': 0.92, 'contrast': 1.04,
+                    'sharpness': 1.40, 'noise_reduction': 6,
+                    'highlight_boost': 0.12, 'shadow_lift': 0.05,
+                    'white_overlay': 0.18, 's_mult': 0.72, 'v_mult': 1.12
+                }
+            },
+            'plain_white': {
+                'natural': {
+                    'brightness': 1.35, 'saturation': 0.90, 'contrast': 1.10,
+                    'sharpness': 1.55, 'noise_reduction': 5,
+                    'highlight_boost': 0.18, 'shadow_lift': 0.04,
+                    'white_overlay': 0.28, 's_mult': 0.75, 'v_mult': 1.15
+                },
+                'warm': {
+                    'brightness': 1.40, 'saturation': 0.93, 'contrast': 1.12,
+                    'sharpness': 1.60, 'noise_reduction': 6,
+                    'highlight_boost': 0.20, 'shadow_lift': 0.05,
+                    'white_overlay': 0.30, 's_mult': 0.78, 'v_mult': 1.18
+                },
+                'cool': {
+                    'brightness': 1.30, 'saturation': 0.88, 'contrast': 1.08,
+                    'sharpness': 1.50, 'noise_reduction': 4,
+                    'highlight_boost': 0.16, 'shadow_lift': 0.03,
+                    'white_overlay': 0.25, 's_mult': 0.72, 'v_mult': 1.12
+                }
+            }
+        }
+        
+        # Gold type reference colors
         self.gold_references = {
             'yellow': {
                 'rgb': np.array([255, 215, 0]),
@@ -56,114 +140,134 @@ class WeddingRingEnhancer:
         }
 
     def detect_gold_type(self, image: np.ndarray, mask: Optional[np.ndarray] = None) -> str:
-        """Detect gold type from image"""
+        """Detect gold type from image with white_score evaluation"""
         if mask is not None:
-            # Use mask to focus on ring area
             ring_pixels = image[mask > 0]
             if len(ring_pixels) == 0:
                 ring_pixels = image.reshape(-1, 3)
         else:
-            # Use center region if no mask
             h, w = image.shape[:2]
             center_region = image[h//3:2*h//3, w//3:2*w//3]
             ring_pixels = center_region.reshape(-1, 3)
         
-        # Convert to LAB for better color analysis
+        # Convert to LAB
         lab_pixels = cv2.cvtColor(ring_pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3)
-        
-        # Calculate median color
         median_lab = np.median(lab_pixels, axis=0)
         
-        # Determine gold type based on LAB values
+        # Calculate white_score for additional detection
+        white_score = np.mean([
+            median_lab[0] / 100.0,  # Lightness
+            1.0 - (abs(median_lab[1]) / 128.0),  # Low a*
+            1.0 - (abs(median_lab[2]) / 128.0)   # Low b*
+        ])
+        
+        # Determine gold type
         a_channel = median_lab[1]
         b_channel = median_lab[2]
         
-        if b_channel > 20:  # Yellow tones
+        if b_channel > 20:
             return 'yellow'
-        elif a_channel > 10:  # Red/pink tones
+        elif a_channel > 10:
             return 'rose'
-        elif median_lab[0] > 93:  # Very bright white
-            return 'white'
+        elif white_score > 0.85:
+            return 'plain_white' if median_lab[0] > 93 else 'white'
         else:
             return 'unplated_white'
 
-    def enhance_metallic_properties(self, image: np.ndarray, gold_type: str) -> np.ndarray:
-        """Enhance metallic shine and reflections"""
-        # Get reference colors
-        ref = self.gold_references[gold_type]
+    def detect_lighting(self, image: np.ndarray) -> str:
+        """Detect lighting condition"""
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        avg_b = np.mean(lab[:, :, 2])
         
-        # Convert to LAB
-        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
-        
-        # Enhance luminance for metallic effect
-        lab[:, :, 0] = np.clip(lab[:, :, 0] * 1.1, 0, 255)
-        
-        # Adjust color channels based on gold type
-        if gold_type == 'yellow':
-            lab[:, :, 2] = np.clip(lab[:, :, 2] * 1.2, 0, 255)  # Enhance yellow
-        elif gold_type == 'rose':
-            lab[:, :, 1] = np.clip(lab[:, :, 1] * 1.15, 0, 255)  # Enhance red
-        
-        # Convert back to BGR
-        enhanced = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
-        
-        # Add specular highlights
-        gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
-        _, highlights = cv2.threshold(gray, 220, 255, cv2.THRESH_BINARY)
-        highlights_colored = cv2.cvtColor(highlights, cv2.COLOR_GRAY2BGR)
-        
-        # Blend highlights
-        highlight_color = ref['highlights'].reshape(1, 1, 3)
-        highlights_colored = (highlights_colored / 255.0 * highlight_color).astype(np.uint8)
-        
-        return cv2.addWeighted(enhanced, 0.9, highlights_colored, 0.1, 0)
+        if avg_b > 135:
+            return 'warm'
+        elif avg_b < 115:
+            return 'cool'
+        else:
+            return 'natural'
 
-    def enhance_details(self, image: np.ndarray) -> np.ndarray:
-        """Enhance fine details and textures"""
-        # Unsharp masking for detail enhancement
-        gaussian = cv2.GaussianBlur(image, (0, 0), 2.0)
-        sharpened = cv2.addWeighted(image, 1.5, gaussian, -0.5, 0)
+    def apply_gradient_transition(self, image: np.ndarray, mask: np.ndarray, bg_color: np.ndarray) -> np.ndarray:
+        """Apply smooth gradient transition from ring to background"""
+        result = image.copy()
+        h, w = image.shape[:2]
         
-        # Edge enhancement
-        edges = cv2.Canny(image, 50, 150)
-        edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+        # Create distance transform from mask
+        dist_transform = cv2.distanceTransform(255 - mask, cv2.DIST_L2, 5)
+        max_dist = np.max(dist_transform)
         
-        # Subtle edge addition
-        result = cv2.addWeighted(sharpened, 0.95, edges_colored, 0.05, 0)
+        if max_dist > 0:
+            # Normalize distance for smooth transition
+            transition_width = min(100, int(max_dist))
+            
+            for i in range(h):
+                for j in range(w):
+                    if dist_transform[i, j] > 0 and dist_transform[i, j] <= transition_width:
+                        # Calculate blend factor
+                        alpha = dist_transform[i, j] / transition_width
+                        # Smooth transition using cosine interpolation
+                        alpha = 0.5 * (1 + np.cos(np.pi * (1 - alpha)))
+                        
+                        # Blend colors
+                        result[i, j] = (1 - alpha) * image[i, j] + alpha * bg_color
         
         return result
 
-    def apply_color_correction(self, image: np.ndarray, gold_type: str) -> np.ndarray:
-        """Apply color correction based on gold type"""
-        ref = self.gold_references[gold_type]
+    def enhance_ring_details(self, image: np.ndarray, params: Dict[str, Any]) -> np.ndarray:
+        """Apply v13.3 6-stage enhancement process"""
+        # Stage 1: Noise reduction
+        denoised = cv2.bilateralFilter(image, params['noise_reduction'], 50, 50)
         
-        # Create color correction matrix
-        image_lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+        # Stage 2: Convert to PIL for enhancement
+        pil_img = Image.fromarray(cv2.cvtColor(denoised, cv2.COLOR_BGR2RGB))
         
-        # Target LAB values
-        target_lab = ref['lab']
+        # Brightness adjustment
+        brightness_enhancer = ImageEnhance.Brightness(pil_img)
+        pil_img = brightness_enhancer.enhance(params['brightness'])
         
-        # Calculate current average
-        mask = cv2.inRange(image_lab[:, :, 0], 30, 250)  # Avoid very dark/bright areas
-        current_avg = cv2.mean(image_lab, mask=mask)[:3]
+        # Contrast adjustment
+        contrast_enhancer = ImageEnhance.Contrast(pil_img)
+        pil_img = contrast_enhancer.enhance(params['contrast'])
         
-        # Calculate correction factors
-        l_factor = 1.0 + (target_lab[0] - current_avg[0]) * 0.003
-        a_factor = 1.0 + (target_lab[1] - current_avg[1]) * 0.005
-        b_factor = 1.0 + (target_lab[2] - current_avg[2]) * 0.005
+        # Saturation adjustment
+        saturation_enhancer = ImageEnhance.Color(pil_img)
+        pil_img = saturation_enhancer.enhance(params['saturation'])
         
-        # Apply corrections
-        image_lab[:, :, 0] = np.clip(image_lab[:, :, 0] * l_factor, 0, 255)
-        image_lab[:, :, 1] = np.clip(image_lab[:, :, 1] * a_factor + (target_lab[1] - current_avg[1]) * 0.1, 0, 255)
-        image_lab[:, :, 2] = np.clip(image_lab[:, :, 2] * b_factor + (target_lab[2] - current_avg[2]) * 0.1, 0, 255)
+        # Sharpness adjustment
+        sharpness_enhancer = ImageEnhance.Sharpness(pil_img)
+        pil_img = sharpness_enhancer.enhance(params['sharpness'])
         
-        return cv2.cvtColor(image_lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+        # Convert back to numpy
+        enhanced = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        
+        # Stage 3: LAB adjustments
+        lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab[:, :, 0] = np.clip(lab[:, :, 0] * (1 + params['highlight_boost']), 0, 255)
+        
+        # Stage 4: Color channel adjustments
+        lab[:, :, 1] = lab[:, :, 1] * params.get('s_mult', 1.0)
+        lab[:, :, 2] = lab[:, :, 2] * params.get('v_mult', 1.0)
+        
+        enhanced = cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+        
+        # Stage 5: White overlay for shine
+        white_overlay = np.ones_like(enhanced) * 255
+        enhanced = cv2.addWeighted(enhanced, 1 - params['white_overlay'], 
+                                 white_overlay, params['white_overlay'], 0)
+        
+        # Stage 6: Final edge enhancement
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        sharpened = cv2.filter2D(enhanced, -1, kernel)
+        
+        return cv2.addWeighted(enhanced, 0.7, sharpened, 0.3, 0)
 
     def enhance_image(self, image: np.ndarray) -> np.ndarray:
         """Enhance image quality with CLAHE and sharpening"""
         # Convert to LAB color space
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
+        
+        # Ensure L channel is uint8
+        l = l.astype(np.uint8)
         
         # Apply CLAHE to L channel only
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
@@ -245,20 +349,6 @@ class WeddingRingEnhancer:
                 'error': str(e)
             }
 
-    def process_ring(self, image: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
-        """Main processing pipeline for ring enhancement"""
-        # Detect gold type
-        gold_type = self.detect_gold_type(image, mask)
-        logger.info(f"Detected gold type: {gold_type}")
-        
-        # Apply enhancements
-        enhanced = self.enhance_image(image)
-        enhanced = self.enhance_metallic_properties(enhanced, gold_type)
-        enhanced = self.apply_color_correction(enhanced, gold_type)
-        enhanced = self.enhance_details(enhanced)
-        
-        return enhanced
-    
     def create_thumbnail(self, image: Image.Image, size: Tuple[int, int] = (1000, 1300)) -> str:
         """Create thumbnail with ring filling most of the frame"""
         # Convert to numpy array for processing
@@ -326,6 +416,44 @@ class WeddingRingEnhancer:
         # Remove padding for Make.com
         return thumb_base64.rstrip('=')
 
+    def process_ring(self, image: np.ndarray, mask: Optional[np.ndarray] = None) -> np.ndarray:
+        """Main processing pipeline with v13.3 full enhancement"""
+        # Detect gold type and lighting
+        gold_type_key = self.detect_gold_type(image, mask)
+        lighting = self.detect_lighting(image)
+        
+        # Map gold types to parameter keys
+        gold_type_map = {
+            'yellow': 'yellow_gold',
+            'rose': 'rose_gold',
+            'white': 'white_gold',
+            'unplated_white': 'white_gold',
+            'plain_white': 'plain_white'
+        }
+        
+        param_key = gold_type_map.get(gold_type_key, 'white_gold')
+        params = self.enhancement_params[param_key][lighting]
+        
+        logger.info(f"Processing with: {param_key} under {lighting} lighting")
+        
+        # Apply v13.3 6-stage enhancement
+        enhanced = self.enhance_ring_details(image, params)
+        
+        # Apply gradient transition if mask available
+        if mask is not None:
+            # Get background color from edges
+            h, w = image.shape[:2]
+            edge_pixels = []
+            edge_pixels.extend(image[0, :].reshape(-1, 3))
+            edge_pixels.extend(image[-1, :].reshape(-1, 3))
+            edge_pixels.extend(image[:, 0].reshape(-1, 3))
+            edge_pixels.extend(image[:, -1].reshape(-1, 3))
+            
+            bg_color = np.median(edge_pixels, axis=0)
+            enhanced = self.apply_gradient_transition(enhanced, mask, bg_color)
+        
+        return enhanced
+
 def handler(job):
     """RunPod handler function"""
     try:
@@ -389,15 +517,13 @@ def handler(job):
         # Create thumbnail
         thumbnail_base64 = enhancer.create_thumbnail(pil_image)
         
-        # Get gold type for info
+        # Get processing info
         if bg_result['success']:
-            img_for_detection = bg_result['image']
-            mask_for_detection = bg_result['mask']
+            gold_type = enhancer.detect_gold_type(bg_result['image'], bg_result['mask'])
+            lighting = enhancer.detect_lighting(bg_result['image'])
         else:
-            img_for_detection = img_bgr
-            mask_for_detection = None
-        
-        detected_gold_type = enhancer.detect_gold_type(img_for_detection, mask_for_detection)
+            gold_type = enhancer.detect_gold_type(img_bgr)
+            lighting = enhancer.detect_lighting(img_bgr)
         
         # Prepare response
         result = {
@@ -406,9 +532,10 @@ def handler(job):
                 "thumbnail": thumbnail_base64,
                 "processing_info": {
                     "background_removed": bg_result['success'],
-                    "detected_gold_type": detected_gold_type,
+                    "detected_gold_type": gold_type,
+                    "detected_lighting": lighting,
                     "timestamp": datetime.now().isoformat(),
-                    "version": "v152-fixed"
+                    "version": "v152-complete"
                 }
             }
         }
@@ -424,7 +551,7 @@ def handler(job):
             "output": {
                 "error": str(e),
                 "fallback": True,
-                "version": "v152-fixed"
+                "version": "v152-complete"
             }
         }
         
