@@ -1,29 +1,14 @@
-FROM python:3.10-slim
+FROM python:3.10-alpine
 
-WORKDIR /
+# 필수 시스템 패키지만 설치
+RUN apk add --no-cache \
+    libgcc libstdc++ libffi-dev \
+    libjpeg-turbo libpng libwebp \
+    openblas lapack
 
-# Install system dependencies for OpenCV
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first
+# Python 패키지 (no-cache, no-deps)
 COPY requirements.txt .
+RUN pip install --no-cache-dir --no-deps -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy handler
-COPY handler.py /handler.py
-
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV REPLICATE_API_TOKEN=""
-
-# Run handler
-CMD ["python", "-u", "/handler.py"]
+COPY handler.py .
+CMD ["python", "-u", "handler.py"]
