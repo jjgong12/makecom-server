@@ -1,6 +1,5 @@
-runpod==1.6.2
+runpod==1.6.0
+opencv-python-headless==4.8.1.78
 Pillow==10.1.0
-numpy==1.23.5
-opencv-python-headless==4.7.0.72
-replicate==0.25.1
-requests==2.31.0
+numpy==1.24.3
+replicate==0.31.0
