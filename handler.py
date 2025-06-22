@@ -454,16 +454,53 @@ class WeddingRingEnhancer:
         
         return enhanced
 
-def handler(job):
-    """RunPod handler function"""
+def handler(event):
+    """RunPod handler function - supports multiple input formats"""
     try:
-        job_input = job["input"]
-        logger.info(f"Processing job with input keys: {list(job_input.keys())}")
+        logger.info(f"Handler called with event type: {type(event)}")
+        logger.info(f"Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
         
-        # Get base64 image
-        base64_image = job_input.get("image", "")
+        # Find image in various possible locations
+        base64_image = ""
+        
+        # Path 1: event["input"]["image"] or event["input"]["image_base64"]
+        if isinstance(event, dict) and "input" in event:
+            job_input = event.get("input", {})
+            logger.info(f"Job input keys: {list(job_input.keys()) if isinstance(job_input, dict) else 'Not a dict'}")
+            
+            # Check multiple possible keys
+            base64_image = job_input.get("image", "") or job_input.get("image_base64", "")
+        
+        # Path 2: event["image"] directly
+        if not base64_image and isinstance(event, dict):
+            base64_image = event.get("image", "") or event.get("image_base64", "")
+        
+        # Path 3: event is the base64 string itself
+        if not base64_image and isinstance(event, str):
+            base64_image = event
+        
+        # Path 4: event["data"]["image"]
+        if not base64_image and isinstance(event, dict) and "data" in event:
+            data = event.get("data", {})
+            if isinstance(data, dict):
+                base64_image = data.get("image", "") or data.get("image_base64", "")
+        
+        # Final check
         if not base64_image:
-            raise ValueError("No image provided in input")
+            logger.error(f"No image found. Full event structure: {json.dumps(event, indent=2) if isinstance(event, dict) else str(event)[:500]}")
+            return {
+                "output": {
+                    "error": "No image provided in input",
+                    "fallback": True,
+                    "debug_info": {
+                        "event_type": str(type(event)),
+                        "event_keys": list(event.keys()) if isinstance(event, dict) else None
+                    },
+                    "version": "v152-complete"
+                }
+            }
+        
+        logger.info(f"Found image with length: {len(base64_image)}")
         
         # Clean base64 string
         if base64_image.startswith('data:'):
