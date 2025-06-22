@@ -7,6 +7,7 @@ import os
 import replicate
 import requests
 
+
 def detect_metal_type(img):
     """Detect metal type for thumbnail processing"""
     try:
