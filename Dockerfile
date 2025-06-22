@@ -2,7 +2,7 @@ FROM python:3.10-slim
 
 WORKDIR /
 
-# Install system dependencies
+# Install system dependencies for OpenCV
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -14,18 +14,18 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
+# Copy requirements first
 COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy handler
 COPY handler.py /handler.py
 
 # Set environment variables
-ENV REPLICATE_API_TOKEN=""
 ENV PYTHONUNBUFFERED=1
+ENV REPLICATE_API_TOKEN=""
 
-# RunPod handler
+# Run handler
 CMD ["python", "-u", "/handler.py"]
