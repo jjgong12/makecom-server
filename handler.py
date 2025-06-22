@@ -115,7 +115,7 @@ class WeddingRingEnhancer:
                 print("[v150] No REPLICATE_API_TOKEN found")
 
     def decode_base64_image(self, base64_string):
-        """Decode base64 image with comprehensive error handling"""
+        """Decode base64 image with comprehensive error handling for Make.com"""
         print(f"[v150] Decoding base64 image, length: {len(base64_string)}")
         
         try:
@@ -123,21 +123,27 @@ class WeddingRingEnhancer:
             base64_string = base64_string.strip()
             
             # Remove data URL prefix if present
-            if ',' in base64_string:
-                base64_string = base64_string.split(',')[1]
+            if 'base64,' in base64_string:
+                base64_string = base64_string.split('base64,')[1]
                 print("[v150] Removed data URL prefix")
+            elif base64_string.startswith('data:'):
+                base64_string = base64_string.split(',')[1]
+                print("[v150] Removed data: prefix")
+            
+            # Remove any whitespace, newlines
+            base64_string = base64_string.replace('\n', '').replace('\r', '').replace(' ', '')
             
             # Try multiple decoding approaches
             image_data = None
             
-            # Method 1: Direct decode
+            # Method 1: Direct decode (no padding manipulation for Make.com data)
             try:
                 image_data = base64.b64decode(base64_string, validate=True)
                 print("[v150] Direct decode successful")
             except Exception as e1:
                 print(f"[v150] Direct decode failed: {e1}")
                 
-                # Method 2: Add padding
+                # Method 2: Add padding only if needed
                 try:
                     missing_padding = len(base64_string) % 4
                     if missing_padding:
@@ -148,27 +154,34 @@ class WeddingRingEnhancer:
                 except Exception as e2:
                     print(f"[v150] Decode with padding failed: {e2}")
                     
-                    # Method 3: Force decode
+                    # Method 3: Clean non-base64 characters and retry
                     try:
-                        image_data = base64.b64decode(base64_string + '==')
-                        print("[v150] Force decode successful")
-                    except Exception as e3:
-                        print(f"[v150] Force decode failed: {e3}")
-                        
-                        # Method 4: Clean and retry
                         base64_string = re.sub(r'[^A-Za-z0-9+/]', '', base64_string)
-                        image_data = base64.b64decode(base64_string + '==')
+                        missing_padding = len(base64_string) % 4
+                        if missing_padding:
+                            base64_string += '=' * (4 - missing_padding)
+                        image_data = base64.b64decode(base64_string)
                         print("[v150] Clean and decode successful")
+                    except Exception as e3:
+                        print(f"[v150] All decode methods failed: {e3}")
+                        raise ValueError("Unable to decode base64 image")
             
             if image_data:
                 image = Image.open(io.BytesIO(image_data))
-                print(f"[v150] Image decoded successfully: {image.size}")
+                print(f"[v150] Image decoded successfully: {image.size}, mode: {image.mode}")
+                
+                # Convert to RGB if needed
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                    print(f"[v150] Converted to RGB from {image.mode}")
+                
                 return image
             else:
-                raise ValueError("All decoding methods failed")
+                raise ValueError("No image data after decoding")
                 
         except Exception as e:
             print(f"[v150] Error decoding base64: {e}")
+            print(f"[v150] Base64 preview: {base64_string[:100]}...")
             raise
 
     def detect_and_remove_black_borders(self, image_np):
@@ -787,60 +800,83 @@ def handler(event):
         print(f"[v150] Event type: {type(event)}")
         print(f"[v150] Event keys: {list(event.keys()) if isinstance(event, dict) else 'Not a dict'}")
         
-        # Try multiple paths to find the image
-        base64_image = None
+        # Get input from event (validated structure from previous versions)
+        image_input = event.get("input", {})
+        print(f"[v150] Input type: {type(image_input)}")
+        print(f"[v150] Input keys: {list(image_input.keys()) if isinstance(image_input, dict) else 'Not a dict'}")
         
-        # Path 1: event["input"]["image"]
-        if isinstance(event, dict) and "input" in event:
-            job_input = event.get("input", {})
-            print(f"[v150] Job input type: {type(job_input)}")
-            print(f"[v150] Job input keys: {list(job_input.keys()) if isinstance(job_input, dict) else 'Not a dict'}")
-            
-            # Debug: print first 100 chars of each value
-            if isinstance(job_input, dict):
-                for key, value in job_input.items():
-                    if isinstance(value, str):
-                        print(f"[v150] {key}: {value[:100]}...")
-                    else:
-                        print(f"[v150] {key}: {type(value)}")
-            
-            base64_image = job_input.get("image", "") if isinstance(job_input, dict) else ""
+        # Debug: print sample of values
+        if isinstance(image_input, dict):
+            for key, value in image_input.items():
+                if isinstance(value, str) and len(value) > 100:
+                    print(f"[v150] {key}: {value[:100]}... (length: {len(value)})")
+                else:
+                    print(f"[v150] {key}: {value if isinstance(value, str) else type(value)}")
         
-        # Path 2: event["image"]
-        if not base64_image and isinstance(event, dict):
-            base64_image = event.get("image", "")
+        # Try to get image from multiple possible keys
+        base64_image = (
+            image_input.get("image") or 
+            image_input.get("image_base64") or
+            image_input.get("base64") or
+            image_input.get("data") or
+            image_input.get("imageData") or
+            image_input.get("img") or
+            ""
+        )
+        
+        # If still no image, try direct event keys
+        if not base64_image:
+            base64_image = (
+                event.get("image") or
+                event.get("image_base64") or
+                event.get("base64") or
+                event.get("data") or
+                ""
+            )
             if base64_image:
-                print("[v150] Found image in event['image']")
+                print("[v150] Found image in direct event keys")
         
-        # Path 3: Direct string
+        # Check if event itself is the base64 string
         if not base64_image and isinstance(event, str):
             base64_image = event
             print("[v150] Event is direct base64 string")
         
-        # Path 4: Nested in data
-        if not base64_image and isinstance(event, dict) and "data" in event:
-            data = event.get("data", {})
-            if isinstance(data, dict) and "image" in data:
-                base64_image = data.get("image", "")
-                print("[v150] Found image in event['data']['image']")
+        # If input is string, it might be the image
+        if not base64_image and isinstance(image_input, str):
+            base64_image = image_input
+            print("[v150] Input is direct base64 string")
         
         if not base64_image:
             print("[v150] No image found in any expected location")
             print(f"[v150] Full event structure: {json.dumps(event, indent=2) if isinstance(event, dict) else str(event)[:500]}")
+            print("[v150] Available keys:", list(event.keys()) if isinstance(event, dict) else "Not a dict")
+            print("[v150] Input keys:", list(image_input.keys()) if isinstance(image_input, dict) else "Not a dict")
+            
             return {
                 "output": {
                     "error": "No image provided",
-                    "processing_info": {"version": "v150", "error": "No input image"}
+                    "processing_info": {
+                        "version": "v150", 
+                        "error": "No input image",
+                        "available_keys": list(event.keys()) if isinstance(event, dict) else [],
+                        "input_keys": list(image_input.keys()) if isinstance(image_input, dict) else []
+                    }
                 }
             }
         
         print(f"[v150] Received image, length: {len(base64_image)}")
+        
+        # Remove data URL prefix if present (common from Make.com)
+        if base64_image.startswith('data:'):
+            base64_image = base64_image.split(',')[1]
+            print("[v150] Removed data URL prefix")
         
         # Process image
         enhancer = WeddingRingEnhancer()
         result = enhancer.process_image(base64_image)
         
         # Return with proper structure for Make.com
+        # Make.com expects: {{4.data.output.output.enhanced_image}}
         return {
             "output": result
         }
@@ -853,7 +889,11 @@ def handler(event):
         return {
             "output": {
                 "error": str(e),
-                "processing_info": {"version": "v150", "error": "Handler exception"}
+                "processing_info": {
+                    "version": "v150", 
+                    "error": "Handler exception",
+                    "traceback": traceback.format_exc()
+                }
             }
         }
 
